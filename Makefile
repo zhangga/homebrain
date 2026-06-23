@@ -1,5 +1,6 @@
 NPM_REGISTRY ?= https://registry.npmjs.org/
-PACKAGE_NAME := $(shell node -p "require('./package.json').name")
+PACKAGE_DIR ?= .
+PACKAGE_NAME := $(shell node -p "require('./$(PACKAGE_DIR)/package.json').name")
 
 .DEFAULT_GOAL := help
 
@@ -26,11 +27,11 @@ whoami: check-token ## Verify the token can authenticate with npm.
 	NPM_CONFIG_USERCONFIG="$$tmp_npmrc" npm whoami --registry "$(NPM_REGISTRY)"
 
 check: ## Run local package checks before publishing.
-	npm test
-	npm pack --dry-run
+	cd "$(PACKAGE_DIR)" && npm test
+	cd "$(PACKAGE_DIR)" && npm pack --dry-run
 
 pack: ## Preview the package tarball contents without creating a release.
-	npm pack --dry-run
+	cd "$(PACKAGE_DIR)" && npm pack --dry-run
 
 publish-dry-run: check-token check whoami ## Simulate npm publish using NPM_TOKEN.
 	@set -eu; \
@@ -40,7 +41,7 @@ publish-dry-run: check-token check whoami ## Simulate npm publish using NPM_TOKE
 		"registry=$(NPM_REGISTRY)" \
 		"//registry.npmjs.org/:_authToken=$$NPM_TOKEN" \
 		> "$$tmp_npmrc"; \
-	NPM_CONFIG_USERCONFIG="$$tmp_npmrc" npm publish --dry-run --access public --registry "$(NPM_REGISTRY)"
+	cd "$(PACKAGE_DIR)" && NPM_CONFIG_USERCONFIG="$$tmp_npmrc" npm publish --dry-run --access public --registry "$(NPM_REGISTRY)"
 
 publish: check-token check whoami ## Publish the package to npm using NPM_TOKEN.
 	@set -eu; \
@@ -50,7 +51,7 @@ publish: check-token check whoami ## Publish the package to npm using NPM_TOKEN.
 		"registry=$(NPM_REGISTRY)" \
 		"//registry.npmjs.org/:_authToken=$$NPM_TOKEN" \
 		> "$$tmp_npmrc"; \
-	NPM_CONFIG_USERCONFIG="$$tmp_npmrc" npm publish --access public --registry "$(NPM_REGISTRY)"
+	cd "$(PACKAGE_DIR)" && NPM_CONFIG_USERCONFIG="$$tmp_npmrc" npm publish --access public --registry "$(NPM_REGISTRY)"
 
 view: ## Show the published package metadata from npm.
 	npm view "$(PACKAGE_NAME)" name version description --registry "$(NPM_REGISTRY)"

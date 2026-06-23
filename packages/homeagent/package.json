@@ -1,0 +1,36 @@
+{
+  "name": "homeagent",
+  "version": "0.0.1",
+  "description": "A home-oriented AI agent, currently in early development.",
+  "main": "index.js",
+  "exports": "./index.js",
+  "files": [
+    "index.js",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --test"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/zhangga/homebrain.git",
+    "directory": "packages/homeagent"
+  },
+  "keywords": [
+    "homeagent",
+    "homebrain",
+    "family",
+    "agent",
+    "personal-ai"
+  ],
+  "author": "ZhangZeQiang",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/zhangga/homebrain/issues"
+  },
+  "homepage": "https://github.com/zhangga/homebrain/tree/main/packages/homeagent#readme",
+  "publishConfig": {
+    "access": "public"
+  }
+}
