@@ -1,13 +1,28 @@
 NPM_REGISTRY ?= https://registry.npmjs.org/
-PACKAGE_DIR ?= .
+PACKAGE_DIR ?= packages/homebrain
 PACKAGE_NAME := $(shell node -p "require('./$(PACKAGE_DIR)/package.json').name")
 
 .DEFAULT_GOAL := help
 
-.PHONY: help check-token whoami check pack publish-dry-run publish view
+.PHONY: help dev test typecheck brain-init brain-doctor check-token whoami check pack publish-dry-run publish view
 
 help: ## Show available commands.
 	@awk 'BEGIN { FS = ":.*## "; printf "Usage: make <target>\n\nTargets:\n" } /^[a-zA-Z0-9_-]+:.*## / { printf "  %-18s %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
+
+dev: ## Run homeagent locally (CLI connector, no Feishu needed).
+	bun run packages/homeagent/src/index.ts
+
+test: ## Run all workspace tests (bun test).
+	bun test
+
+typecheck: ## Typecheck all workspaces (tsc --noEmit).
+	bun run typecheck
+
+brain-init: ## Initialize a local PGLite gbrain brain (needs gbrain installed).
+	gbrain init --pglite
+
+brain-doctor: ## Health-check the gbrain install + brain.
+	gbrain doctor
 
 check-token: ## Verify NPM_TOKEN is present in the environment.
 	@if [ -z "$${NPM_TOKEN:-}" ]; then \
@@ -26,7 +41,7 @@ whoami: check-token ## Verify the token can authenticate with npm.
 		> "$$tmp_npmrc"; \
 	NPM_CONFIG_USERCONFIG="$$tmp_npmrc" npm whoami --registry "$(NPM_REGISTRY)"
 
-check: ## Run local package checks before publishing.
+check: ## Run local package checks before publishing (PACKAGE_DIR=packages/<pkg>).
 	cd "$(PACKAGE_DIR)" && npm test
 	cd "$(PACKAGE_DIR)" && npm pack --dry-run
 

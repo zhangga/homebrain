@@ -1,0 +1,30 @@
+{
+  "name": "homebrain",
+  "version": "0.0.1",
+  "description": "gbrain 薄封装：家庭记忆库的写/查/dream-cycle 接口（唯一接触 gbrain 处）",
+  "type": "module",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "tsc --noEmit"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/zhangga/homebrain.git",
+    "directory": "packages/homebrain"
+  },
+  "keywords": [
+    "homebrain",
+    "family",
+    "memory",
+    "long-term-memory",
+    "personal-ai",
+    "gbrain"
+  ],
+  "author": "ZhangZeQiang",
+  "license": "MIT"
+}

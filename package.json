@@ -1,35 +1,24 @@
 {
-  "name": "homebrain",
-  "version": "0.0.1",
-  "description": "A family-oriented long-term memory brain, currently in early development.",
-  "main": "index.js",
-  "exports": "./index.js",
-  "files": [
-    "index.js",
-    "README.md",
-    "LICENSE"
+  "name": "homebrain-monorepo",
+  "version": "0.0.0",
+  "private": true,
+  "description": "homebrain — 面向家庭的长期记忆 AI 助手（monorepo 容器）",
+  "workspaces": [
+    "packages/*"
   ],
   "scripts": {
-    "test": "node --test"
+    "test": "bun test",
+    "typecheck": "tsc --noEmit",
+    "dev": "bun run packages/homeagent/src/index.ts"
   },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/zhangga/homebrain.git"
   },
-  "keywords": [
-    "homebrain",
-    "family",
-    "memory",
-    "long-term-memory",
-    "personal-ai"
-  ],
   "author": "ZhangZeQiang",
   "license": "MIT",
-  "bugs": {
-    "url": "https://github.com/zhangga/homebrain/issues"
-  },
-  "homepage": "https://github.com/zhangga/homebrain#readme",
-  "publishConfig": {
-    "access": "public"
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5"
   }
 }

@@ -1,0 +1,15 @@
+node_modules/
+.env
+.env.local
+*.log
+dist/
+build/
+.DS_Store
+
+# gbrain 本地数据 + 运行态（本地优先，不入库）
+.brain/
+.homeagent/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+.homeagent-llm.jsonl

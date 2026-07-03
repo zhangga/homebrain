@@ -1,16 +1,20 @@
 {
   "name": "homeagent",
   "version": "0.0.1",
-  "description": "A home-oriented AI agent, currently in early development.",
-  "main": "index.js",
-  "exports": "./index.js",
-  "files": [
-    "index.js",
-    "README.md",
-    "LICENSE"
-  ],
+  "description": "家庭编排层：连接器 / 理解抽取 / 主动调度 / 成员画像 / 任务派发",
+  "type": "module",
+  "main": "src/index.ts",
+  "bin": {
+    "homeagent": "src/index.ts"
+  },
   "scripts": {
-    "test": "node --test"
+    "dev": "bun run src/index.ts",
+    "start": "bun run src/index.ts",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "homebrain": "workspace:*"
   },
   "repository": {
     "type": "git",
@@ -25,12 +29,5 @@
     "personal-ai"
   ],
   "author": "ZhangZeQiang",
-  "license": "MIT",
-  "bugs": {
-    "url": "https://github.com/zhangga/homebrain/issues"
-  },
-  "homepage": "https://github.com/zhangga/homebrain/tree/main/packages/homeagent#readme",
-  "publishConfig": {
-    "access": "public"
-  }
+  "license": "MIT"
 }
