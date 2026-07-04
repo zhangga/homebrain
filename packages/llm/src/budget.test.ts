@@ -1,0 +1,71 @@
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { resetConfig } from "@homebrain/shared";
+import { checkBudget, recordCall, spentToday, localDay } from "./budget.ts";
+
+let dir: string;
+
+beforeEach(() => {
+  dir = mkdtempSync(join(tmpdir(), "hb-budget-"));
+  process.env.HOMEBRAIN_DATA_DIR = dir;
+  process.env.HOMEBRAIN_DAILY_BUDGET_USD = "5";
+  resetConfig();
+});
+
+afterEach(() => {
+  rmSync(dir, { recursive: true, force: true });
+  delete process.env.HOMEBRAIN_DATA_DIR;
+  delete process.env.HOMEBRAIN_DAILY_BUDGET_USD;
+  resetConfig();
+});
+
+function seed(costUsd: number) {
+  recordCall({
+    t: new Date().toISOString(),
+    model: "claude-sonnet-5",
+    purpose: "distill",
+    inputTokens: 0,
+    outputTokens: 0,
+    costUsd,
+    ok: true,
+    ms: 1,
+  });
+}
+
+describe("budget", () => {
+  test("localDay is YYYY-MM-DD", () => {
+    expect(localDay()).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+  });
+
+  test("spentToday sums recorded costs", () => {
+    expect(spentToday()).toBe(0);
+    seed(1.25);
+    seed(0.75);
+    expect(spentToday()).toBeCloseTo(2.0, 5);
+  });
+
+  test("distill is blocked at the cap", () => {
+    seed(5.0);
+    const d = checkBudget("distill");
+    expect(d.allowed).toBe(false);
+    expect(d.reason).toContain("budget");
+  });
+
+  test("ask gets grace headroom past the cap", () => {
+    seed(5.0);
+    // deferrable blocked, but ask allowed until 1.5x
+    expect(checkBudget("distill").allowed).toBe(false);
+    expect(checkBudget("ask").allowed).toBe(true);
+    seed(3.0); // now 8.0 >= 7.5 grace limit
+    expect(checkBudget("ask").allowed).toBe(false);
+  });
+
+  test("tolerates malformed log lines", () => {
+    const { config } = require("@homebrain/shared");
+    Bun.write(join(config().dataDir, "logs", `llm-${localDay()}.jsonl`), "not json\n{bad}\n");
+    // spentToday should not throw; may be 0
+    expect(() => spentToday()).not.toThrow();
+  });
+});
