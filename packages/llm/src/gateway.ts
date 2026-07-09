@@ -268,3 +268,39 @@ export async function ping(model?: string): Promise<boolean> {
     return false;
   }
 }
+
+interface ModelsListResponse {
+  data?: Array<{ id?: string }>;
+  error?: { message?: string };
+}
+
+/**
+ * List available model ids from the gateway's Anthropic-compatible `/v1/models`
+ * endpoint. This is the one provider whose model list we can fetch for real
+ * (CLIs have no list-models command). Returns [] on any error so callers can
+ * fall back to a curated list; never throws.
+ */
+export async function listGatewayModels(): Promise<string[]> {
+  const cfg = config();
+  const url = `${cfg.gatewayBaseUrl}/v1/models`;
+  try {
+    const res = await fetch(url, {
+      headers: {
+        "x-api-key": cfg.gatewayToken,
+        "anthropic-version": "2023-06-01",
+      },
+    });
+    const json = (await res.json()) as ModelsListResponse;
+    if (!res.ok || json.error || !Array.isArray(json.data)) {
+      log.warn("listGatewayModels: unexpected response", {
+        status: res.status,
+        err: json.error?.message,
+      });
+      return [];
+    }
+    return json.data.map((m) => m.id).filter((id): id is string => typeof id === "string" && id.length > 0);
+  } catch (err) {
+    log.warn("listGatewayModels failed", { err: String(err) });
+    return [];
+  }
+}

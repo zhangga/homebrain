@@ -8,7 +8,7 @@
  * The decision of *whether* to run a space is a pure function (shouldRunSpace)
  * so the policy is unit-tested without timers.
  */
-import { logger, type SpaceId } from "@homebrain/shared";
+import { logger, config, type SpaceId } from "@homebrain/shared";
 import type { KnowledgeEngine } from "@homebrain/core";
 
 const log = logger.child("scheduler");
@@ -74,7 +74,8 @@ export function shouldRunSpace(
   return false;
 }
 
-function dayKey(d: Date): string {
+/** Local day key (YYYY-MM-DD) in Asia/Shanghai — used to detect "already ran today". */
+export function dayKey(d: Date): string {
   return new Intl.DateTimeFormat("en-CA", {
     timeZone: "Asia/Shanghai",
     year: "numeric",
@@ -86,12 +87,31 @@ function dayKey(d: Date): string {
 export class Scheduler {
   private engine: KnowledgeEngine;
   private cfg: ScheduleConfig;
+  /** true when the nightly hour was pinned by the caller (tests); else follow config() */
+  private hourPinned: boolean;
   private timer?: ReturnType<typeof setInterval>;
   private running = false;
 
   constructor(engine: KnowledgeEngine, cfg: Partial<ScheduleConfig> = {}) {
     this.engine = engine;
     this.cfg = { ...DEFAULT_SCHEDULE, ...cfg };
+    this.hourPinned = cfg.hour !== undefined;
+  }
+
+  /**
+   * Effective schedule for a tick. The nightly hour follows the editable global
+   * setting (config().dreamHour) unless a caller pinned it explicitly; config
+   * reads are wrapped so a scheduler used in tests without env still works.
+   */
+  private effectiveConfig(): ScheduleConfig {
+    if (this.hourPinned) return this.cfg;
+    let hour = this.cfg.hour;
+    try {
+      hour = config().dreamHour;
+    } catch {
+      // config() may be unavailable (missing env in unit tests); keep default.
+    }
+    return { ...this.cfg, hour };
   }
 
   /** Start the loop and run an immediate catch-up pass. */
@@ -109,6 +129,7 @@ export class Scheduler {
   async tick(reason: string, now = new Date()): Promise<SpaceId[]> {
     if (this.running) return [];
     this.running = true;
+    const cfg = this.effectiveConfig();
     const ran: SpaceId[] = [];
     try {
       for (const meta of this.engine.registry.list()) {
@@ -118,10 +139,12 @@ export class Scheduler {
           lastDreamAt: meta.lastDreamAt,
           hasPending: idx.countRaw(true) > 0,
         };
-        if (!shouldRunSpace(state, now, this.cfg)) continue;
+        if (!shouldRunSpace(state, now, cfg)) continue;
         log.info("scheduling dream cycle", { space: meta.id, reason });
         try {
-          await this.engine.runDreamCycle(meta.id);
+          // Per-space agent model (management backend), if assigned.
+          const model = this.engine.agentForSpace(meta.id)?.model || undefined;
+          await this.engine.runDreamCycle(meta.id, { model });
           ran.push(meta.id);
         } catch (err) {
           log.error("scheduled dream failed", { space: meta.id, err: String(err) });

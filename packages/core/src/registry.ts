@@ -116,6 +116,26 @@ export class SpaceRegistry {
     }
   }
 
+  /**
+   * Patch mutable per-space settings (management backend): display name, the
+   * assigned agent, and the reply-behavior toggles. `id`/`createdAt` are never
+   * changed. No-op (returns undefined) if the space is unknown.
+   */
+  updateMeta(
+    space: SpaceId,
+    patch: Partial<Pick<SpaceMeta, "name" | "agentId" | "replyInThread" | "mentionsOnly" | "chatId">>,
+  ): SpaceMeta | undefined {
+    const m = this.meta.get(space);
+    if (!m) return undefined;
+    if (patch.name !== undefined) m.name = patch.name;
+    if (patch.agentId !== undefined) m.agentId = patch.agentId || undefined;
+    if (patch.replyInThread !== undefined) m.replyInThread = patch.replyInThread;
+    if (patch.mentionsOnly !== undefined) m.mentionsOnly = patch.mentionsOnly;
+    if (patch.chatId !== undefined) m.chatId = patch.chatId;
+    this.persist();
+    return m;
+  }
+
   closeAll(): void {
     for (const s of this.stores.values()) s.close();
     this.stores.clear();

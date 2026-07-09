@@ -146,7 +146,7 @@ export class CliConnector implements Connector {
 
   private async readStdin(): Promise<void> {
     process.stdout.write(
-      "homebrain cli connector — type a message (p2p). Prefixes: /at <text>, /group <text>, /added. Ctrl-D to exit.\n> ",
+      "homebrain cli connector ready. Built-in: /at <text>, /group <text>, /added; other /commands are handled by the app (see startup banner). Ctrl-D to exit.\n> ",
     );
     const decoder = new TextDecoder();
     let buffer = "";

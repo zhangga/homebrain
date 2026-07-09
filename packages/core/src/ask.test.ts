@@ -7,6 +7,7 @@ import type { Page, SpaceId } from "@homebrain/shared";
 import { resetConfig } from "@homebrain/shared";
 import { SpaceStore } from "./space.ts";
 import { ask, buildCatalog, expandGraph, resolveCitations } from "./ask.ts";
+import { makeCliClient } from "./cli-client.ts";
 import { FakeLlm } from "./testing.ts";
 
 let dir: string;
@@ -193,5 +194,29 @@ describe("ask pipeline", () => {
     });
     const res = await ask([store], "问一个页面答不了的问题", {}, { client: fake });
     expect(res.source).toBe("general");
+  });
+
+  test("runs the whole pipeline through a CLI-backed client", async () => {
+    store.writePage(page("entities/alice", "Alice", "Alice 负责后端服务。"));
+    // A CLI client whose runner returns JSON for structured calls (route +
+    // synth) and text otherwise — proving ask() is client-agnostic.
+    const cli = makeCliClient("claude", "", async (_id, input) => {
+      if (/JSON Schema/.test(input.prompt) && /relevant/.test(input.prompt)) {
+        return JSON.stringify({ slugs: ["entities/alice"], relevant: true });
+      }
+      if (/JSON Schema/.test(input.prompt) && /grounded/.test(input.prompt)) {
+        return JSON.stringify({
+          answer: "后端由 [[entities/alice|Alice]] 负责。",
+          grounded: true,
+          usedSlugs: ["entities/alice"],
+          gaps: [],
+        });
+      }
+      return "unexpected";
+    });
+    const res = await ask([store], "谁负责后端？", {}, { client: cli });
+    expect(res.source).toBe("knowledge");
+    expect(res.answer).toContain("Alice");
+    expect(res.citations.map((c) => c.slug)).toContain("entities/alice");
   });
 });

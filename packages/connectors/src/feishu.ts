@@ -12,7 +12,7 @@
  *   - sends replies/notices via `im +messages-reply --as bot`;
  *   - fetches docx links via `docs +fetch --as user` for doc sync (Q8).
  */
-import { logger } from "@homebrain/shared";
+import { config, logger } from "@homebrain/shared";
 import type {
   Connector,
   InboundEvent,
@@ -75,8 +75,10 @@ export class FeishuConnector implements Connector {
   constructor(opts: FeishuConnectorOptions = {}) {
     this.larkBin = opts.larkBin ?? "lark-cli";
     this.identity = opts.identity ?? {
-      botName: process.env.HOMEBRAIN_FEISHU_BOT_NAME,
-      botOpenId: process.env.HOMEBRAIN_FEISHU_BOT_OPEN_ID,
+      // Bot identity is snapshotted at startup from config() (settings.json +
+      // env). Editing it in the management backend takes effect on next restart.
+      botName: config().feishuBotName,
+      botOpenId: config().feishuBotOpenId,
     };
     this.spawner = opts.spawner ?? bunSpawner;
     this.backoffBaseMs = opts.backoffBaseMs ?? 1000;

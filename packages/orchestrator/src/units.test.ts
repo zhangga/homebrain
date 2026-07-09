@@ -52,6 +52,17 @@ describe("reply gateway (Q2)", () => {
     expect(d.respond).toBe(false);
     expect(d.capture).toBe(true);
   });
+
+  test("group with mentionsOnly=false responds to every message", () => {
+    const d = gate(msg({ chatType: "group", mentionsBot: false }), { mentionsOnly: false });
+    expect(d.respond).toBe(true);
+    expect(d.capture).toBe(true);
+  });
+
+  test("mentionsOnly=false has no effect once already mentioned", () => {
+    const d = gate(msg({ chatType: "group", mentionsBot: true }), { mentionsOnly: false });
+    expect(d.respond).toBe(true);
+  });
 });
 
 describe("chitchat prefilter", () => {

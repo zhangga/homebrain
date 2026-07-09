@@ -186,4 +186,103 @@ describe("orchestrator trunk (cli connector, no feishu)", () => {
     expect(raws.some((r) => r.source === "doc")).toBe(true);
     await orch2.stop();
   });
+
+  test("group with mentionsOnly=false answers an unaddressed question", async () => {
+    // seed a page + the team space, then flip the group to respond-to-all
+    await engine.upsertPage("team/oc_team", {
+      slug: "entities/alice",
+      type: "entity",
+      title: "Alice",
+      summary: "后端负责人",
+      aliases: [],
+      tags: [],
+      sources: [],
+      links: [],
+      content: "# Alice\nAlice 负责后端服务。\n",
+      updatedAt: Date.now(),
+      contentHash: "h",
+    });
+    engine.registry.updateMeta("team/oc_team", { mentionsOnly: false });
+    await orch.start();
+    // NOT @-mentioned, but the group is set to respond to all messages
+    await connector.sendGroup("谁负责后端服务？", false);
+    expect(connector.sent.length).toBe(1);
+    expect(connector.sent[0]!.markdown).toContain("Alice");
+  });
+
+  test("assigned agent routes through its CLI provider, passing its instruction", async () => {
+    // No injected llm: the engine must build a CLI-backed client from the
+    // agent's provider. The injected runner returns JSON for route/synth (the
+    // CLI client asks for JSON) and records the prompt to prove the persona
+    // reached it.
+    let sawInstruction = false;
+    const cliEngine = new KnowledgeEngine({
+      dataDir: dir,
+      runProvider: async (_id, input) => {
+        if (/像海盗一样说话/.test(input.prompt)) sawInstruction = true;
+        if (/JSON Schema/.test(input.prompt) && /relevant/.test(input.prompt)) {
+          return JSON.stringify({ slugs: ["entities/alice"], relevant: true });
+        }
+        if (/JSON Schema/.test(input.prompt) && /grounded/.test(input.prompt)) {
+          return JSON.stringify({
+            answer: "后端由 [[entities/alice|Alice]] 负责。",
+            grounded: true,
+            usedSlugs: ["entities/alice"],
+            gaps: [],
+          });
+        }
+        // intent classification (also JSON) -> a question
+        if (/JSON Schema/.test(input.prompt) && /intent/.test(input.prompt)) {
+          return JSON.stringify({ intent: "question" });
+        }
+        return "ok";
+      },
+    });
+    await cliEngine.upsertPage("team/oc_team", {
+      slug: "entities/alice",
+      type: "entity",
+      title: "Alice",
+      summary: "后端负责人",
+      aliases: [],
+      tags: [],
+      sources: [],
+      links: [],
+      content: "# Alice\nAlice 负责后端服务。\n",
+      updatedAt: Date.now(),
+      contentHash: "h",
+    });
+    const agent = cliEngine.agents.create({ name: "海盗", instruction: "像海盗一样说话，Arrr。", model: "", provider: "claude" });
+    cliEngine.registry.updateMeta("team/oc_team", { agentId: agent.id });
+    const cliConnector = new CliConnector({ groupChatId: "oc_team", p2pChatId: "oc_dm", userId: "ou_me" });
+    // The orchestrator's intent classifier uses its own llm; give it the fake.
+    const cliOrch = new Orchestrator({ engine: cliEngine, connector: cliConnector, llm: fake });
+    await cliOrch.start();
+    await cliConnector.sendGroup("谁负责后端服务？", true);
+    expect(cliConnector.sent[0]!.markdown).toContain("Alice");
+    expect(sawInstruction).toBe(true);
+    await cliOrch.stop();
+    cliEngine.close();
+  });
+
+  test("/task new is handled as a control command: creates a task, not captured, replies", async () => {
+    await orch.start();
+    // group message WITHOUT @-mention — control commands still respond + are not stored
+    await connector.sendGroup("/task new 大模型 Agent 进展", false);
+    expect(connector.sent.length).toBe(1);
+    expect(connector.sent[0]!.markdown).toContain("已创建");
+    // a task now exists in the team space
+    const tasks = engine.tasks.list().filter((t) => t.space === "team/oc_team");
+    expect(tasks.length).toBe(1);
+    expect(tasks[0]!.topic).toBe("大模型 Agent 进展");
+    // the control message was NOT captured as knowledge
+    expect(engine.registry.store("team/oc_team").index().countRaw()).toBe(0);
+  });
+
+  test("/task list replies without creating anything", async () => {
+    await orch.start();
+    await connector.sendP2P("/task");
+    expect(connector.sent.length).toBe(1);
+    expect(connector.sent[0]!.markdown).toContain("还没有任务");
+    expect(engine.tasks.list().length).toBe(0);
+  });
 });

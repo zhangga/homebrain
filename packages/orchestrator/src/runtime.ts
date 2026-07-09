@@ -26,7 +26,8 @@ import { attribute } from "./attribution.ts";
 import { gate } from "./gateway.ts";
 import { classifyIntent } from "./intent.ts";
 import { formatAnswer } from "./format.ts";
-import { GROUP_ADDED_NOTICE, coldStartNote } from "./messages.ts";
+import { GROUP_ADDED_NOTICE, NO_PROVIDER_NOTICE, coldStartNote } from "./messages.ts";
+import { parseTaskCommand, handleTaskCommand } from "./task-commands.ts";
 
 const log = logger.child("orchestrator");
 
@@ -104,8 +105,21 @@ export class Orchestrator {
   }
 
   private async handleMessage(msg: InboundMessage): Promise<void> {
-    const decision = gate(msg);
     const { writeSpace, readSpaces } = attribute(msg);
+    const meta = this.engine.registry.get(writeSpace);
+
+    // Task control commands (/task ...) are handled BEFORE capture/gate: they're
+    // instructions, not knowledge, so they're never stored, and they always get
+    // a reply (even in a group without an @-mention).
+    const taskCmd = parseTaskCommand(msg.text);
+    if (taskCmd) {
+      this.engine.ensureSpace(writeSpace, { chatId: msg.chatId });
+      const reply = await handleTaskCommand(this.engine, writeSpace, taskCmd);
+      await this.send(msg, reply);
+      return;
+    }
+
+    const decision = gate(msg, { mentionsOnly: meta?.mentionsOnly });
 
     // Always capture (收录 != 应答).
     if (decision.capture && msg.text.trim() !== "") {
@@ -134,7 +148,7 @@ export class Orchestrator {
 
     switch (intent) {
       case "question":
-        return this.answer(msg, readSpaces);
+        return this.answer(msg, readSpaces, writeSpace);
       case "command":
         return this.runCommand(msg, writeSpace);
       case "remember":
@@ -145,8 +159,24 @@ export class Orchestrator {
     }
   }
 
-  private async answer(msg: InboundMessage, readSpaces: SpaceId[]): Promise<void> {
-    const res = await this.engine.ask(readSpaces, msg.text);
+  private async answer(msg: InboundMessage, readSpaces: SpaceId[], writeSpace: SpaceId): Promise<void> {
+    // The engine picks the LLM client for the write space (its agent's CLI, or
+    // the global default CLI). We still pass model/instruction as ask options so
+    // the persona reaches synthesis; provider routing is the engine's job.
+    const agent = this.engine.agentForSpace(writeSpace);
+    let res;
+    try {
+      res = await this.engine.ask(readSpaces, msg.text, {
+        model: agent?.model || undefined,
+        instruction: agent?.instruction || undefined,
+      });
+    } catch (err) {
+      // No runnable provider (unset agent + no usable default CLI), or the CLI
+      // failed to answer. Tell the user to configure, rather than fail silently.
+      log.warn("ask failed; prompting to configure a provider", { space: writeSpace, err: String(err) });
+      await this.send(msg, NO_PROVIDER_NOTICE);
+      return;
+    }
     // Cold-start honesty (Q3): if general and the KB is essentially empty, add a
     // gentle nudge to feed knowledge.
     let text = formatAnswer(res);
@@ -203,11 +233,15 @@ export class Orchestrator {
   }
 
   private async send(msg: InboundMessage, markdown: string): Promise<void> {
+    // "Topic reply" (mew): per-space replyInThread override; defaults to
+    // threading in groups and not in p2p.
+    const meta = this.engine.registry.get(attribute(msg).writeSpace);
+    const inThread = meta?.replyInThread ?? msg.chatType === "group";
     await this.connector.reply({
       chatId: msg.chatId,
       replyToMessageId: msg.messageId,
       markdown,
-      inThread: msg.chatType === "group",
+      inThread,
     });
   }
 }

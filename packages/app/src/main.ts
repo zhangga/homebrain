@@ -13,6 +13,7 @@ import { FeishuConnector } from "@homebrain/connectors";
 import { Orchestrator } from "@homebrain/orchestrator";
 import { createWebApp } from "@homebrain/web";
 import { Scheduler } from "./scheduler.ts";
+import { TaskScheduler } from "./task-scheduler.ts";
 
 const log = logger.child("app");
 
@@ -32,8 +33,22 @@ async function main(): Promise<void> {
   await orchestrator.start();
   log.info("orchestrator live; listening for feishu events");
 
+  // Push a task's summary to its space-bound feishu chat (shared by the task
+  // scheduler and the backend's manual "run now").
+  const notifyTaskDone = async (space: string, name: string, summary?: string) => {
+    const chatId = engine.registry.get(space as never)?.chatId;
+    if (!chatId || !summary) return;
+    await connector.notice(chatId, `🔎 任务「${name}」已完成：\n\n${summary}`);
+  };
+
   // 2. read-only web backend
-  const app = createWebApp({ engine });
+  const app = createWebApp({
+    engine,
+    onTaskRun: (taskId) => {
+      const t = engine.tasks.get(taskId);
+      if (t) void notifyTaskDone(t.space, t.name, t.lastSummary).catch(() => {});
+    },
+  });
   const server = Bun.serve({ port: cfg.webPort, fetch: app.fetch });
   log.info("web backend live", { url: `http://localhost:${server.port}` });
 
@@ -42,12 +57,23 @@ async function main(): Promise<void> {
   await scheduler.start();
   log.info("scheduler started (nightly + catch-up)");
 
+  // 4. task scheduler (research tasks). On completion, push a summary to the
+  // task's space-bound feishu chat when the task opts in.
+  const taskScheduler = new TaskScheduler(engine, {
+    notify: async (task, report) => {
+      await notifyTaskDone(task.space, task.name, report.summary);
+    },
+  });
+  await taskScheduler.start();
+  log.info("task scheduler started");
+
   let shuttingDown = false;
   const shutdown = async (signal: string) => {
     if (shuttingDown) return;
     shuttingDown = true;
     log.info("shutting down", { signal });
     scheduler.stop();
+    taskScheduler.stop();
     server.stop(true);
     await orchestrator.stop();
     engine.close();

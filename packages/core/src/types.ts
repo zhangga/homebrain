@@ -16,6 +16,8 @@ export interface DreamOptions {
 export interface AskOptions {
   /** model override for synthesis */
   model?: string;
+  /** agent persona / extra system instruction injected into synthesis + fallback */
+  instruction?: string;
   /** max wiki pages loaded whole into the synthesis context */
   maxPages?: number;
   /** when true, never fall back to general knowledge (knowledge-only) */
@@ -33,4 +35,18 @@ export interface SpaceMeta {
   lastDreamAt?: number;
   /** feishu chat_id this space is bound to (team spaces) */
   chatId?: string;
+  /** human-readable display name for the group (management backend) */
+  name?: string;
+  /** id of the Agent assigned to answer in this space (undefined => default) */
+  agentId?: string;
+  /**
+   * Whether replies thread ("Topic reply" in mew). Defaults to true for team
+   * spaces and false for personal when unset (see runtime send()).
+   */
+  replyInThread?: boolean;
+  /**
+   * Whether the bot only responds when @-mentioned in a group ("@ mentions
+   * only" in mew). Defaults to true when unset. No effect on p2p.
+   */
+  mentionsOnly?: boolean;
 }

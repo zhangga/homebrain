@@ -264,15 +264,23 @@ function synthPrompt(pages: { slug: string; page: Page }[], question: string): s
   ].join("\n");
 }
 
+/** Prepend an agent persona to a base system prompt, when configured. */
+function withInstruction(base: string, instruction?: string): string {
+  const extra = instruction?.trim();
+  if (!extra) return base;
+  return `${extra}\n\n${base}`;
+}
+
 async function synthesize(
   client: LlmClient,
   pages: { slug: string; page: Page }[],
   question: string,
   space: SpaceId | undefined,
   model: string | undefined,
+  instruction: string | undefined,
 ): Promise<SynthResult> {
   const { value } = await client.completeJSON<SynthResult>({
-    system: "你是严谨的知识库问答助手，只依据给定材料作答并标注引用。",
+    system: withInstruction("你是严谨的知识库问答助手，只依据给定材料作答并标注引用。", instruction),
     prompt: synthPrompt(pages, question),
     schema: SYNTH_SCHEMA as unknown as Record<string, unknown>,
     validate: validateSynth,
@@ -290,15 +298,19 @@ async function generalFallback(
   client: LlmClient,
   question: string,
   gaps: string[],
+  model: string | undefined,
+  instruction: string | undefined,
 ): Promise<AskResult> {
   const r = await client.complete({
-    system:
+    system: withInstruction(
       "你是团队/家庭知识助手。以下问题在知识库中没有相关记录，请用你的通用知识作答，" +
-      "并在开头坦诚说明“这不在知识库记录中，以下是我的一般性回答”。",
+        "并在开头坦诚说明“这不在知识库记录中，以下是我的一般性回答”。",
+      instruction,
+    ),
     prompt: question,
     maxTokens: 1024,
     purpose: "ask",
-    model: config().model,
+    model: model ?? config().model,
   });
   return {
     answer: r.text.trim(),
@@ -339,6 +351,7 @@ export async function ask(
   const client = deps.client ?? gatewayClient;
   const maxPages = opts.maxPages ?? DEFAULT_MAX_PAGES;
   const model = opts.model ?? config().model;
+  const instruction = opts.instruction;
   const primarySpace = stores[0]?.space;
 
   // Empty knowledge base across all spaces -> general fallback (Q1/Q3).
@@ -347,7 +360,7 @@ export async function ask(
     if (opts.knowledgeOnly) {
       return { answer: "", source: "general", citations: [], gaps: ["知识库为空"] };
     }
-    return generalFallback(client, question, ["知识库中暂无相关记录"]);
+    return generalFallback(client, question, ["知识库中暂无相关记录"], model, instruction);
   }
 
   // Route: which pages are relevant?
@@ -371,7 +384,7 @@ export async function ask(
     if (opts.knowledgeOnly) {
       return { answer: "", source: "general", citations: [], gaps: ["知识库中未找到相关内容"] };
     }
-    return generalFallback(client, question, ["知识库中未找到直接相关的记录"]);
+    return generalFallback(client, question, ["知识库中未找到直接相关的记录"], model, instruction);
   }
 
   // Expand + load whole pages per store.
@@ -397,11 +410,11 @@ export async function ask(
     if (opts.knowledgeOnly) {
       return { answer: "", source: "general", citations: [], gaps: ["未能加载相关页面"] };
     }
-    return generalFallback(client, question, ["知识库中未找到相关内容"]);
+    return generalFallback(client, question, ["知识库中未找到相关内容"], model, instruction);
   }
 
   // Synthesize a grounded answer.
-  const synth = await synthesize(client, loaded, question, primarySpace, model);
+  const synth = await synthesize(client, loaded, question, primarySpace, model, instruction);
   if (!synth.grounded || synth.answer.trim() === "") {
     if (opts.knowledgeOnly) {
       return {
@@ -411,7 +424,7 @@ export async function ask(
         gaps: synth.gaps.length ? synth.gaps : ["知识库内容不足以回答"],
       };
     }
-    return generalFallback(client, question, synth.gaps);
+    return generalFallback(client, question, synth.gaps, model, instruction);
   }
 
   const citations = resolveCitations(

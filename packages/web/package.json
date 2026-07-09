@@ -7,6 +7,9 @@
   "exports": {
     ".": "./src/index.ts"
   },
+  "scripts": {
+    "dev": "bun run src/dev.ts"
+  },
   "dependencies": {
     "@homebrain/shared": "workspace:*",
     "@homebrain/core": "workspace:*",
