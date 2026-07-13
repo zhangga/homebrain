@@ -15,6 +15,7 @@
 import { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import type { Hit, Page, PageRef, RawEntry, RawRecord } from "@homebrain/shared";
+import type { MessageRetractionRecord } from "./governance.ts";
 import { toMatchQuery, toSearchText } from "./tokenize.ts";
 
 export class SpaceIndex {
@@ -209,6 +210,27 @@ export class SpaceIndex {
     return id;
   }
 
+  /** Restore one exact raw record, preserving its provenance id and state. */
+  restoreRaw(record: RawRecord): void {
+    this.db
+      .query(
+        `INSERT INTO raw (id, space, source, author, chat_id, message_id, content, attachments_json, created, ingested)
+         VALUES ($id, $space, $source, $author, $chat, $msg, $content, $att, $created, $ingested)`,
+      )
+      .run({
+        $id: record.id,
+        $space: record.space,
+        $source: record.source,
+        $author: record.author ?? null,
+        $chat: record.chatId ?? null,
+        $msg: record.messageId ?? null,
+        $content: record.content,
+        $att: JSON.stringify(record.attachments ?? []),
+        $created: record.createdAt,
+        $ingested: record.ingested ? 1 : 0,
+      });
+  }
+
   listRaw(opts: { onlyPending?: boolean; limit?: number } = {}): RawRecord[] {
     const where = opts.onlyPending ? `WHERE ingested = 0` : ``;
     const limit = opts.limit ? `LIMIT ${Math.max(0, Math.floor(opts.limit))}` : ``;
@@ -300,6 +322,38 @@ export class SpaceIndex {
       );
   }
 
+  listMessageRetractions(): MessageRetractionRecord[] {
+    const rows = this.db
+      .query(
+        `SELECT chat_id, message_id, original_author, retracted_by, created
+         FROM message_retractions ORDER BY created ASC, chat_id ASC, message_id ASC`,
+      )
+      .all() as Record<string, unknown>[];
+    return rows.map((row) => ({
+      chatId: String(row.chat_id),
+      messageId: String(row.message_id),
+      originalAuthor: String(row.original_author),
+      retractedBy: String(row.retracted_by),
+      createdAt: Number(row.created),
+    }));
+  }
+
+  restoreMessageRetraction(record: MessageRetractionRecord): void {
+    this.db
+      .query(
+        `INSERT INTO message_retractions
+         (chat_id, message_id, original_author, retracted_by, created)
+         VALUES (?, ?, ?, ?, ?)`,
+      )
+      .run(
+        record.chatId,
+        record.messageId,
+        record.originalAuthor,
+        record.retractedBy,
+        record.createdAt,
+      );
+  }
+
   markIngested(ids: string[]): void {
     this.setRawIngested(ids, true);
   }
@@ -324,6 +378,14 @@ export class SpaceIndex {
       : `SELECT COUNT(*) n FROM raw`;
     const r = this.db.query(q).get() as { n: number };
     return r.n;
+  }
+
+  /** Delete expired message bodies only after they have been distilled/handled. */
+  deleteExpiredRawMessages(cutoff: number): number {
+    const result = this.db
+      .query(`DELETE FROM raw WHERE source = 'message' AND ingested = 1 AND created < ?`)
+      .run(cutoff);
+    return result.changes;
   }
 
   // ---- maintenance ---------------------------------------------------------

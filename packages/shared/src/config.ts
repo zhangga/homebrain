@@ -23,9 +23,15 @@ export interface Config {
   /** heavy model reserved for complex synthesis (opt-in) */
   modelHeavy: string;
   dailyBudgetUsd: number;
+  /** management backend bind address; loopback by default */
+  webHost: string;
   webPort: number;
+  /** env-only credential required when webHost is not loopback */
+  webAdminToken?: string;
   /** local hour (Asia/Shanghai) for the nightly dream cycle */
   dreamHour: number;
+  /** days to retain distilled raw messages; 0 keeps them forever */
+  rawRetentionDays: number;
   /**
    * Default local agent CLI (provider id: claude / codex / trae-cli) used when a
    * space's agent doesn't specify one. All LLM work (ask + dream) runs through a
@@ -51,6 +57,7 @@ export interface PersistedSettings {
   dailyBudgetUsd?: number;
   webPort?: number;
   dreamHour?: number;
+  rawRetentionDays?: number;
   defaultProvider?: string;
   defaultModel?: string;
   feishuBotName?: string;
@@ -64,6 +71,7 @@ export const EDITABLE_KEYS: (keyof PersistedSettings)[] = [
   "dailyBudgetUsd",
   "webPort",
   "dreamHour",
+  "rawRetentionDays",
   "defaultProvider",
   "defaultModel",
   "feishuBotName",
@@ -76,12 +84,17 @@ function req(name: string): string {
   return v;
 }
 
-function num(name: string, fallback: number): number {
-  const raw = process.env[name];
+function num(env: NodeJS.ProcessEnv, name: string, fallback: number): number {
+  const raw = env[name];
   if (raw === undefined || raw === "") return fallback;
   const n = Number(raw);
   if (!Number.isFinite(n)) throw new Error(`env ${name} must be a number, got ${raw}`);
   return n;
+}
+
+function nonnegativeInt(value: number, fallback: number): number {
+  if (!Number.isFinite(value)) return fallback;
+  return Math.max(0, Math.min(36_500, Math.trunc(value)));
 }
 
 function settingsPath(dataDir: string): string {
@@ -113,9 +126,12 @@ export function loadConfig(env = process.env): Config {
     model: env.HOMEBRAIN_LLM_MODEL ?? "claude-sonnet-5",
     modelFast: env.HOMEBRAIN_LLM_MODEL_FAST ?? "claude-haiku-4-5-20251001",
     modelHeavy: env.HOMEBRAIN_LLM_MODEL_HEAVY ?? "claude-opus-4-8",
-    dailyBudgetUsd: num("HOMEBRAIN_DAILY_BUDGET_USD", 5),
-    webPort: num("HOMEBRAIN_WEB_PORT", 3000),
-    dreamHour: num("HOMEBRAIN_DREAM_HOUR", 3),
+    dailyBudgetUsd: num(env, "HOMEBRAIN_DAILY_BUDGET_USD", 5),
+    webHost: env.HOMEBRAIN_WEB_HOST?.trim() || "127.0.0.1",
+    webPort: num(env, "HOMEBRAIN_WEB_PORT", 3000),
+    webAdminToken: env.HOMEBRAIN_WEB_ADMIN_TOKEN?.trim() || undefined,
+    dreamHour: num(env, "HOMEBRAIN_DREAM_HOUR", 3),
+    rawRetentionDays: nonnegativeInt(num(env, "HOMEBRAIN_RAW_RETENTION_DAYS", 90), 90),
     defaultProvider: env.HOMEBRAIN_DEFAULT_PROVIDER || "claude",
     defaultModel: env.HOMEBRAIN_DEFAULT_MODEL || "",
     feishuBotName: env.HOMEBRAIN_FEISHU_BOT_NAME || undefined,
@@ -129,6 +145,9 @@ export function loadConfig(env = process.env): Config {
   if (typeof persisted.dailyBudgetUsd === "number") base.dailyBudgetUsd = persisted.dailyBudgetUsd;
   if (typeof persisted.webPort === "number") base.webPort = persisted.webPort;
   if (typeof persisted.dreamHour === "number") base.dreamHour = persisted.dreamHour;
+  if (typeof persisted.rawRetentionDays === "number") {
+    base.rawRetentionDays = nonnegativeInt(persisted.rawRetentionDays, base.rawRetentionDays);
+  }
   if (persisted.defaultProvider) base.defaultProvider = persisted.defaultProvider;
   if (persisted.defaultModel !== undefined) base.defaultModel = persisted.defaultModel;
   if (persisted.feishuBotName !== undefined) base.feishuBotName = persisted.feishuBotName || undefined;

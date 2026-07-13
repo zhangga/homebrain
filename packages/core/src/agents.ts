@@ -179,4 +179,14 @@ export class AgentStore {
     if (ok) this.persist();
     return ok;
   }
+
+  /** Restore an exact archived agent only when that id is not already present. */
+  restore(agent: Agent): Agent {
+    const existing = this.agents.get(agent.id);
+    if (existing) return existing;
+    const restored = { ...agent, skills: [...agent.skills] };
+    this.agents.set(restored.id, restored);
+    this.persist();
+    return restored;
+  }
 }

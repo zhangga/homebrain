@@ -86,6 +86,14 @@ export class SpaceStore {
     return existsSync(p) ? readFileSync(p, "utf8") : DEFAULT_SCHEMA;
   }
 
+  setPurpose(content: string): void {
+    writeFileSync(join(this.root, "purpose.md"), content, "utf8");
+  }
+
+  setSchema(content: string): void {
+    writeFileSync(join(this.root, "schema.md"), content, "utf8");
+  }
+
   private pagePath(slug: string): string {
     return join(this.wikiDir, `${slug}.md`);
   }
@@ -128,6 +136,15 @@ export class SpaceStore {
     };
     walk(this.wikiDir, "");
     return slugs;
+  }
+
+  /** Read every authoritative Markdown page, failing rather than exporting a partial backup. */
+  listPagesFromDisk(): Page[] {
+    return this.listPageFiles().sort().map((slug) => {
+      const page = this.readPageFile(slug);
+      if (!page) throw new Error(`knowledge page disappeared during export: ${slug}`);
+      return page;
+    });
   }
 
   /**

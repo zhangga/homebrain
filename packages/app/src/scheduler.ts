@@ -20,12 +20,15 @@ export interface ScheduleConfig {
   stalenessHours: number;
   /** wake cadence in ms; default 15 min */
   tickMs: number;
+  /** delete distilled raw messages older than this many days; 0 disables */
+  rawRetentionDays: number;
 }
 
 export const DEFAULT_SCHEDULE: ScheduleConfig = {
   hour: 3,
   stalenessHours: 24,
   tickMs: 15 * 60 * 1000,
+  rawRetentionDays: 90,
 };
 
 /** Local hour (0-23) in Asia/Shanghai for a given instant. */
@@ -100,6 +103,8 @@ export class Scheduler {
   private cfg: ScheduleConfig;
   /** true when the nightly hour was pinned by the caller (tests); else follow config() */
   private hourPinned: boolean;
+  /** true when retention was pinned by the caller (tests); else follow config() */
+  private retentionPinned: boolean;
   private timer?: ReturnType<typeof setInterval>;
   private running = false;
   private started = false;
@@ -114,6 +119,7 @@ export class Scheduler {
     this.engine = engine;
     this.cfg = { ...DEFAULT_SCHEDULE, ...cfg };
     this.hourPinned = cfg.hour !== undefined;
+    this.retentionPinned = cfg.rawRetentionDays !== undefined;
   }
 
   /**
@@ -122,14 +128,16 @@ export class Scheduler {
    * reads are wrapped so a scheduler used in tests without env still works.
    */
   private effectiveConfig(): ScheduleConfig {
-    if (this.hourPinned) return this.cfg;
     let hour = this.cfg.hour;
+    let rawRetentionDays = this.cfg.rawRetentionDays;
     try {
-      hour = config().dreamHour;
+      const live = config();
+      if (!this.hourPinned) hour = live.dreamHour;
+      if (!this.retentionPinned) rawRetentionDays = live.rawRetentionDays;
     } catch {
       // config() may be unavailable (missing env in unit tests); keep default.
     }
-    return { ...this.cfg, hour };
+    return { ...this.cfg, hour, rawRetentionDays };
   }
 
   /** Start the loop and run an immediate catch-up pass. */
@@ -195,6 +203,13 @@ export class Scheduler {
           errors.push(`${meta.id}: ${String(err)}`);
           log.error("scheduled dream failed", { space: meta.id, err: String(err) });
         }
+      }
+      const retention = await this.engine.pruneRawMessages(cfg.rawRetentionDays, now.getTime());
+      if (retention.deleted > 0) {
+        log.info("pruned expired raw messages", {
+          retentionDays: retention.retentionDays,
+          deleted: retention.deleted,
+        });
       }
     } catch (err) {
       errors.push(String(err));

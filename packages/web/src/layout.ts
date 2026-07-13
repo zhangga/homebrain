@@ -3,7 +3,8 @@
  * tagged-template helper rather than JSX: it needs no transform config,
  * auto-escapes interpolations (XSS-safe by default), and keeps views as plain
  * functions. Layout mirrors mew's structure: a dark left nav rail with the main
- * sections (Spaces/Knowledge, Agents, Integrations, Logs, Settings), and a
+ * sections (Spaces/Knowledge, Agents, Tasks, Integrations, Governance, Health,
+ * Logs, Settings), and a
  * content area. Unlike the previous read-only viewer, forms here mutate — every
  * mutating form POSTs and re-renders.
  */
@@ -113,6 +114,7 @@ const NAV: { key: string; label: string; href: string; ico: string }[] = [
   { key: "agents", label: "Agents", href: "/agents", ico: "🤖" },
   { key: "tasks", label: "任务", href: "/tasks", ico: "⏰" },
   { key: "integrations", label: "Integrations", href: "/integrations", ico: "🔌" },
+  { key: "governance", label: "数据治理", href: "/governance", ico: "🛡" },
   { key: "health", label: "运行状态", href: "/health", ico: "🩺" },
   { key: "logs", label: "调用日志", href: "/logs", ico: "📋" },
   { key: "settings", label: "设置", href: "/settings", ico: "⚙️" },

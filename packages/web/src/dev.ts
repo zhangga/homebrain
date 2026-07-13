@@ -16,7 +16,7 @@
  *
  * Writes to ./data by default (honors HOMEBRAIN_DATA_DIR).
  */
-import { config, type SpaceId } from "@homebrain/shared";
+import { assertSafeWebBinding, config, type SpaceId } from "@homebrain/shared";
 import { KnowledgeEngine } from "@homebrain/core";
 import { detectProviders, type ProviderId } from "@homebrain/llm";
 import { createWebApp } from "./app.ts";
@@ -27,6 +27,9 @@ const realCli = process.env.HOMEBRAIN_DEV_REAL_CLI === "1";
 // own auth, so homebrain itself doesn't use the network gateway).
 process.env.ANTHROPIC_BASE_URL ??= "https://api.gameaigc.cn";
 process.env.ANTHROPIC_AUTH_TOKEN ??= "dev-placeholder";
+
+const cfg = config();
+assertSafeWebBinding(cfg.webHost, cfg.webAdminToken);
 
 // Offline: a fake CLI runner so no real process is spawned. It answers text
 // prompts with a canned line and structured (JSON-schema) prompts with empty
@@ -65,13 +68,12 @@ if (engine.agents.list().length === 0) {
   console.log(`检测到本地可用 provider: ${usable.length ? usable.join(", ") : "无（未装 CLI）"}`);
 }
 
-const app = createWebApp({ engine });
-const port = config().webPort;
+const app = createWebApp({ engine, adminToken: cfg.webAdminToken });
 // Real local CLI calls may take well over Bun's 10-second default timeout.
-const server = Bun.serve({ port, fetch: app.fetch, idleTimeout: 120 });
+const server = Bun.serve({ hostname: cfg.webHost, port: cfg.webPort, fetch: app.fetch, idleTimeout: 120 });
 // eslint-disable-next-line no-console
 console.log(
-  `homebrain 管理后台（dev，LLM=${realCli ? "真实本机 CLI" : "离线假回答"}）: http://localhost:${server.port}`,
+  `homebrain 管理后台（dev，LLM=${realCli ? "真实本机 CLI" : "离线假回答"}）: http://${cfg.webHost}:${server.port}`,
 );
 
 const shutdown = () => {

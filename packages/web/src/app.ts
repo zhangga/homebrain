@@ -6,17 +6,20 @@
  * global settings — via POST forms. It shares one engine instance in production
  * so edits are seen immediately by the orchestrator and scheduler.
  *
- * No auth: intended for internal/localhost use (per product decision). All
- * dynamic values render through hono/html (auto-escaped); redirects use the
- * PRG pattern with a ?ok= flash so a refresh doesn't re-POST.
+ * Authentication is optional for loopback-only use and mandatory at the
+ * production entrypoint for non-local binding. All dynamic values render
+ * through hono/html (auto-escaped); redirects use the PRG pattern with a ?ok=
+ * flash so a refresh doesn't re-POST.
  */
 import { Hono } from "hono";
+import { createHash, timingSafeEqual } from "node:crypto";
 import { readdirSync, readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import {
   config,
   saveSettings,
   isSpaceId,
+  isLoopbackHost,
   type SpaceId,
   type PersistedSettings,
   type SystemHealthSnapshot,
@@ -29,6 +32,7 @@ import {
   askView,
   integrationsView,
   healthView,
+  governanceView,
   logsView,
   pageView,
   rawListView,
@@ -38,8 +42,12 @@ import {
   tasksView,
 } from "./views.ts";
 
+const MUTATING_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
+
 export interface WebOptions {
   engine: KnowledgeEngine;
+  /** protects all management routes; liveness/readiness probes remain public */
+  adminToken?: string;
   /** process-level health reporter; production wires all runtime components */
   health?: () => Promise<SystemHealthSnapshot>;
   /** injected for tests; defaults to probing local CLIs. */
@@ -65,9 +73,77 @@ function str(body: Record<string, unknown>, name: string): string {
   return typeof v === "string" ? v : "";
 }
 
+function equalSecret(candidate: string, expected: string): boolean {
+  const candidateHash = createHash("sha256").update(candidate).digest();
+  const expectedHash = createHash("sha256").update(expected).digest();
+  return timingSafeEqual(candidateHash, expectedHash);
+}
+
+function isAuthorized(header: string | undefined, token: string): boolean {
+  if (!header) return false;
+  const separator = header.indexOf(" ");
+  if (separator <= 0) return false;
+  const scheme = header.slice(0, separator).toLowerCase();
+  const credential = header.slice(separator + 1).trim();
+  if (scheme === "bearer") return equalSecret(credential, token);
+  if (scheme !== "basic") return false;
+  try {
+    const decoded = Buffer.from(credential, "base64").toString("utf8");
+    const colon = decoded.indexOf(":");
+    return colon >= 0 && equalSecret(decoded.slice(colon + 1), token);
+  } catch {
+    return false;
+  }
+}
+
+function isCrossSiteMutation(request: Request): boolean {
+  if (!MUTATING_METHODS.has(request.method.toUpperCase())) {
+    return false;
+  }
+  if (request.headers.get("sec-fetch-site")?.toLowerCase() === "cross-site") return true;
+  const origin = request.headers.get("origin");
+  if (!origin) return false;
+  try {
+    const expectedHost = request.headers.get("x-forwarded-host")
+      ?? request.headers.get("host")
+      ?? new URL(request.url).host;
+    return new URL(origin).host !== expectedHost.split(",", 1)[0]!.trim();
+  } catch {
+    return true;
+  }
+}
+
+function requestHostname(request: Request): string {
+  const host = request.headers.get("host") ?? new URL(request.url).host;
+  try {
+    return new URL(`http://${host}`).hostname;
+  } catch {
+    return "";
+  }
+}
+
 export function createWebApp(opts: WebOptions): Hono {
   const { engine } = opts;
   const app = new Hono();
+
+  if (opts.adminToken) {
+    const token = opts.adminToken;
+    app.use("*", async (c, next) => {
+      if (c.req.path === "/healthz" || c.req.path === "/readyz") return next();
+      if (isAuthorized(c.req.header("authorization"), token)) return next();
+      c.header("www-authenticate", 'Basic realm="homebrain", charset="UTF-8"');
+      return c.text("Unauthorized", 401);
+    });
+  } else {
+    app.use("*", async (c, next) => {
+      if (!isLoopbackHost(requestHostname(c.req.raw))) return c.text("Forbidden", 403);
+      return next();
+    });
+  }
+  app.use("*", async (c, next) => {
+    if (isCrossSiteMutation(c.req.raw)) return c.text("Forbidden", 403);
+    return next();
+  });
 
   // Detect local agent CLIs once, lazily, then cache (probing spawns processes).
   const detect = opts.detectProviders ?? detectProviders;
@@ -147,6 +223,80 @@ export function createWebApp(opts: WebOptions): Hono {
         "health",
       ),
     );
+  });
+
+  // ---- data governance ---------------------------------------------------
+
+  app.get("/governance", async (c) => {
+    const spaces = engine.registry.list().map((meta) => {
+      const index = engine.registry.store(meta.id).index();
+      return {
+        meta,
+        pages: index.countPages(),
+        raw: index.countRaw(),
+        pending: index.countRaw(true),
+        tasks: engine.tasks.list().filter((task) => task.space === meta.id).length,
+      };
+    });
+    return c.html(
+      await layout(
+        "数据治理",
+        [{ label: "数据治理" }],
+        await governanceView(spaces, config().rawRetentionDays, c.req.query("ok") ?? undefined),
+        "governance",
+      ),
+    );
+  });
+
+  app.get("/spaces/:space/export", async (c) => {
+    const space = parseSpace(c.req.param("space"));
+    if (!space || !engine.registry.has(space)) return c.notFound();
+    const archive = await engine.exportSpace(space);
+    const filename = `${space.replace(/[^a-zA-Z0-9._-]+/g, "-")}.homebrain.json`;
+    c.header("content-type", "application/json; charset=utf-8");
+    c.header("content-disposition", `attachment; filename="${filename}"`);
+    c.header("cache-control", "no-store");
+    return c.body(JSON.stringify(archive, null, 2));
+  });
+
+  app.post("/spaces/:space/delete", async (c) => {
+    const space = parseSpace(c.req.param("space"));
+    if (!space) return c.notFound();
+    try {
+      const result = await engine.deleteSpace(space);
+      const message = result.status === "deleted"
+        ? `已删除 ${space}：${result.pagesDeleted} 个知识页、${result.rawDeleted} 条原始记录、${result.tasksDeleted} 个任务`
+        : `空间不存在：${space}`;
+      return c.redirect(`/governance?ok=${encodeURIComponent(message)}`);
+    } catch (err) {
+      return c.redirect(`/governance?ok=${encodeURIComponent(`删除失败：${String(err)}`)}`);
+    }
+  });
+
+  app.post("/governance/restore", async (c) => {
+    try {
+      const body = await c.req.parseBody();
+      const upload = body.archive;
+      if (!upload || typeof upload === "string") throw new Error("请选择 JSON 归档文件");
+      if (upload.size > 50 * 1024 * 1024) throw new Error("归档文件不能超过 50 MB");
+      const archive = JSON.parse(await upload.text()) as unknown;
+      const restoredSpace = await engine.restoreSpace(archive);
+      return c.redirect(`/governance?ok=${encodeURIComponent(`已恢复空间 ${restoredSpace}`)}`);
+    } catch (err) {
+      return c.redirect(`/governance?ok=${encodeURIComponent(`恢复失败：${String(err)}`)}`);
+    }
+  });
+
+  app.post("/governance/prune", async (c) => {
+    try {
+      const report = await engine.pruneRawMessages(config().rawRetentionDays);
+      const message = report.retentionDays === 0
+        ? "原始消息保留为永久，未执行清理"
+        : `已清理 ${report.deleted} 条超过 ${report.retentionDays} 天的已提炼消息`;
+      return c.redirect(`/governance?ok=${encodeURIComponent(message)}`);
+    } catch (err) {
+      return c.redirect(`/governance?ok=${encodeURIComponent(`清理失败：${String(err)}`)}`);
+    }
   });
 
   // ---- spaces / knowledge --------------------------------------------------
@@ -432,6 +582,7 @@ export function createWebApp(opts: WebOptions): Hono {
             defaultModel: cfg.defaultModel,
             dailyBudgetUsd: cfg.dailyBudgetUsd,
             dreamHour: cfg.dreamHour,
+            rawRetentionDays: cfg.rawRetentionDays,
             webPort: cfg.webPort,
           },
           await getProviders(),
@@ -453,6 +604,10 @@ export function createWebApp(opts: WebOptions): Hono {
     if (Number.isFinite(budget)) patch.dailyBudgetUsd = budget;
     const hour = Number(str(body, "dreamHour"));
     if (Number.isFinite(hour)) patch.dreamHour = Math.max(0, Math.min(23, Math.trunc(hour)));
+    const retentionDays = Number(str(body, "rawRetentionDays"));
+    if (Number.isFinite(retentionDays)) {
+      patch.rawRetentionDays = Math.max(0, Math.min(36_500, Math.trunc(retentionDays)));
+    }
     const port = Number(str(body, "webPort"));
     if (Number.isFinite(port)) patch.webPort = Math.trunc(port);
     saveSettings(patch);

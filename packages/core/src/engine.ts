@@ -25,6 +25,14 @@ import {
   type ProviderId,
 } from "@homebrain/llm";
 import type { Knowledge } from "./knowledge.ts";
+import {
+  SPACE_ARCHIVE_FORMAT,
+  SPACE_ARCHIVE_VERSION,
+  parseSpaceArchive,
+  type SpaceArchive,
+  type SpaceDeleteResult,
+  type RawRetentionReport,
+} from "./governance.ts";
 import type {
   AskOptions,
   DreamOptions,
@@ -324,6 +332,141 @@ export class KnowledgeEngine implements Knowledge {
         health.running = false;
       }
     });
+  }
+
+  async exportSpace(space: SpaceId): Promise<SpaceArchive> {
+    if (!this.registry.has(space)) throw new Error(`unknown space: ${space}`);
+    return this.serializer.run(space, async () => {
+      const meta = this.registry.get(space);
+      if (!meta) throw new Error(`unknown space: ${space}`);
+      const store = this.registry.store(space);
+      const index = store.index();
+      const agent = meta.agentId ? this.agents.get(meta.agentId) : undefined;
+      return {
+        format: SPACE_ARCHIVE_FORMAT,
+        version: SPACE_ARCHIVE_VERSION,
+        exportedAt: Date.now(),
+        space: { ...meta },
+        agent: agent ? { ...agent, skills: [...agent.skills] } : undefined,
+        purpose: store.purpose(),
+        schema: store.schema(),
+        pages: store.listPagesFromDisk(),
+        raw: index.listRaw({}),
+        retractions: index.listMessageRetractions(),
+        tasks: this.tasks.list().filter((task) => task.space === space),
+      };
+    });
+  }
+
+  async restoreSpace(input: unknown): Promise<SpaceId> {
+    const archive = parseSpaceArchive(input);
+    const space = archive.space.id;
+    if (this.registry.has(space)) throw new Error(`space already exists: ${space}`);
+    const initialStorageConflict = this.registry.storageConflict(space);
+    if (initialStorageConflict) {
+      throw new Error(`storage path conflicts with ${initialStorageConflict}: ${space}`);
+    }
+    await this.serializer.run(space, async () => {
+      if (this.registry.has(space)) throw new Error(`space already exists: ${space}`);
+      const storageConflict = this.registry.storageConflict(space);
+      if (storageConflict) {
+        throw new Error(`storage path conflicts with ${storageConflict}: ${space}`);
+      }
+      const taskConflict = archive.tasks.find((task) => this.tasks.has(task.id));
+      if (taskConflict) throw new Error(`task id already exists: ${taskConflict.id}`);
+      const existingAgent = archive.agent ? this.agents.get(archive.agent.id) : undefined;
+      if (existingAgent && JSON.stringify(existingAgent) !== JSON.stringify(archive.agent)) {
+        throw new Error(`agent id already exists with different data: ${archive.agent!.id}`);
+      }
+      const taskIdsBefore = new Set(this.tasks.list().map((task) => task.id));
+      const agentWasPresent = Boolean(existingAgent);
+      try {
+        if (archive.agent) this.agents.restore(archive.agent);
+        const store = this.registry.ensure(space, { chatId: archive.space.chatId });
+        store.setPurpose(archive.purpose);
+        store.setSchema(archive.schema);
+        const index = store.index();
+        for (const raw of archive.raw) index.restoreRaw(raw);
+        for (const record of archive.retractions) index.restoreMessageRetraction(record);
+        for (const page of archive.pages) store.writePage(page);
+        this.tasks.restore(archive.tasks);
+        this.registry.restoreMeta({
+          ...archive.space,
+          agentId: archive.space.agentId,
+        });
+      } catch (err) {
+        for (const task of this.tasks.list()) {
+          if (task.space === space && !taskIdsBefore.has(task.id)) this.tasks.remove(task.id);
+        }
+        if (this.registry.has(space)) this.registry.remove(space);
+        if (
+          archive.agent
+          && !agentWasPresent
+          && !this.registry.list().some((meta) => meta.agentId === archive.agent!.id)
+        ) {
+          this.agents.remove(archive.agent.id);
+        }
+        throw err;
+      }
+    });
+    return space;
+  }
+
+  async deleteSpace(space: SpaceId): Promise<SpaceDeleteResult> {
+    const empty = (): SpaceDeleteResult => ({
+      status: "not_found",
+      space,
+      pagesDeleted: 0,
+      rawDeleted: 0,
+      tasksDeleted: 0,
+    });
+    if (!this.registry.has(space)) return empty();
+    return this.serializer.run(space, async () => {
+      if (!this.registry.has(space)) return empty();
+      const tasks = this.tasks.list().filter((task) => task.space === space);
+      if (tasks.some((task) => (this.runningTaskCounts.get(task.id) ?? 0) > 0)) {
+        throw new Error(`space has running tasks: ${space}`);
+      }
+      if (this.dreamCycles.get(space)?.running) {
+        throw new Error(`space has a running dream cycle: ${space}`);
+      }
+      const index = this.registry.store(space).index();
+      const pagesDeleted = index.countPages();
+      const rawDeleted = index.countRaw();
+      let tasksDeleted = 0;
+      try {
+        tasksDeleted = this.tasks.removeBySpace(space);
+        this.registry.remove(space);
+      } catch (err) {
+        const missingTasks = tasks.filter((task) => !this.tasks.has(task.id));
+        if (missingTasks.length > 0) this.tasks.restore(missingTasks);
+        throw err;
+      }
+      this.dreamCycles.delete(space);
+      return { status: "deleted", space, pagesDeleted, rawDeleted, tasksDeleted };
+    });
+  }
+
+  async pruneRawMessages(retentionDays: number, now = Date.now()): Promise<RawRetentionReport> {
+    const days = Math.max(0, Math.trunc(retentionDays));
+    const cutoff = days > 0 ? now - days * 86_400_000 : now;
+    const report: RawRetentionReport = {
+      retentionDays: days,
+      cutoff,
+      deleted: 0,
+      bySpace: {},
+    };
+    if (days === 0) return report;
+    for (const meta of this.registry.list()) {
+      const deleted = await this.serializer.run(meta.id, async () => {
+        if (!this.registry.has(meta.id)) return 0;
+        return this.registry.store(meta.id).index().deleteExpiredRawMessages(cutoff);
+      });
+      if (deleted === 0) continue;
+      report.bySpace[meta.id] = deleted;
+      report.deleted += deleted;
+    }
+    return report;
   }
 
   /**

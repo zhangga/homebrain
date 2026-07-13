@@ -185,4 +185,29 @@ export class TaskStore {
     if (ok) this.persist();
     return ok;
   }
+
+  /** Restore exact archived task records after archive-level validation. */
+  restore(tasks: Task[]): Task[] {
+    const restored: Task[] = [];
+    for (const task of tasks) {
+      if (!isSpaceId(task.space)) throw new Error(`invalid task space: ${task.space}`);
+      if (this.tasks.has(task.id)) throw new Error(`task id already exists: ${task.id}`);
+      const copy = { ...task };
+      this.tasks.set(copy.id, copy);
+      restored.push(copy);
+    }
+    if (restored.length > 0) this.persist();
+    return restored;
+  }
+
+  removeBySpace(space: SpaceId): number {
+    let removed = 0;
+    for (const [id, task] of this.tasks) {
+      if (task.space !== space) continue;
+      this.tasks.delete(id);
+      removed += 1;
+    }
+    if (removed > 0) this.persist();
+    return removed;
+  }
 }

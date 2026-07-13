@@ -94,6 +94,54 @@ describe("web backend (read-only)", () => {
     expect(await ready.json()).toEqual(snapshot);
   });
 
+  test("admin token protects management routes but leaves probes public", async () => {
+    const secureApp = createWebApp({ engine, adminToken: "admin-secret" });
+
+    expect((await secureApp.request("/healthz")).status).toBe(200);
+    expect((await secureApp.request("/readyz")).status).toBe(200);
+
+    const denied = await secureApp.request("/");
+    expect(denied.status).toBe(401);
+    expect(denied.headers.get("www-authenticate")).toContain("Basic");
+
+    const basic = Buffer.from("homebrain:admin-secret").toString("base64");
+    expect((await secureApp.request("/", { headers: { authorization: `Basic ${basic}` } })).status).toBe(200);
+    expect((await secureApp.request("/governance", {
+      headers: { authorization: "Bearer admin-secret" },
+    })).status).toBe(200);
+    expect((await secureApp.request("/", {
+      headers: { authorization: "Bearer wrong" },
+    })).status).toBe(401);
+
+    expect((await secureApp.request("/governance/prune", {
+      method: "POST",
+      headers: {
+        authorization: `Basic ${basic}`,
+        origin: "https://attacker.example",
+        "sec-fetch-site": "cross-site",
+      },
+    })).status).toBe(403);
+    expect((await secureApp.request("/governance/prune", {
+      method: "POST",
+      headers: {
+        authorization: `Basic ${basic}`,
+        origin: "http://localhost",
+        "sec-fetch-site": "same-origin",
+      },
+    })).status).toBe(302);
+
+    expect((await app.request("/governance/prune", {
+      method: "POST",
+      headers: {
+        origin: "https://attacker.example",
+        "sec-fetch-site": "cross-site",
+      },
+    })).status).toBe(403);
+    expect((await app.request("/", {
+      headers: { host: "attacker.example" },
+    })).status).toBe(403);
+  });
+
   test("health routes degrade safely when the reporter itself fails", async () => {
     const healthApp = createWebApp({
       engine,
@@ -218,6 +266,68 @@ describe("web backend (read-only)", () => {
 });
 
 describe("management backend (read-write)", () => {
+  test("data governance exports, deletes, and restores a complete space", async () => {
+    const governance = await app.request("/governance");
+    expect(governance.status).toBe(200);
+    const governanceBody = await governance.text();
+    expect(governanceBody).toContain("数据治理");
+    expect(governanceBody).toContain("原始消息保留");
+
+    const exported = await app.request(`/spaces/${encodeURIComponent(SPACE)}/export`);
+    expect(exported.status).toBe(200);
+    expect(exported.headers.get("content-disposition")).toContain("attachment");
+    const archiveText = await exported.text();
+    expect(JSON.parse(archiveText)).toEqual(
+      expect.objectContaining({ format: "homebrain.space", version: 1 }),
+    );
+
+    const deleted = await app.request(`/spaces/${encodeURIComponent(SPACE)}/delete`, {
+      method: "POST",
+    });
+    expect([302, 303]).toContain(deleted.status);
+    expect(engine.registry.has(SPACE)).toBe(false);
+
+    const form = new FormData();
+    form.set("archive", new File([archiveText], "space.json", { type: "application/json" }));
+    const restored = await app.request("/governance/restore", { method: "POST", body: form });
+    expect([302, 303]).toContain(restored.status);
+    expect(engine.registry.has(SPACE)).toBe(true);
+    expect(await engine.getPage(SPACE, "entities/alice")).not.toBeNull();
+
+    const pruned = await app.request("/governance/prune", { method: "POST" });
+    expect([302, 303]).toContain(pruned.status);
+  });
+
+  test("data governance rejects an unsafe archive without changing spaces", async () => {
+    const form = new FormData();
+    form.set(
+      "archive",
+      new File(
+        [
+          JSON.stringify({
+            format: "homebrain.space",
+            version: 1,
+            exportedAt: 1,
+            space: { id: "team/unsafe", createdAt: 1 },
+            purpose: "x",
+            schema: "x",
+            pages: [{ slug: "../../outside", type: "concept" }],
+            raw: [],
+            retractions: [],
+            tasks: [],
+          }),
+        ],
+        "unsafe.json",
+        { type: "application/json" },
+      ),
+    );
+
+    const res = await app.request("/governance/restore", { method: "POST", body: form });
+    expect([302, 303]).toContain(res.status);
+    expect(decodeURIComponent(res.headers.get("location") ?? "")).toContain("恢复失败");
+    expect(engine.registry.has("team/unsafe")).toBe(false);
+  });
+
   test("nav rail exposes the mew-style sections", async () => {
     const body = await (await app.request("/")).text();
     expect(body).toContain("Agents");
@@ -351,6 +461,7 @@ describe("management backend (read-write)", () => {
       dailyBudgetUsd: "12",
       dreamHour: "5",
       webPort: "3000",
+      rawRetentionDays: "30",
     });
     const res = await app.request("/settings", {
       method: "POST",
@@ -364,6 +475,8 @@ describe("management backend (read-write)", () => {
     expect(view).toContain('value="trae-cli" selected');
     // dreamHour value is rendered in the number input
     expect(view).toContain('value="5"');
+    expect(view).toContain('name="rawRetentionDays"');
+    expect(view).toContain('value="30"');
   });
 
   test("tasks: nav + create + edit + list rendering", async () => {

@@ -1,0 +1,368 @@
+import { afterEach, describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { Page, SpaceId } from "@homebrain/shared";
+import { KnowledgeEngine } from "./engine.ts";
+import type { SpaceArchive } from "./governance.ts";
+
+const SPACE: SpaceId = "team/oc_governance";
+const dirs: string[] = [];
+
+function tempDir(label: string): string {
+  const dir = mkdtempSync(join(tmpdir(), label));
+  dirs.push(dir);
+  return dir;
+}
+
+afterEach(() => {
+  for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+});
+
+describe("space data governance", () => {
+  test("a versioned export restores the complete space into a fresh data directory", async () => {
+    const source = new KnowledgeEngine({ dataDir: tempDir("hb-export-") });
+    source.ensureSpace(SPACE, { chatId: "oc_governance" });
+    const agent = source.agents.create({
+      name: "治理助手",
+      instruction: "只依据空间知识回答",
+      provider: "codex",
+    });
+    source.registry.updateMeta(SPACE, { name: "治理群", agentId: agent.id });
+    const rawId = await source.remember({
+      space: SPACE,
+      source: "message",
+      author: "ou_owner",
+      chatId: "oc_governance",
+      messageId: "om_keep",
+      content: "项目代号是北极星",
+      createdAt: 1_700_000_000_000,
+    });
+    const page: Page = {
+      slug: "concepts/project-code",
+      type: "concept",
+      title: "项目代号",
+      summary: "项目代号是北极星",
+      aliases: [],
+      tags: ["project"],
+      sources: [rawId],
+      links: [],
+      content: "# 项目代号\n\n北极星。",
+      updatedAt: 1_700_000_100_000,
+      contentHash: "hash-project-code",
+    };
+    await source.upsertPage(SPACE, page);
+    // Markdown is authoritative; simulate a missing/stale rebuildable index.
+    source.registry.store(SPACE).index().deletePage(page.slug);
+    source.tasks.create({ name: "每日报告", space: SPACE, topic: "项目进展" });
+    await source.remember({
+      space: SPACE,
+      source: "message",
+      author: "ou_owner",
+      chatId: "oc_governance",
+      messageId: "om_retracted",
+      content: "不应保留",
+    });
+    await source.retractMessage(SPACE, {
+      chatId: "oc_governance",
+      messageId: "om_retracted",
+      requestedBy: "ou_owner",
+    });
+
+    const archive = await source.exportSpace(SPACE);
+    expect(archive).toEqual(
+      expect.objectContaining({
+        format: "homebrain.space",
+        version: 1,
+        space: expect.objectContaining({ id: SPACE, name: "治理群", agentId: agent.id }),
+        agent: expect.objectContaining({ id: agent.id, name: "治理助手" }),
+        pages: [expect.objectContaining({ slug: page.slug, title: page.title })],
+        raw: [expect.objectContaining({ id: rawId, messageId: "om_keep" })],
+        retractions: [
+          expect.objectContaining({ chatId: "oc_governance", messageId: "om_retracted" }),
+        ],
+        tasks: [expect.objectContaining({ name: "每日报告", space: SPACE })],
+      }),
+    );
+    source.close();
+
+    const restored = new KnowledgeEngine({ dataDir: tempDir("hb-restore-") });
+    await restored.restoreSpace(archive);
+    expect(await restored.getPage(SPACE, page.slug)).toEqual(archive.pages[0]!);
+    expect(restored.registry.get(SPACE)).toEqual(archive.space);
+    expect(restored.agentForSpace(SPACE)).toEqual(archive.agent);
+    expect(restored.tasks.list()).toEqual(archive.tasks);
+    const roundTrip = await restored.exportSpace(SPACE);
+    expect(roundTrip.raw).toEqual(archive.raw);
+    expect(roundTrip.retractions).toEqual(archive.retractions);
+    restored.close();
+  });
+
+  test("deleting a space removes its knowledge and tasks but keeps shared agents", async () => {
+    const engine = new KnowledgeEngine({ dataDir: tempDir("hb-delete-") });
+    engine.ensureSpace(SPACE, { chatId: "oc_governance" });
+    const agent = engine.agents.create({ name: "共享助手", provider: "codex" });
+    engine.registry.updateMeta(SPACE, { agentId: agent.id });
+    const rawId = await engine.remember({
+      space: SPACE,
+      source: "message",
+      content: "将被删除",
+    });
+    await engine.upsertPage(SPACE, {
+      slug: "concepts/deleted",
+      type: "concept",
+      title: "待删除",
+      summary: "待删除",
+      aliases: [],
+      tags: [],
+      sources: [rawId],
+      links: [],
+      content: "# 待删除",
+      updatedAt: 1,
+      contentHash: "deleted",
+    });
+    engine.tasks.create({ name: "空间任务", space: SPACE, topic: "x" });
+    const backup = await engine.exportSpace(SPACE);
+
+    expect(await engine.deleteSpace(SPACE)).toEqual({
+      status: "deleted",
+      space: SPACE,
+      pagesDeleted: 1,
+      rawDeleted: 1,
+      tasksDeleted: 1,
+    });
+    expect(engine.registry.has(SPACE)).toBe(false);
+    expect(await engine.getPage(SPACE, "concepts/deleted")).toBeNull();
+    expect(engine.tasks.list()).toEqual([]);
+    expect(engine.agents.has(agent.id)).toBe(true);
+    expect(await engine.deleteSpace(SPACE)).toEqual({
+      status: "not_found",
+      space: SPACE,
+      pagesDeleted: 0,
+      rawDeleted: 0,
+      tasksDeleted: 0,
+    });
+
+    await engine.restoreSpace(backup);
+    expect(await engine.getPage(SPACE, "concepts/deleted")).not.toBeNull();
+    expect(engine.tasks.list()).toEqual(backup.tasks);
+    engine.close();
+  });
+
+  test("raw retention deletes only expired ingested messages", async () => {
+    const engine = new KnowledgeEngine({ dataDir: tempDir("hb-retention-") });
+    const now = 1_800_000_000_000;
+    const day = 86_400_000;
+    const raw = [
+      { id: "old-ingested", source: "message", createdAt: now - 40 * day, ingested: true },
+      { id: "old-pending", source: "message", createdAt: now - 40 * day, ingested: false },
+      { id: "recent-ingested", source: "message", createdAt: now - 5 * day, ingested: true },
+      { id: "old-doc", source: "doc", createdAt: now - 40 * day, ingested: true },
+    ].map((record) => ({
+      ...record,
+      space: SPACE,
+      content: record.id,
+      attachments: [],
+    })) as SpaceArchive["raw"];
+    await engine.restoreSpace({
+      format: "homebrain.space",
+      version: 1,
+      exportedAt: now,
+      space: { id: SPACE, createdAt: now - 50 * day },
+      purpose: "purpose",
+      schema: "schema",
+      pages: [],
+      raw,
+      retractions: [],
+      tasks: [],
+    });
+
+    expect(await engine.pruneRawMessages(30, now)).toEqual({
+      retentionDays: 30,
+      cutoff: now - 30 * day,
+      deleted: 1,
+      bySpace: { [SPACE]: 1 },
+    });
+    const remaining = await engine.exportSpace(SPACE);
+    expect(remaining.raw.map((record) => record.id).sort()).toEqual([
+      "old-doc",
+      "old-pending",
+      "recent-ingested",
+    ]);
+    expect((await engine.pruneRawMessages(0, now)).deleted).toBe(0);
+    engine.close();
+  });
+
+  test("restore rejects duplicate archive identities before creating a space", async () => {
+    const engine = new KnowledgeEngine({ dataDir: tempDir("hb-duplicate-restore-") });
+    const now = Date.now();
+    const raw = {
+      id: "duplicate",
+      space: SPACE,
+      source: "message" as const,
+      content: "duplicate",
+      attachments: [],
+      createdAt: now,
+      ingested: true,
+    };
+
+    await expect(engine.restoreSpace({
+      format: "homebrain.space",
+      version: 1,
+      exportedAt: now,
+      space: { id: SPACE, createdAt: now },
+      purpose: "purpose",
+      schema: "schema",
+      pages: [],
+      raw: [raw, raw],
+      retractions: [],
+      tasks: [],
+    })).rejects.toThrow("duplicate raw id");
+    expect(engine.registry.has(SPACE)).toBe(false);
+    engine.close();
+  });
+
+  test("restore rejects space ids that could collide on disk", async () => {
+    const engine = new KnowledgeEngine({ dataDir: tempDir("hb-space-collision-") });
+    const existing: SpaceId = "team/a_b";
+    engine.ensureSpace(existing);
+    const now = Date.now();
+
+    await expect(engine.restoreSpace({
+      format: "homebrain.space",
+      version: 1,
+      exportedAt: now,
+      space: { id: "team/a/b", createdAt: now },
+      purpose: "purpose",
+      schema: "schema",
+      pages: [],
+      raw: [],
+      retractions: [],
+      tasks: [],
+    })).rejects.toThrow("storage path conflicts");
+    expect(engine.registry.has(existing)).toBe(true);
+    expect(engine.registry.has("team/a/b" as SpaceId)).toBe(false);
+    engine.close();
+  });
+
+  test("an unusual but valid existing space id can round-trip when its storage is unique", async () => {
+    const engine = new KnowledgeEngine({ dataDir: tempDir("hb-unusual-space-") });
+    const unusual = "team/a.b+c" as SpaceId;
+    engine.ensureSpace(unusual);
+    const archive = await engine.exportSpace(unusual);
+
+    await engine.deleteSpace(unusual);
+    await engine.restoreSpace(archive);
+
+    expect(engine.registry.has(unusual)).toBe(true);
+    engine.close();
+  });
+
+  test("restore preflight rejects task id conflicts without leaving a partial space", async () => {
+    const engine = new KnowledgeEngine({ dataDir: tempDir("hb-conflict-restore-") });
+    const other: SpaceId = "team/other";
+    engine.ensureSpace(other);
+    const task = engine.tasks.create({ name: "existing", space: other, topic: "topic" })!;
+    const now = Date.now();
+
+    await expect(engine.restoreSpace({
+      format: "homebrain.space",
+      version: 1,
+      exportedAt: now,
+      space: { id: SPACE, createdAt: now },
+      purpose: "purpose",
+      schema: "schema",
+      pages: [],
+      raw: [],
+      retractions: [],
+      tasks: [{ ...task, space: SPACE }],
+    })).rejects.toThrow("task id already exists");
+    expect(engine.registry.has(SPACE)).toBe(false);
+    expect(engine.tasks.get(task.id)?.space).toBe(other);
+    engine.close();
+  });
+
+  test("restore preserves a dangling archived agent binding", async () => {
+    const engine = new KnowledgeEngine({ dataDir: tempDir("hb-dangling-agent-") });
+    engine.ensureSpace(SPACE);
+    engine.registry.updateMeta(SPACE, { agentId: "agent_missing" });
+    const archive = await engine.exportSpace(SPACE);
+    expect(archive.agent).toBeUndefined();
+
+    await engine.deleteSpace(SPACE);
+    await engine.restoreSpace(archive);
+
+    expect(engine.registry.get(SPACE)?.agentId).toBe("agent_missing");
+    engine.close();
+  });
+
+  test("failed workspace deletion restores linked tasks", async () => {
+    const engine = new KnowledgeEngine({ dataDir: tempDir("hb-delete-rollback-") });
+    engine.ensureSpace(SPACE);
+    const task = engine.tasks.create({ name: "keep", space: SPACE, topic: "topic" })!;
+    engine.registry.remove = () => {
+      throw new Error("workspace removal failed");
+    };
+
+    await expect(engine.deleteSpace(SPACE)).rejects.toThrow("workspace removal failed");
+
+    expect(engine.registry.has(SPACE)).toBe(true);
+    expect(engine.tasks.get(task.id)).toEqual(task);
+    engine.close();
+  });
+
+  test("restore rejects task hours outside the scheduler domain", async () => {
+    const engine = new KnowledgeEngine({ dataDir: tempDir("hb-task-hour-") });
+    const now = Date.now();
+    await expect(engine.restoreSpace({
+      format: "homebrain.space",
+      version: 1,
+      exportedAt: now,
+      space: { id: SPACE, createdAt: now },
+      purpose: "purpose",
+      schema: "schema",
+      pages: [],
+      raw: [],
+      retractions: [],
+      tasks: [{
+        id: "task_invalid_hour",
+        name: "invalid",
+        space: SPACE,
+        topic: "topic",
+        cadence: "daily",
+        hour: 24,
+        enabled: true,
+        notify: false,
+        distillOnRun: true,
+        createdAt: now,
+        updatedAt: now,
+      }],
+    })).rejects.toThrow("tasks[0].hour is invalid");
+    expect(engine.registry.has(SPACE)).toBe(false);
+    engine.close();
+  });
+
+  test("restore rejects an embedded agent that is not bound to the space", async () => {
+    const engine = new KnowledgeEngine({ dataDir: tempDir("hb-unbound-agent-") });
+    const agent = engine.agents.create({ name: "unbound", provider: "codex" });
+    engine.agents.remove(agent.id);
+    const now = Date.now();
+
+    await expect(engine.restoreSpace({
+      format: "homebrain.space",
+      version: 1,
+      exportedAt: now,
+      space: { id: SPACE, createdAt: now },
+      agent,
+      purpose: "purpose",
+      schema: "schema",
+      pages: [],
+      raw: [],
+      retractions: [],
+      tasks: [],
+    })).rejects.toThrow("agent.id does not match space.agentId");
+    expect(engine.agents.has(agent.id)).toBe(false);
+    expect(engine.registry.has(SPACE)).toBe(false);
+    engine.close();
+  });
+});

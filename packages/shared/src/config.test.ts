@@ -28,6 +28,22 @@ describe("editable settings overlay", () => {
     expect(cfg.dailyBudgetUsd).toBe(5);
     expect(cfg.defaultProvider).toBe("claude");
     expect(cfg.defaultModel).toBe("");
+    expect(cfg.rawRetentionDays).toBe(90);
+    expect(cfg.webHost).toBe("127.0.0.1");
+    expect(cfg.webAdminToken).toBeUndefined();
+  });
+
+  test("web exposure settings are env-only", () => {
+    const cfg = loadConfig({
+      ...process.env,
+      HOMEBRAIN_WEB_HOST: "0.0.0.0",
+      HOMEBRAIN_WEB_ADMIN_TOKEN: "admin-secret",
+      HOMEBRAIN_RAW_RETENTION_DAYS: "45",
+    });
+    expect(cfg.webHost).toBe("0.0.0.0");
+    expect(cfg.webAdminToken).toBe("admin-secret");
+    expect(cfg.rawRetentionDays).toBe(45);
+    expect(readSettings(dir)).toEqual({});
   });
 
   test("default provider/model overlay from settings.json", () => {
@@ -38,7 +54,7 @@ describe("editable settings overlay", () => {
   });
 
   test("saveSettings writes config/settings.json and overlays it", () => {
-    saveSettings({ model: "claude-opus-4-8", dreamHour: 5, dailyBudgetUsd: 12 }, dir);
+    saveSettings({ model: "claude-opus-4-8", dreamHour: 5, dailyBudgetUsd: 12, rawRetentionDays: 30 }, dir);
     const path = join(dir, "config", "settings.json");
     expect(existsSync(path)).toBe(true);
     const raw = JSON.parse(readFileSync(path, "utf8"));
@@ -48,6 +64,7 @@ describe("editable settings overlay", () => {
     expect(cfg.model).toBe("claude-opus-4-8");
     expect(cfg.dreamHour).toBe(5);
     expect(cfg.dailyBudgetUsd).toBe(12);
+    expect(cfg.rawRetentionDays).toBe(30);
   });
 
   test("persisted settings win over env defaults", () => {

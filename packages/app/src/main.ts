@@ -7,7 +7,7 @@
  * and shuts everything down gracefully on SIGINT/SIGTERM (propagating SIGTERM to
  * the lark-cli consumers — never kill -9).
  */
-import { config, logger } from "@homebrain/shared";
+import { assertSafeWebBinding, config, logger } from "@homebrain/shared";
 import { KnowledgeEngine } from "@homebrain/core";
 import { FeishuConnector } from "@homebrain/connectors";
 import { Orchestrator } from "@homebrain/orchestrator";
@@ -20,7 +20,13 @@ const log = logger.child("app");
 
 async function main(): Promise<void> {
   const cfg = config();
-  log.info("starting homebrain", { dataDir: cfg.dataDir, model: cfg.model, webPort: cfg.webPort });
+  assertSafeWebBinding(cfg.webHost, cfg.webAdminToken);
+  log.info("starting homebrain", {
+    dataDir: cfg.dataDir,
+    model: cfg.model,
+    webHost: cfg.webHost,
+    webPort: cfg.webPort,
+  });
 
   const engine = new KnowledgeEngine();
 
@@ -51,9 +57,10 @@ async function main(): Promise<void> {
     taskSchedulerHealth: () => taskScheduler?.health(),
   });
 
-  // 2. read-only web backend
+  // 2. management web backend
   const app = createWebApp({
     engine,
+    adminToken: cfg.webAdminToken,
     health: reportHealth,
     onTaskRun: (taskId) => {
       const t = engine.tasks.get(taskId);
@@ -61,8 +68,13 @@ async function main(): Promise<void> {
     },
   });
   // Local CLI providers routinely take longer than Bun's 10-second default.
-  const server = Bun.serve({ port: cfg.webPort, fetch: app.fetch, idleTimeout: 120 });
-  log.info("web backend live", { url: `http://localhost:${server.port}` });
+  const server = Bun.serve({
+    hostname: cfg.webHost,
+    port: cfg.webPort,
+    fetch: app.fetch,
+    idleTimeout: 120,
+  });
+  log.info("web backend live", { url: `http://${cfg.webHost}:${server.port}` });
 
   // 3. dream-cycle scheduler (runs an immediate catch-up pass)
   scheduler = new Scheduler(engine);

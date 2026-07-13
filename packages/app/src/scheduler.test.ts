@@ -6,7 +6,7 @@ import { resetConfig, type SpaceId } from "@homebrain/shared";
 import { KnowledgeEngine, FakeLlm } from "@homebrain/core";
 import { DEFAULT_SCHEDULE, Scheduler, shouldRunSpace, type ScheduleConfig } from "./scheduler.ts";
 
-const cfg: ScheduleConfig = { hour: 3, stalenessHours: 24, tickMs: 60000 };
+const cfg: ScheduleConfig = { hour: 3, stalenessHours: 24, tickMs: 60000, rawRetentionDays: 90 };
 
 // A fixed "now" at 04:00 Asia/Shanghai (past the nightly hour).
 const NIGHT = new Date("2026-07-04T04:00:00+08:00");
@@ -139,5 +139,36 @@ describe("Scheduler.tick", () => {
         lastError: expect.stringContaining("registry unavailable"),
       }),
     );
+  });
+
+  test("each maintenance tick applies the configured raw message retention", async () => {
+    const now = new Date("2027-01-15T10:00:00+08:00");
+    await engine.restoreSpace({
+      format: "homebrain.space",
+      version: 1,
+      exportedAt: now.getTime(),
+      space: { id: SPACE, createdAt: now.getTime() - 100 * 86_400_000 },
+      purpose: "purpose",
+      schema: "schema",
+      pages: [],
+      raw: [
+        {
+          id: "expired",
+          space: SPACE,
+          source: "message",
+          content: "expired",
+          attachments: [],
+          createdAt: now.getTime() - 40 * 86_400_000,
+          ingested: true,
+        },
+      ],
+      retractions: [],
+      tasks: [],
+    });
+    const sched = new Scheduler(engine, { ...cfg, rawRetentionDays: 30 });
+
+    await sched.tick("maintenance", now);
+
+    expect((await engine.exportSpace(SPACE)).raw).toEqual([]);
   });
 });

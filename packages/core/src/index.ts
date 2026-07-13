@@ -15,3 +15,4 @@ export * from "./cli-client.ts";
 export * from "./dream.ts";
 export * from "./ask.ts";
 export * from "./testing.ts";
+export * from "./governance.ts";

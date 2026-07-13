@@ -222,6 +222,65 @@ export function healthView(
     ${rows}`;
 }
 
+// ---- data governance -----------------------------------------------------
+
+export interface GovernanceSpaceSummary {
+  meta: SpaceMeta;
+  pages: number;
+  raw: number;
+  pending: number;
+  tasks: number;
+}
+
+export function governanceView(
+  spaces: GovernanceSpaceSummary[],
+  retentionDays: number,
+  flashMsg?: string,
+): HtmlEscapedString | Promise<HtmlEscapedString> {
+  const rows = spaces.length === 0
+    ? html`<tr><td colspan="6" class="empty">暂无空间</td></tr>`
+    : spaces.map(({ meta, pages, raw: rawCount, pending, tasks }) => html`<tr>
+        <td><strong>${meta.name || meta.id}</strong><div class="muted">${meta.id}</div></td>
+        <td>${pages}</td>
+        <td>${rawCount}</td>
+        <td>${pending}</td>
+        <td>${tasks}</td>
+        <td>
+          <div class="actions">
+            <a class="btn secondary" href="/spaces/${encodeURIComponent(meta.id)}/export">导出</a>
+            <form method="post" action="/spaces/${encodeURIComponent(meta.id)}/delete" class="inline-form"
+              onsubmit="return confirm('永久删除该空间的知识、原始记录和任务？请先导出备份。后续新消息可能重新创建空空间。')">
+              <button type="submit" class="danger">删除</button>
+            </form>
+          </div>
+        </td>
+      </tr>`);
+  return html`<h1>数据治理</h1>
+    <p class="subtitle">导出版本化 JSON 备份、恢复空间，或永久删除空间数据。</p>
+    ${flash(flashMsg)}
+    <div class="card">
+      <h2 style="margin-top:0">原始消息保留</h2>
+      <p class="muted">当前策略：${retentionDays === 0 ? "永久保留" : `已提炼的消息正文保留 ${retentionDays} 天`}。待提炼消息和文档不会被删除。</p>
+      <form method="post" action="/governance/prune" class="actions"
+        onsubmit="return confirm('按当前保留周期立即清理已提炼的过期消息？')">
+        <button type="submit" class="secondary">立即清理</button>
+      </form>
+    </div>
+    <div class="card">
+      <h2 style="margin-top:0">恢复空间</h2>
+      <p class="muted">仅接受 homebrain.space v1 归档；已有同名空间不会被覆盖。</p>
+      <form method="post" action="/governance/restore" enctype="multipart/form-data" class="actions">
+        <input type="file" name="archive" accept="application/json,.json" required />
+        <button type="submit">上传并恢复</button>
+      </form>
+    </div>
+    <h2>空间数据</h2>
+    <table>
+      <thead><tr><th>空间</th><th>知识页</th><th>原始记录</th><th>待提炼</th><th>任务</th><th>操作</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>`;
+}
+
 // ---- Agents (mew two-pane: list + editor) ----------------------------------
 
 /** Agents page: list column + right editor. `selected` is the agent being edited (or null = new). */
@@ -597,6 +656,7 @@ export interface SettingsData {
   defaultModel: string;
   dailyBudgetUsd: number;
   dreamHour: number;
+  rawRetentionDays: number;
   webPort: number;
 }
 
@@ -660,6 +720,7 @@ export function settingsView(
       <div class="grid2">
         <div class="field"><label>每日预算 (USD) <span class="hint">仅对可计费的 provider 有意义</span></label><input type="number" step="0.01" min="0" name="dailyBudgetUsd" value="${s.dailyBudgetUsd}" /></div>
         <div class="field"><label>提炼时刻 <span class="hint">0-23，Asia/Shanghai</span></label><input type="number" min="0" max="23" name="dreamHour" value="${s.dreamHour}" /></div>
+        <div class="field"><label>原始消息保留（天） <span class="hint">0 = 永久保留；仅清理已提炼消息</span></label><input type="number" min="0" max="36500" name="rawRetentionDays" value="${s.rawRetentionDays}" /></div>
         <div class="field"><label>后台端口 <span class="hint">重启生效</span></label><input type="number" min="1" max="65535" name="webPort" value="${s.webPort}" /></div>
       </div>
       <div class="actions"><button type="submit">保存设置</button></div>

@@ -18,7 +18,7 @@ Bun workspaces monorepo，依赖严格单向：`web/app → orchestrator → cor
 | `packages/core` | 知识层 seam `Knowledge` + llm_wiki 式引擎：markdown/SQLite(FTS5)/dream cycle/ask 检索问答 |
 | `packages/connectors` | `Connector` 抽象 + `cli`（调试）+ `feishu`（lark-cli 子进程守护） |
 | `packages/orchestrator` | runtime 单消费者 + LLM 意图分类 + 应答网关 + 空间归属 + 冷启动话术 |
-| `packages/web` | Hono 管理后台（mew 风格：空间/知识、Agents、Integrations、日志、设置） |
+| `packages/web` | Hono 管理后台（空间/知识、Agents、任务、Integrations、运行状态、数据治理、日志、设置） |
 | `packages/app` | 入口：feishu 连接器 + orchestrator + web + 调度器（含 catch-up） |
 
 ### 双层空间模型
@@ -51,8 +51,12 @@ export ANTHROPIC_AUTH_TOKEN=sk-...                  # 已注入
 export HOMEBRAIN_DATA_DIR=./data                    # 默认 ./data
 export HOMEBRAIN_LLM_MODEL=claude-sonnet-5          # ask/提炼默认模型
 export HOMEBRAIN_DAILY_BUDGET_USD=5                 # 每日预算
+export HOMEBRAIN_WEB_HOST=127.0.0.1                 # 默认仅本机访问
 export HOMEBRAIN_WEB_PORT=3000                      # 管理后台端口
 export HOMEBRAIN_DREAM_HOUR=3                        # 每日提炼时刻（0-23，Asia/Shanghai）
+export HOMEBRAIN_RAW_RETENTION_DAYS=90              # 已提炼原始消息保留天数；0=永久
+# 仅当 HOMEBRAIN_WEB_HOST 不是本机回环地址时必须设置（环境变量专属，不写盘）
+export HOMEBRAIN_WEB_ADMIN_TOKEN=replace-with-a-strong-secret
 # 可选：精确 @ 识别（否则群内任意 @ 都视为叫机器人）
 export HOMEBRAIN_FEISHU_BOT_NAME=homebrain
 export HOMEBRAIN_FEISHU_BOT_OPEN_ID=ou_xxx
@@ -60,7 +64,9 @@ export HOMEBRAIN_FEISHU_BOT_OPEN_ID=ou_xxx
 
 > 后台「设置 / Agents / Integrations」里改的配置会写入 `data/config/{settings,agents,spaces}.json`
 > 并叠加在上述环境变量之上（后台显式设置优先）。模型 / 预算 / 提炼时刻 / 群设置即时生效；
-> Bot 身份与端口需重启生效。`ANTHROPIC_*` 为宿主注入的密钥，只读、不写盘。
+> Bot 身份与端口需重启生效。`HOMEBRAIN_WEB_HOST` 与 `HOMEBRAIN_WEB_ADMIN_TOKEN` 仅从环境变量读取：
+> 默认绑定 `127.0.0.1`；开放到局域网或 `0.0.0.0` 时必须配置管理令牌，后台支持浏览器 Basic Auth
+> （密码填令牌）及 Bearer Token。`ANTHROPIC_*` 为宿主注入的密钥，只读、不写盘。
 
 网关关键事实（已实测验证）：认证用 `x-api-key` + `anthropic-version: 2023-06-01`；
 结构化输出走强制 `tool_use`，**网关会改写返回的 tool 名**，因此按 block 类型（而非名字）提取；
@@ -97,7 +103,7 @@ bunx tsc -p tsconfig.json --noEmit
 bun run packages/web/src/dev.ts        # http://localhost:3000（启动日志：LLM=离线假回答）
 ```
 
-能测**全部界面**：空间/知识、Agents、任务、Integrations、设置——增删改、开关、落盘、任务「立即运行」都可验证。
+能测**全部界面**：空间/知识、Agents、任务、Integrations、运行状态、数据治理、设置——增删改、开关、落盘、任务「立即运行」都可验证。
 问答框与任务运行返回**固定假答案**（不 spawn 真 CLI，秒回），看不到真实模型效果。数据写 `./data`（或 `HOMEBRAIN_DATA_DIR`）。
 
 ### 3. 后台真跑本机 CLI（能看到真实效果 · 慢）
@@ -132,9 +138,9 @@ bun run packages/app/src/repl.ts       # 启动横幅列出全部命令
 > - repl **必须设 `ANTHROPIC_*` 两个变量**，否则 `config()` 报 `missing required env var` 起不来（dev server 会自动塞占位，不受影响）。
 > - 本机 `codex` 之前探测不可用（WSL 无 Linux node），`claude`/`trae-cli` 可用；后台每次启动**实时探测**，以界面显示为准。
 
-## 管理后台（mew 风格，可读写，内网自用无鉴权）
+## 管理后台（mew 风格，可读写）
 
-左侧导航分七区：
+左侧导航分八区：
 
 - **空间 / 知识**：空间列表、知识页、原始条目、问答测试、手动触发提炼。
 - **Agents**（中列列表 + 右侧编辑器）：新建 / 编辑 / 删除智能体，配置 **名称、Provider、Instruction（人格，会注入到回答）、Model、Visibility**。
@@ -152,7 +158,12 @@ bun run packages/app/src/repl.ts       # 启动横幅列出全部命令
   - **消息撤回**：回复原消息，@机器人说「别记这条」。原作者、群主或群管理员可执行；系统会删除该消息派生的全部原始记录，二次撤回会明确提示且事件重投不会重新入库。若内容已经进入知识页，会先移除受影响页面，再用仍有效的来源完成重新提炼后回复。撤回控制命令本身不会入库。
 - **Integrations**：**Lark bot**（收发消息的机器人身份）+ **Lark groups**（每个群：指定 Agent、`Topic reply`、`@ mentions only` 开关）。
 - **运行状态**：集中展示飞书事件消费者、必需 CLI、知识存储、待提炼数量、任务、Dream Cycle 与两个调度器的状态；任一关键组件未就绪时，所有后台页面会显示异常提示。
-- **设置**：**默认 Provider + 默认 Model**（群未指定 Agent 时用它）、每日预算、提炼时刻、端口。
+- **数据治理**：按空间导出 `homebrain.space v1` JSON 完整备份（知识页、原始记录、撤回标记、任务、空间元数据及关联 Agent），恢复备份，或永久删除整个空间；可按保留周期立即清理已提炼的过期消息。
+- **设置**：**默认 Provider + 默认 Model**（群未指定 Agent 时用它）、每日预算、提炼时刻、原始消息保留周期、端口。
+
+后台默认只监听 `127.0.0.1`，无需登录。若通过 `HOMEBRAIN_WEB_HOST` 开放到非回环地址，启动时会强制要求
+`HOMEBRAIN_WEB_ADMIN_TOKEN`；除 `/healthz`、`/readyz` 外的所有页面与操作都需要认证。
+非本机访问应置于 HTTPS 反向代理之后；不要在不可信网络上直接使用明文 HTTP 传输管理令牌。
 
 对上 mew 的 `Codex Agent · Topic reply · @ mentions only`：给群指定 Agent 后，回答用该 Agent 的 CLI 与人格；
 关掉 `@ mentions only` 则群内任意消息都会应答；`Topic reply` 控制是否在话题内回复。
@@ -167,7 +178,7 @@ bun run packages/app/src/main.ts
 # 或 bun start
 ```
 
-启动后：feishu 连接器监听事件、只读后台在 `HOMEBRAIN_WEB_PORT`、调度器做启动 catch-up + 每日 03:00 提炼。
+启动后：feishu 连接器监听事件、管理后台在 `HOMEBRAIN_WEB_HOST:HOMEBRAIN_WEB_PORT`、调度器做启动 catch-up + 每日 03:00 提炼，并按保留周期清理已提炼的过期消息。
 SIGTERM/SIGINT 优雅退出（对 lark-cli 子进程发 SIGTERM，绝不 kill -9）。
 
 部署探针：`GET /healthz` 是不依赖外部组件的快速进程存活检查，始终返回 200；`GET /readyz` 只有在知识存储、必需 CLI、两条飞书事件消费者及两个调度器都可用时返回 200，否则返回 503。管理后台 `/health` 提供完整健康快照的人类可读视图。
@@ -186,5 +197,5 @@ SIGTERM/SIGINT 优雅退出（对 lark-cli 子进程发 SIGTERM，绝不 kill -9
 ## 实施状态
 
 MVP = Slice 0–6，均已完成并通过测试；Slice 7（调度器 + 端到端联调）亦已完成。
-后续已完成：学习任务、真实飞书 E2E、思考表情、精确消息撤回、健康检查与可观测性（`/healthz`、`/readyz`、运行状态页与异常提示）。
+后续已完成：学习任务、真实飞书 E2E、思考表情、精确消息撤回、健康检查与可观测性（`/healthz`、`/readyz`、运行状态页与异常提示）、空间导出/恢复/删除、原始消息保留策略、非本机后台鉴权。
 未纳入 MVP（已预留）：每日反馈、多模态附件提炼。
