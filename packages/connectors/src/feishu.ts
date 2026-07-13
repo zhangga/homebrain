@@ -32,7 +32,6 @@ const log = logger.child("feishu");
 const MESSAGE_KEY = "im.message.receive_v1";
 const BOT_ADDED_KEY = "im.chat.member.bot.added_v1";
 const READY_RE = /\[event\]\s+ready\b/;
-const THREAD_ROOT_POSITION = "-1";
 
 export interface FeishuConnectorOptions {
   larkBin?: string;
@@ -66,9 +65,7 @@ interface FetchedMessage {
   message_id?: string;
   parent_id?: string;
   root_id?: string;
-  thread_message_position?: string;
   sender?: { id?: string };
-  thread_replies?: FetchedMessage[];
 }
 
 export class FeishuConnector implements Connector {
@@ -313,13 +310,9 @@ export class FeishuConnector implements Connector {
   async resolveReplyTarget(messageId: string): Promise<ReplyTarget | undefined> {
     try {
       const current = await this.fetchMessage(messageId);
-      const threadRoot = current?.thread_replies?.find(
-        (item) =>
-          item.thread_message_position === THREAD_ROOT_POSITION && item.message_id !== messageId,
-      );
-      const targetId = current?.parent_id ?? current?.root_id ?? threadRoot?.message_id;
+      const targetId = current?.parent_id ?? current?.root_id;
       if (!targetId || targetId === messageId) return undefined;
-      const target = threadRoot?.message_id === targetId ? threadRoot : await this.fetchMessage(targetId);
+      const target = await this.fetchMessage(targetId);
       return {
         messageId: targetId,
         senderId: target?.sender?.id,
@@ -331,21 +324,24 @@ export class FeishuConnector implements Connector {
   }
 
   private async fetchMessage(messageId: string): Promise<FetchedMessage | undefined> {
+    // The higher-level +messages-mget shortcut intentionally formats message
+    // output and currently drops parent_id/root_id. Use the raw read endpoint
+    // so reply relationships survive intact.
     const out = await this.runCommand([
       this.larkBin,
-      "im",
-      "+messages-mget",
+      "api",
+      "GET",
+      `/open-apis/im/v1/messages/${encodeURIComponent(messageId)}`,
       "--as",
       "bot",
-      "--message-ids",
-      messageId,
-      "--no-reactions",
+      "--params",
+      JSON.stringify({ user_id_type: "open_id" }),
       "--json",
     ]);
     const parsed = JSON.parse(out) as Record<string, unknown>;
     const data = parsed.data as Record<string, unknown> | undefined;
-    const messages = data?.messages;
-    return Array.isArray(messages) ? (messages[0] as FetchedMessage | undefined) : undefined;
+    const items = data?.items;
+    return Array.isArray(items) ? (items[0] as FetchedMessage | undefined) : undefined;
   }
 
   async isChatAdministrator(chatId: string, userId: string): Promise<boolean> {

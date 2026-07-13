@@ -262,15 +262,16 @@ describe("FeishuConnector outbound", () => {
   });
 
   test("resolves the original message from a quoted reply", async () => {
+    const commands: string[][] = [];
     const responses = [
       JSON.stringify({
         ok: true,
-        data: { messages: [{ message_id: "om_command", parent_id: "om_source" }] },
+        data: { items: [{ message_id: "om_command", parent_id: "om_source" }] },
       }),
       JSON.stringify({
         ok: true,
         data: {
-          messages: [
+          items: [
             {
               message_id: "om_source",
               sender: { id: "ou_owner" },
@@ -281,24 +282,32 @@ describe("FeishuConnector outbound", () => {
     ];
     connector = new FeishuConnector({
       spawner: new FakeSpawner(),
-      runCommand: async () => responses.shift()!,
+      runCommand: async (cmd) => {
+        commands.push(cmd);
+        return responses.shift()!;
+      },
     });
 
     expect(await connector.resolveReplyTarget("om_command")).toEqual({
       messageId: "om_source",
       senderId: "ou_owner",
     });
+    expect(commands[0]!.slice(1, 4)).toEqual([
+      "api",
+      "GET",
+      "/open-apis/im/v1/messages/om_command",
+    ]);
   });
 
   test("falls back to root_id when a reply has no parent_id", async () => {
     const responses = [
       JSON.stringify({
         ok: true,
-        data: { messages: [{ message_id: "om_command", root_id: "om_source" }] },
+        data: { items: [{ message_id: "om_command", root_id: "om_source" }] },
       }),
       JSON.stringify({
         ok: true,
-        data: { messages: [{ message_id: "om_source", sender: { id: "ou_owner" } }] },
+        data: { items: [{ message_id: "om_source", sender: { id: "ou_owner" } }] },
       }),
     ];
     connector = new FeishuConnector({
@@ -313,35 +322,28 @@ describe("FeishuConnector outbound", () => {
   });
 
   test("resolves the thread root when the command is a topic reply", async () => {
+    const responses = [
+      JSON.stringify({
+        ok: true,
+        data: {
+          items: [
+            {
+              message_id: "om_command",
+              root_id: "om_source",
+              thread_id: "omt_1",
+              thread_message_position: "1",
+            },
+          ],
+        },
+      }),
+      JSON.stringify({
+        ok: true,
+        data: { items: [{ message_id: "om_source", sender: { id: "ou_owner" } }] },
+      }),
+    ];
     connector = new FeishuConnector({
       spawner: new FakeSpawner(),
-      runCommand: async () =>
-        JSON.stringify({
-          ok: true,
-          data: {
-            messages: [
-              {
-                message_id: "om_command",
-                thread_id: "omt_1",
-                thread_message_position: "1",
-                thread_replies: [
-                  {
-                    message_id: "om_source",
-                    thread_id: "omt_1",
-                    thread_message_position: "-1",
-                    sender: { id: "ou_owner" },
-                  },
-                  {
-                    message_id: "om_command",
-                    thread_id: "omt_1",
-                    thread_message_position: "1",
-                    sender: { id: "ou_owner" },
-                  },
-                ],
-              },
-            ],
-          },
-        }),
+      runCommand: async () => responses.shift()!,
     });
 
     expect(await connector.resolveReplyTarget("om_command")).toEqual({
