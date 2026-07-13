@@ -1,5 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { curatedProviderModels, detectProviders, isCliProvider, runProvider } from "./providers.ts";
+import {
+  curatedProviderModels,
+  detectProviders,
+  isCliProvider,
+  providerFailureDetail,
+  runProvider,
+} from "./providers.ts";
 
 describe("provider detection", () => {
   test("detects the fixed known CLIs and reports availability", async () => {
@@ -25,6 +31,11 @@ describe("provider detection", () => {
 
   test("runProvider rejects an unknown provider id", async () => {
     await expect(runProvider("gateway" as never, { prompt: "hi" })).rejects.toThrow();
+  });
+
+  test("provider errors fall back to stdout when stderr is empty", () => {
+    expect(providerFailureDetail("auth failed on stdout", "")).toBe("auth failed on stdout");
+    expect(providerFailureDetail("less useful stdout", "stderr detail")).toBe("stderr detail");
   });
 
   test("curatedProviderModels returns a distinct model list per CLI provider", () => {

@@ -14,7 +14,9 @@
  *   1. a `mentions[]` array (feishu's raw field, often preserved) whose entry
  *      open_id matches the configured bot open_id, or whose name matches the
  *      configured bot name;
- *   2. the rendered content containing "@<botName>".
+ *   2. the rendered content containing "@<botName>";
+ *   3. when identity hints and structured mentions are both absent, a textual
+ *      @mention token in the rendered content.
  * Operators set HOMEBRAIN_FEISHU_BOT_NAME / _OPEN_ID for precise gating; without
  * them we fall back to "any mention present" so the bot is not permanently mute.
  */
@@ -63,6 +65,10 @@ export function detectBotMention(
   // No precise identity configured: any mention is assumed to address the bot
   // (people @ the bot to ask it). This keeps a group-added bot responsive.
   if (!identity.botOpenId && !identity.botName && mentions.length > 0) return true;
+  // lark-cli's flattened receive event can omit `mentions[]` while retaining
+  // the rendered "@BotName" token. Require start/whitespace before @ so an
+  // email address does not accidentally open the group reply gate.
+  if (!identity.botOpenId && !identity.botName && /(?:^|\s)@\S+/u.test(content)) return true;
 
   return false;
 }

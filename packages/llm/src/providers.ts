@@ -190,6 +190,11 @@ export async function providerModels(): Promise<Record<string, string[]>> {
   return curatedProviderModels();
 }
 
+/** Prefer stderr for CLI failures, but many agent CLIs print errors to stdout. */
+export function providerFailureDetail(stdout: string, stderr: string): string {
+  return (stderr.trim() || stdout.trim() || "no output").slice(0, 300);
+}
+
 /** The curated CLI model catalog, keyed by provider id. */
 export function curatedProviderModels(): Record<string, string[]> {
   const map: Record<string, string[]> = {};
@@ -215,6 +220,6 @@ export async function runProvider(
   log.info("running local provider", { id, bin: spec.bin });
   const { code, stdout, stderr, timedOut } = await runCmd(spec.bin, args, timeoutMs);
   if (timedOut) throw new Error(`provider ${id} timed out after ${timeoutMs}ms`);
-  if (code !== 0) throw new Error(`provider ${id} exited ${code}: ${stderr.slice(0, 300)}`);
+  if (code !== 0) throw new Error(`provider ${id} exited ${code}: ${providerFailureDetail(stdout, stderr)}`);
   return stdout.trim();
 }

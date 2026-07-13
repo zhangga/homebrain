@@ -113,10 +113,11 @@ export class Orchestrator {
     // a reply (even in a group without an @-mention).
     const taskCmd = parseTaskCommand(msg.text);
     if (taskCmd) {
-      this.engine.ensureSpace(writeSpace, { chatId: msg.chatId });
-      const reply = await handleTaskCommand(this.engine, writeSpace, taskCmd);
-      await this.send(msg, reply);
-      return;
+      return this.withThinking(msg, async () => {
+        this.engine.ensureSpace(writeSpace, { chatId: msg.chatId });
+        const reply = await handleTaskCommand(this.engine, writeSpace, taskCmd);
+        await this.send(msg, reply);
+      });
     }
 
     const decision = gate(msg, { mentionsOnly: meta?.mentionsOnly });
@@ -143,20 +144,22 @@ export class Orchestrator {
       return;
     }
 
-    const { intent } = await classifyIntent(this.llm, msg.text);
-    log.debug("classified intent", { intent, chatType: msg.chatType });
+    return this.withThinking(msg, async () => {
+      const { intent } = await classifyIntent(this.llm, msg.text);
+      log.debug("classified intent", { intent, chatType: msg.chatType });
 
-    switch (intent) {
-      case "question":
-        return this.answer(msg, readSpaces, writeSpace);
-      case "command":
-        return this.runCommand(msg, writeSpace);
-      case "remember":
-        return this.send(msg, "好的，我记下了。");
-      case "chitchat":
-      default:
-        return this.send(msg, "👋 我在。有需要随时问我，或把要记住的事告诉我。");
-    }
+      switch (intent) {
+        case "question":
+          return this.answer(msg, readSpaces, writeSpace);
+        case "command":
+          return this.runCommand(msg, writeSpace);
+        case "remember":
+          return this.send(msg, "好的，我记下了。");
+        case "chitchat":
+        default:
+          return this.send(msg, "👋 我在。有需要随时问我，或把要记住的事告诉我。");
+      }
+    });
   }
 
   private async answer(msg: InboundMessage, readSpaces: SpaceId[], writeSpace: SpaceId): Promise<void> {
@@ -228,6 +231,33 @@ export class Orchestrator {
         log.info("synced doc into space", { space: writeSpace, link });
       } catch (err) {
         log.warn("doc sync failed", { link, err: String(err) });
+      }
+    }
+  }
+
+  private async withThinking<T>(msg: InboundMessage, work: () => Promise<T>): Promise<T> {
+    let reactionId: string | undefined;
+    try {
+      reactionId = await this.connector.addReaction?.(msg.messageId, "THINKING");
+    } catch (err) {
+      // Optional UX must not interfere with the actual answer path, including
+      // connectors implemented outside this repository.
+      log.warn("thinking reaction failed", { messageId: msg.messageId, err: String(err) });
+    }
+
+    try {
+      return await work();
+    } finally {
+      if (reactionId) {
+        try {
+          await this.connector.removeReaction?.(msg.messageId, reactionId);
+        } catch (err) {
+          log.warn("thinking reaction cleanup failed", {
+            messageId: msg.messageId,
+            reactionId,
+            err: String(err),
+          });
+        }
       }
     }
   }

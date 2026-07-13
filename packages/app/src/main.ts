@@ -49,7 +49,8 @@ async function main(): Promise<void> {
       if (t) void notifyTaskDone(t.space, t.name, t.lastSummary).catch(() => {});
     },
   });
-  const server = Bun.serve({ port: cfg.webPort, fetch: app.fetch });
+  // Local CLI providers routinely take longer than Bun's 10-second default.
+  const server = Bun.serve({ port: cfg.webPort, fetch: app.fetch, idleTimeout: 120 });
   log.info("web backend live", { url: `http://localhost:${server.port}` });
 
   // 3. dream-cycle scheduler (runs an immediate catch-up pass)

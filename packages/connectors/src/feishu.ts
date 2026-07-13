@@ -10,6 +10,7 @@
  *   - restarts a crashed consumer with exponential backoff (plan R4);
  *   - stops with SIGTERM only (never kill -9, which leaks subscriptions);
  *   - sends replies/notices via `im +messages-reply --as bot`;
+ *   - adds/removes native message reactions via `im reactions`;
  *   - fetches docx links via `docs +fetch --as user` for doc sync (Q8).
  */
 import { config, logger } from "@homebrain/shared";
@@ -248,6 +249,53 @@ export class FeishuConnector implements Connector {
       await this.runCommand(cmd);
     } catch (err) {
       log.error("notice failed", { err: String(err) });
+    }
+  }
+
+  async addReaction(messageId: string, emojiType: string): Promise<string | undefined> {
+    const cmd = [
+      this.larkBin,
+      "im",
+      "reactions",
+      "create",
+      "--as",
+      "bot",
+      "--message-id",
+      messageId,
+      "--data",
+      JSON.stringify({ reaction_type: { emoji_type: emojiType } }),
+      "--json",
+    ];
+    try {
+      const out = await this.runCommand(cmd);
+      const parsed = JSON.parse(out) as Record<string, unknown>;
+      const data = parsed.data as Record<string, unknown> | undefined;
+      return typeof data?.reaction_id === "string" ? data.reaction_id : undefined;
+    } catch (err) {
+      // Reactions are only a progress hint; failure must never block the reply.
+      log.warn("add reaction failed", { messageId, emojiType, err: String(err) });
+      return undefined;
+    }
+  }
+
+  async removeReaction(messageId: string, reactionId: string): Promise<void> {
+    const cmd = [
+      this.larkBin,
+      "im",
+      "reactions",
+      "delete",
+      "--as",
+      "bot",
+      "--message-id",
+      messageId,
+      "--reaction-id",
+      reactionId,
+      "--json",
+    ];
+    try {
+      await this.runCommand(cmd);
+    } catch (err) {
+      log.warn("remove reaction failed", { messageId, reactionId, err: String(err) });
     }
   }
 

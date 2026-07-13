@@ -5,7 +5,7 @@ import { join } from "node:path";
 import type { JSONOptions } from "@homebrain/llm";
 import { resetConfig } from "@homebrain/shared";
 import { KnowledgeEngine, FakeLlm } from "@homebrain/core";
-import { CliConnector } from "@homebrain/connectors";
+import { CliConnector, type Connector } from "@homebrain/connectors";
 import { Orchestrator } from "./runtime.ts";
 
 let dir: string;
@@ -117,6 +117,35 @@ describe("orchestrator trunk (cli connector, no feishu)", () => {
     expect(connector.sent[0]!.markdown).toContain("记下");
     expect(engine.registry.has("personal/ou_me")).toBe(true);
     expect(engine.registry.store("personal/ou_me").index().countRaw(true)).toBe(1);
+  });
+
+  test("shows a transient thinking reaction only for messages that get a reply", async () => {
+    const events: string[] = [];
+    const reactive = connector as CliConnector & Connector;
+    const originalReply = connector.reply.bind(connector);
+    reactive.addReaction = async (messageId, emojiType) => {
+      events.push(`add:${messageId}:${emojiType}`);
+      return "reaction_1";
+    };
+    reactive.removeReaction = async (messageId, reactionId) => {
+      events.push(`remove:${messageId}:${reactionId}`);
+    };
+    reactive.reply = async (out) => {
+      events.push("reply");
+      await originalReply(out);
+    };
+
+    await orch.start();
+    await connector.sendP2P("在吗");
+    expect(events).toEqual([
+      "add:om_cli-1:THINKING",
+      "reply",
+      "remove:om_cli-1:reaction_1",
+    ]);
+
+    events.length = 0;
+    await connector.sendGroup("这条只需要收录", false);
+    expect(events).toEqual([]);
   });
 
   test("cold-start question appends honest nudge (Q3)", async () => {

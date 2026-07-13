@@ -66,4 +66,8 @@ export interface Connector {
   reply(out: OutboundReply): Promise<void>;
   /** send a standalone message to a chat (e.g. group-added notice) */
   notice(chatId: string, markdown: string): Promise<void>;
+  /** add a platform-native reaction while a response is being prepared */
+  addReaction?(messageId: string, emojiType: string): Promise<string | undefined>;
+  /** remove a previously-added platform-native reaction */
+  removeReaction?(messageId: string, reactionId: string): Promise<void>;
 }

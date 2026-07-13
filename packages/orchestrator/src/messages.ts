@@ -19,8 +19,8 @@ export const GROUP_ADDED_NOTICE = [
  * Directs the operator to the management backend rather than failing silently.
  */
 export const NO_PROVIDER_NOTICE = [
-  "⚠️ 我暂时无法作答：本群还没有配置可用的回答 Agent。",
-  "请在管理后台 Integrations 给本群指定一个 Agent，或在设置里配置默认的本机 CLI。",
+  "⚠️ 回答 Agent 暂时不可用，可能是本机 CLI 未配置、鉴权失败或服务不可达。",
+  "请在管理后台检查当前空间的 Agent，或在设置里更换默认的本机 CLI。",
 ].join("\n");
 
 /** Usage help for the /task chat commands. */

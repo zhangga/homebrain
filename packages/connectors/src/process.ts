@@ -23,10 +23,10 @@ export interface ProcSpawner {
 /** Production spawner backed by Bun.spawn. */
 export const bunSpawner: ProcSpawner = {
   spawn(cmd: string[]): ProcHandle {
-    // stdin is a never-ending stream so `event consume` does not treat EOF as a
-    // shutdown signal (plan §IV / lark-event contract for unbounded runs).
+    // Keep the writable pipe open for the process lifetime. `stdin: "ignore"`
+    // maps to EOF, which makes unbounded `event consume` exit immediately.
     const proc = Bun.spawn(cmd, {
-      stdin: "ignore",
+      stdin: "pipe",
       stdout: "pipe",
       stderr: "pipe",
     });

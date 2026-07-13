@@ -67,7 +67,8 @@ if (engine.agents.list().length === 0) {
 
 const app = createWebApp({ engine });
 const port = config().webPort;
-const server = Bun.serve({ port, fetch: app.fetch });
+// Real local CLI calls may take well over Bun's 10-second default timeout.
+const server = Bun.serve({ port, fetch: app.fetch, idleTimeout: 120 });
 // eslint-disable-next-line no-console
 console.log(
   `homebrain 管理后台（dev，LLM=${realCli ? "真实本机 CLI" : "离线假回答"}）: http://localhost:${server.port}`,

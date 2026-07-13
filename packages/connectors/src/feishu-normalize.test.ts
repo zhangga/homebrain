@@ -69,6 +69,10 @@ describe("detectBotMention", () => {
     expect(detectBotMention(obj, "hi", {})).toBe(true);
   });
 
+  test("no identity configured: detects textual mention in flattened event", () => {
+    expect(detectBotMention({}, "@小强Bot HOMEBRAIN-GROUP-ASK：1+1等于几？", {})).toBe(true);
+  });
+
   test("no mention, no match -> false", () => {
     expect(detectBotMention({}, "普通消息", { botName: "homebrain" })).toBe(false);
   });

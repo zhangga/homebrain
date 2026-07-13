@@ -235,6 +235,32 @@ describe("FeishuConnector outbound", () => {
     expect(cmd).toContain("欢迎语");
   });
 
+  test("adds and removes a native message reaction", async () => {
+    const spawner = new FakeSpawner();
+    const commands: string[][] = [];
+    connector = new FeishuConnector({
+      spawner,
+      runCommand: async (cmd) => {
+        commands.push(cmd);
+        return cmd.includes("create")
+          ? JSON.stringify({ ok: true, data: { reaction_id: "reaction_1" } })
+          : JSON.stringify({ ok: true });
+      },
+    });
+
+    const reactionId = await connector.addReaction("om_1", "THINKING");
+    expect(reactionId).toBe("reaction_1");
+    expect(commands[0]).toContain("reactions");
+    expect(commands[0]).toContain("create");
+    expect(commands[0]).toContain("om_1");
+    expect(commands[0]!.join(" ")).toContain("THINKING");
+
+    await connector.removeReaction("om_1", reactionId!);
+    expect(commands[1]).toContain("reactions");
+    expect(commands[1]).toContain("delete");
+    expect(commands[1]).toContain("reaction_1");
+  });
+
   test("fetchDoc parses markdown from CLI json", async () => {
     const spawner = new FakeSpawner();
     connector = new FeishuConnector({
