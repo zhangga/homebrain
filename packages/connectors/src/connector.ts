@@ -78,4 +78,6 @@ export interface Connector {
   removeReaction?(messageId: string, reactionId: string): Promise<void>;
   /** resolve the original message targeted by a reply/thread command */
   resolveReplyTarget?(messageId: string): Promise<ReplyTarget | undefined>;
+  /** whether a user may administer knowledge for the given group chat */
+  isChatAdministrator?(chatId: string, userId: string): Promise<boolean>;
 }

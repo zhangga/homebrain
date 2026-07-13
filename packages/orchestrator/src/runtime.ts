@@ -30,7 +30,16 @@ import { GROUP_ADDED_NOTICE, NO_PROVIDER_NOTICE, coldStartNote } from "./message
 import { parseTaskCommand, handleTaskCommand } from "./task-commands.ts";
 
 const log = logger.child("orchestrator");
-const RETRACTION_RE = /别记|撤回|删掉这条|不要记/;
+const RETRACTION_COMMANDS = new Set(["别记这条", "撤回这条", "删掉这条", "不要记这条"]);
+
+function isRetractionCommand(text: string): boolean {
+  const normalized = text
+    .trim()
+    .replace(/^(?:@\S+\s+)+/u, "")
+    .replace(/[。.!！]+$/u, "")
+    .trim();
+  return RETRACTION_COMMANDS.has(normalized);
+}
 
 export interface RuntimeOptions {
   engine: KnowledgeEngine;
@@ -125,7 +134,7 @@ export class Orchestrator {
 
     // Retraction is a deterministic control command. Handle it before capture
     // so the command itself never becomes knowledge.
-    if (decision.respond && RETRACTION_RE.test(msg.text)) {
+    if (decision.respond && isRetractionCommand(msg.text)) {
       return this.withThinking(msg, () => this.handleRetraction(msg, writeSpace));
     }
 
@@ -228,17 +237,35 @@ export class Orchestrator {
       return;
     }
 
-    const result = await this.engine.retractMessage(writeSpace, {
+    let result = await this.engine.retractMessage(writeSpace, {
       chatId: msg.chatId,
       messageId: target.messageId,
       requestedBy: msg.senderId,
     });
+    if (result.status === "forbidden" && msg.chatType === "group") {
+      const requesterIsAdmin = await this.connector.isChatAdministrator?.(
+        msg.chatId,
+        msg.senderId,
+      );
+      if (requesterIsAdmin) {
+        result = await this.engine.retractMessage(writeSpace, {
+          chatId: msg.chatId,
+          messageId: target.messageId,
+          requestedBy: msg.senderId,
+          requesterIsAdmin: true,
+        });
+      }
+    }
     if (result.status === "forbidden") {
-      await this.send(msg, "这条消息不是你发送的；目前只能撤回自己发送的消息。");
+      await this.send(msg, "这条消息不是你发送的；只有原作者、群主或群管理员可以撤回。");
       return;
     }
     if (result.status === "not_found") {
       await this.send(msg, "没有找到这条消息的收录记录；它可能尚未收录或已经撤回。");
+      return;
+    }
+    if (result.status === "already_retracted") {
+      await this.send(msg, "这条消息已经撤回过了，没有重复保留。");
       return;
     }
 
@@ -246,14 +273,23 @@ export class Orchestrator {
       result.affectedPages.length > 0
         ? `，并清理了 ${result.affectedPages.length} 个受影响的知识页`
         : "，原始记录已删除";
-    const rebuildNote = result.requeuedSources > 0 ? "；其余有效来源会重新提炼" : "";
-    await this.send(msg, `已撤回这条消息${pageNote}${rebuildNote}。`);
-
+    let rebuildNote = "";
     if (result.requeuedSources > 0) {
-      void this.engine
-        .runDreamCycle(writeSpace)
-        .catch((err) => log.warn("post-retraction redistillation failed", { space: writeSpace, err: String(err) }));
+      try {
+        const report = await this.engine.runDreamCycle(writeSpace);
+        rebuildNote =
+          report.errors.length === 0
+            ? "；其余有效来源已重新提炼"
+            : "；其余来源的自动重建未完全成功，请稍后重新提炼";
+      } catch (err) {
+        rebuildNote = "；其余来源的自动重建暂未完成，请稍后重新提炼";
+        log.warn("post-retraction redistillation failed", {
+          space: writeSpace,
+          err: String(err),
+        });
+      }
     }
+    await this.send(msg, `已撤回这条消息${pageNote}${rebuildNote}。`);
   }
 
   private async syncDocs(msg: InboundMessage, writeSpace: SpaceId): Promise<void> {

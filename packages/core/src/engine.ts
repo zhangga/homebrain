@@ -156,7 +156,20 @@ export class KnowledgeEngine implements Knowledge {
     // Capture is a write; serialize per space so it never races distillation.
     return this.serializer.run(entry.space, async () => {
       const store = this.registry.ensure(entry.space, { chatId: entry.chatId });
-      const id = store.index().insertRaw(entry);
+      const index = store.index();
+      if (
+        entry.chatId &&
+        entry.messageId &&
+        index.getMessageRetraction(entry.chatId, entry.messageId)
+      ) {
+        log.info("ignored redelivery of retracted message", {
+          space: entry.space,
+          chatId: entry.chatId,
+          messageId: entry.messageId,
+        });
+        return `retracted:${entry.messageId}`;
+      }
+      const id = index.insertRaw(entry);
       log.debug("remembered raw entry", { space: entry.space, source: entry.source, id });
       return id;
     });
@@ -164,38 +177,57 @@ export class KnowledgeEngine implements Knowledge {
 
   async retractMessage(space: SpaceId, request: RetractionRequest): Promise<RetractionResult> {
     return this.serializer.run(space, async () => {
-      const empty = (status: RetractionResult["status"]): RetractionResult => ({
+      const resultFor = (status: RetractionResult["status"]): RetractionResult => ({
         status,
         affectedPages: [],
         requeuedSources: 0,
       });
-      if (!this.registry.has(space)) return empty("not_found");
-      const idx = this.registry.store(space).index();
-      const raws = idx.findRawsByMessageId(request.messageId, request.chatId);
-      if (raws.length === 0) return empty("not_found");
-      if (raws.some((raw) => !raw.author || raw.author !== request.requestedBy)) {
-        return empty("forbidden");
+      if (!this.registry.has(space)) return resultFor("not_found");
+      const index = this.registry.store(space).index();
+      const matchingRawRecords = index.findRawsByMessageId(request.messageId, request.chatId);
+      if (matchingRawRecords.length === 0) {
+        const prior = index.getMessageRetraction(request.chatId, request.messageId);
+        if (!prior) return resultFor("not_found");
+        return request.requesterIsAdmin || prior.originalAuthor === request.requestedBy
+          ? resultFor("already_retracted")
+          : resultFor("forbidden");
       }
-      const removedSourceIds = new Set(raws.map((raw) => raw.id));
+      if (
+        !request.requesterIsAdmin &&
+        matchingRawRecords.some(
+          (rawRecord) => !rawRecord.author || rawRecord.author !== request.requestedBy,
+        )
+      ) {
+        return resultFor("forbidden");
+      }
+      const removedSourceIds = new Set(matchingRawRecords.map((rawRecord) => rawRecord.id));
 
       const store = this.registry.store(space);
-      const affectedPages = idx
+      const affectedPages = index
         .allPages()
         .filter((page) => page.sources.some((sourceId) => removedSourceIds.has(sourceId)))
         .map((page) => page.slug)
         .sort();
       const survivingSourceIds = new Set<string>();
       for (const slug of affectedPages) {
-        const page = idx.getPage(slug);
+        const page = index.getPage(slug);
         for (const sourceId of page?.sources ?? []) {
-          if (!removedSourceIds.has(sourceId) && idx.getRaw(sourceId)) survivingSourceIds.add(sourceId);
+          if (!removedSourceIds.has(sourceId) && index.getRaw(sourceId)) {
+            survivingSourceIds.add(sourceId);
+          }
         }
         // Delete first so a crash can only lose derived content; it can never
         // leave content derived from a source that has already been removed.
         store.deletePage(slug);
       }
-      for (const raw of raws) idx.deleteRaw(raw.id);
-      idx.markPending([...survivingSourceIds]);
+      index.recordMessageRetraction({
+        chatId: request.chatId,
+        messageId: request.messageId,
+        originalAuthor: matchingRawRecords[0]!.author!,
+        retractedBy: request.requestedBy,
+      });
+      for (const rawRecord of matchingRawRecords) index.deleteRaw(rawRecord.id);
+      index.markPending([...survivingSourceIds]);
       if (affectedPages.length > 0) refreshDigest(store);
       log.info("retracted raw message", {
         space,

@@ -66,6 +66,16 @@ export class SpaceIndex {
         ingested INTEGER NOT NULL DEFAULT 0
       )
     `);
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS message_retractions (
+        chat_id TEXT NOT NULL,
+        message_id TEXT NOT NULL,
+        original_author TEXT NOT NULL,
+        retracted_by TEXT NOT NULL,
+        created INTEGER NOT NULL,
+        PRIMARY KEY (chat_id, message_id)
+      )
+    `);
     this.db.run(`CREATE INDEX IF NOT EXISTS raw_ingested ON raw(ingested, created)`);
     this.db.run(`CREATE INDEX IF NOT EXISTS raw_message ON raw(chat_id, message_id)`);
     this.db.run(`CREATE INDEX IF NOT EXISTS pages_type ON pages(type)`);
@@ -230,22 +240,63 @@ export class SpaceIndex {
     this.db.query(`DELETE FROM raw WHERE id = ?`).run(id);
   }
 
+  getMessageRetraction(
+    chatId: string,
+    messageId: string,
+  ): { originalAuthor: string; retractedBy: string; createdAt: number } | null {
+    const row = this.db
+      .query(
+        `SELECT original_author, retracted_by, created
+         FROM message_retractions
+         WHERE chat_id = ? AND message_id = ?`,
+      )
+      .get(chatId, messageId) as Record<string, unknown> | null;
+    return row
+      ? {
+          originalAuthor: String(row.original_author),
+          retractedBy: String(row.retracted_by),
+          createdAt: Number(row.created),
+        }
+      : null;
+  }
+
+  recordMessageRetraction(input: {
+    chatId: string;
+    messageId: string;
+    originalAuthor: string;
+    retractedBy: string;
+  }): void {
+    this.db
+      .query(
+        `INSERT OR IGNORE INTO message_retractions
+         (chat_id, message_id, original_author, retracted_by, created)
+         VALUES (?, ?, ?, ?, ?)`,
+      )
+      .run(
+        input.chatId,
+        input.messageId,
+        input.originalAuthor,
+        input.retractedBy,
+        Date.now(),
+      );
+  }
+
   markIngested(ids: string[]): void {
-    if (ids.length === 0) return;
-    const tx = this.db.transaction((batch: string[]) => {
-      const stmt = this.db.query(`UPDATE raw SET ingested = 1 WHERE id = ?`);
-      for (const id of batch) stmt.run(id);
-    });
-    tx(ids);
+    this.setRawIngested(ids, true);
   }
 
   markPending(ids: string[]): void {
+    this.setRawIngested(ids, false);
+  }
+
+  private setRawIngested(ids: string[], ingested: boolean): void {
     if (ids.length === 0) return;
-    const tx = this.db.transaction((batch: string[]) => {
-      const stmt = this.db.query(`UPDATE raw SET ingested = 0 WHERE id = ?`);
-      for (const id of batch) stmt.run(id);
+    const value = ingested ? 1 : 0;
+    const update = this.db.transaction((batch: string[]) => {
+      const stmt = this.db.query(`UPDATE raw SET ingested = ? WHERE id = ?`);
+      for (const id of batch) stmt.run(value, id);
     });
-    tx(ids);
+    update(ids);
   }
 
   countRaw(onlyPending = false): number {

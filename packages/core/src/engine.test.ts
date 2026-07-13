@@ -102,7 +102,15 @@ describe("Knowledge seam contract", () => {
         messageId: "om_source",
         requestedBy: "ou_owner",
       }),
-    ).toEqual({ status: "not_found", affectedPages: [], requeuedSources: 0 });
+    ).toEqual({ status: "already_retracted", affectedPages: [], requeuedSources: 0 });
+    await engine.remember({
+      space: SPACE,
+      source: "message",
+      author: "ou_owner",
+      chatId: "oc_contract",
+      messageId: "om_source",
+      content: "重投也不能恢复北极星",
+    });
     expect((await engine.runDreamCycle(SPACE)).examined).toBe(0);
   });
 
@@ -124,6 +132,27 @@ describe("Knowledge seam contract", () => {
       }),
     ).toEqual({ status: "forbidden", affectedPages: [], requeuedSources: 0 });
     expect((await engine.runDreamCycle(SPACE)).examined).toBe(1);
+  });
+
+  test("group administrator can retract another user's captured message", async () => {
+    await engine.remember({
+      space: SPACE,
+      source: "message",
+      author: "ou_owner",
+      chatId: "oc_contract",
+      messageId: "om_source",
+      content: "管理员可以治理群知识",
+    });
+
+    expect(
+      await engine.retractMessage(SPACE, {
+        chatId: "oc_contract",
+        messageId: "om_source",
+        requestedBy: "ou_admin",
+        requesterIsAdmin: true,
+      }),
+    ).toEqual({ status: "retracted", affectedPages: [], requeuedSources: 0 });
+    expect((await engine.runDreamCycle(SPACE)).examined).toBe(0);
   });
 
   test("retraction removes every raw record derived from the same message", async () => {
@@ -151,7 +180,7 @@ describe("Knowledge seam contract", () => {
         messageId: "om_source",
         requestedBy: "ou_owner",
       }),
-    ).toEqual({ status: "not_found", affectedPages: [], requeuedSources: 0 });
+    ).toEqual({ status: "already_retracted", affectedPages: [], requeuedSources: 0 });
     expect((await engine.runDreamCycle(SPACE)).examined).toBe(0);
   });
 

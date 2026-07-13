@@ -128,16 +128,18 @@ describe("orchestrator trunk (cli connector, no feishu)", () => {
 
     await orch.start();
     await connector.sendGroup("本群测试代号是北极星", false);
-    await connector.sendGroup("别记这条", true);
+    await connector.sendGroup("@小强Bot 别记这条", true);
 
     expect(connector.sent.at(-1)?.markdown).toContain("已撤回");
+    await connector.sendGroup("@小强Bot 别记这条", true);
+    expect(connector.sent.at(-1)?.markdown).toContain("已经撤回过了");
     expect(
       await engine.retractMessage("team/oc_team", {
         chatId: "oc_team",
         messageId: "om_cli-1",
         requestedBy: "ou_me",
       }),
-    ).toEqual({ status: "not_found", affectedPages: [], requeuedSources: 0 });
+    ).toEqual({ status: "already_retracted", affectedPages: [], requeuedSources: 0 });
     expect((await engine.runDreamCycle("team/oc_team")).examined).toBe(0);
   });
 
@@ -150,6 +152,19 @@ describe("orchestrator trunk (cli connector, no feishu)", () => {
 
     expect(connector.sent.at(-1)?.markdown).toContain("请回复要撤回的那条原消息");
     expect((await engine.runDreamCycle("team/oc_team")).examined).toBe(0);
+  });
+
+  test("a question containing 撤回 is not mistaken for a retraction command", async () => {
+    const reactive = connector as CliConnector & Connector;
+    reactive.resolveReplyTarget = async () => {
+      throw new Error("should not resolve a reply target for a normal question");
+    };
+
+    await orch.start();
+    await connector.sendGroup("怎么撤回知识？", true);
+
+    expect(connector.sent.at(-1)?.markdown).not.toContain("请回复要撤回的那条原消息");
+    expect((await engine.runDreamCycle("team/oc_team")).examined).toBe(1);
   });
 
   test("retraction refuses to remove another user's message", async () => {
@@ -170,7 +185,7 @@ describe("orchestrator trunk (cli connector, no feishu)", () => {
     });
     await connector.sendGroup("别记这条", true);
 
-    expect(connector.sent.at(-1)?.markdown).toContain("只能撤回自己发送的消息");
+    expect(connector.sent.at(-1)?.markdown).toContain("只有原作者、群主或群管理员可以撤回");
     expect(
       await engine.retractMessage("team/oc_team", {
         chatId: "oc_team",
@@ -179,6 +194,102 @@ describe("orchestrator trunk (cli connector, no feishu)", () => {
       }),
     ).toEqual({ status: "retracted", affectedPages: [], requeuedSources: 0 });
     expect((await engine.runDreamCycle("team/oc_team")).examined).toBe(0);
+  });
+
+  test("group administrator can retract another user's message", async () => {
+    const reactive = connector as CliConnector & Connector;
+    reactive.resolveReplyTarget = async () => ({ messageId: "om_other", senderId: "ou_other" });
+    reactive.isChatAdministrator = async () => true;
+
+    await orch.start();
+    await connector.inject({
+      kind: "message",
+      eventId: "evt_other",
+      chatType: "group",
+      chatId: "oc_team",
+      senderId: "ou_other",
+      text: "群管理员可以治理的知识",
+      messageId: "om_other",
+      mentionsBot: false,
+      createdAt: Date.now(),
+    });
+    await connector.sendGroup("别记这条", true);
+
+    expect(connector.sent.at(-1)?.markdown).toContain("已撤回");
+    expect(
+      await engine.retractMessage("team/oc_team", {
+        chatId: "oc_team",
+        messageId: "om_other",
+        requestedBy: "ou_other",
+      }),
+    ).toEqual({ status: "already_retracted", affectedPages: [], requeuedSources: 0 });
+  });
+
+  test("retraction finishes rebuilding affected knowledge before confirming", async () => {
+    const removedId = await engine.remember({
+      space: "team/oc_team",
+      source: "message",
+      author: "ou_me",
+      chatId: "oc_team",
+      messageId: "om_remove",
+      content: "项目代号是北极星",
+    });
+    const survivingId = await engine.remember({
+      space: "team/oc_team",
+      source: "message",
+      author: "ou_me",
+      chatId: "oc_team",
+      messageId: "om_keep",
+      content: "项目负责人是 Alice",
+    });
+    engine.registry.store("team/oc_team").index().markIngested([removedId, survivingId]);
+    await engine.upsertPage("team/oc_team", {
+      slug: "concepts/project-facts",
+      type: "concept",
+      title: "项目信息",
+      summary: "项目代号与负责人",
+      aliases: [],
+      tags: [],
+      sources: [removedId, survivingId],
+      links: [],
+      content: "# 项目信息\n项目代号是北极星，负责人是 Alice。\n",
+      updatedAt: Date.now(),
+      contentHash: "before-retraction",
+    });
+    fake.onJSON((call) => {
+      const props = (call.schema as { properties?: Record<string, unknown> }).properties ?? {};
+      if ("operations" in props) {
+        return {
+          operations: [
+            {
+              type: "concept",
+              name: "project-facts",
+              title: "项目信息",
+              rawIds: [survivingId],
+            },
+          ],
+          skippedRawIds: [],
+        };
+      }
+      return {
+        title: "项目信息",
+        summary: "项目负责人",
+        aliases: [],
+        tags: [],
+        links: [],
+        content: "# 项目信息\n项目负责人是 Alice。",
+      };
+    });
+    const reactive = connector as CliConnector & Connector;
+    reactive.resolveReplyTarget = async () => ({ messageId: "om_remove", senderId: "ou_me" });
+
+    await orch.start();
+    await connector.sendGroup("别记这条", true);
+
+    expect(connector.sent.at(-1)?.markdown).toContain("已重新提炼");
+    const rebuilt = await engine.getPage("team/oc_team", "concepts/project-facts");
+    expect(rebuilt?.content).toContain("Alice");
+    expect(rebuilt?.content).not.toContain("北极星");
   });
 
   test("shows a transient thinking reaction only for messages that get a reply", async () => {

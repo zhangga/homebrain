@@ -32,9 +32,11 @@ export interface RetractionRequest {
   chatId: string;
   messageId: string;
   requestedBy: string;
+  /** trusted role assertion supplied by the chat connector */
+  requesterIsAdmin?: boolean;
 }
 
-export type RetractionStatus = "retracted" | "not_found" | "forbidden";
+export type RetractionStatus = "retracted" | "already_retracted" | "not_found" | "forbidden";
 
 export interface RetractionResult {
   status: RetractionStatus;

@@ -290,6 +290,28 @@ describe("FeishuConnector outbound", () => {
     });
   });
 
+  test("falls back to root_id when a reply has no parent_id", async () => {
+    const responses = [
+      JSON.stringify({
+        ok: true,
+        data: { messages: [{ message_id: "om_command", root_id: "om_source" }] },
+      }),
+      JSON.stringify({
+        ok: true,
+        data: { messages: [{ message_id: "om_source", sender: { id: "ou_owner" } }] },
+      }),
+    ];
+    connector = new FeishuConnector({
+      spawner: new FakeSpawner(),
+      runCommand: async () => responses.shift()!,
+    });
+
+    expect(await connector.resolveReplyTarget("om_command")).toEqual({
+      messageId: "om_source",
+      senderId: "ou_owner",
+    });
+  });
+
   test("resolves the thread root when the command is a topic reply", async () => {
     connector = new FeishuConnector({
       spawner: new FakeSpawner(),
@@ -326,6 +348,24 @@ describe("FeishuConnector outbound", () => {
       messageId: "om_source",
       senderId: "ou_owner",
     });
+  });
+
+  test("recognizes the group owner and managers as administrators", async () => {
+    connector = new FeishuConnector({
+      spawner: new FakeSpawner(),
+      runCommand: async () =>
+        JSON.stringify({
+          ok: true,
+          data: {
+            owner_id: "ou_owner",
+            user_manager_id_list: ["ou_manager"],
+          },
+        }),
+    });
+
+    expect(await connector.isChatAdministrator("oc_1", "ou_owner")).toBe(true);
+    expect(await connector.isChatAdministrator("oc_1", "ou_manager")).toBe(true);
+    expect(await connector.isChatAdministrator("oc_1", "ou_member")).toBe(false);
   });
 
   test("fetchDoc parses markdown from CLI json", async () => {

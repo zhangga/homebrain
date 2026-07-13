@@ -32,6 +32,7 @@ const log = logger.child("feishu");
 const MESSAGE_KEY = "im.message.receive_v1";
 const BOT_ADDED_KEY = "im.chat.member.bot.added_v1";
 const READY_RE = /\[event\]\s+ready\b/;
+const THREAD_ROOT_POSITION = "-1";
 
 export interface FeishuConnectorOptions {
   larkBin?: string;
@@ -313,7 +314,8 @@ export class FeishuConnector implements Connector {
     try {
       const current = await this.fetchMessage(messageId);
       const threadRoot = current?.thread_replies?.find(
-        (item) => item.thread_message_position === "-1" && item.message_id !== messageId,
+        (item) =>
+          item.thread_message_position === THREAD_ROOT_POSITION && item.message_id !== messageId,
       );
       const targetId = current?.parent_id ?? current?.root_id ?? threadRoot?.message_id;
       if (!targetId || targetId === messageId) return undefined;
@@ -344,6 +346,33 @@ export class FeishuConnector implements Connector {
     const data = parsed.data as Record<string, unknown> | undefined;
     const messages = data?.messages;
     return Array.isArray(messages) ? (messages[0] as FetchedMessage | undefined) : undefined;
+  }
+
+  async isChatAdministrator(chatId: string, userId: string): Promise<boolean> {
+    try {
+      const out = await this.runCommand([
+        this.larkBin,
+        "im",
+        "chats",
+        "get",
+        "--as",
+        "bot",
+        "--chat-id",
+        chatId,
+        "--user-id-type",
+        "open_id",
+        "--json",
+      ]);
+      const parsed = JSON.parse(out) as Record<string, unknown>;
+      const data = parsed.data as Record<string, unknown> | undefined;
+      const managers = Array.isArray(data?.user_manager_id_list)
+        ? data.user_manager_id_list.map(String)
+        : [];
+      return data?.owner_id === userId || managers.includes(userId);
+    } catch (err) {
+      log.warn("chat administrator lookup failed", { chatId, userId, err: String(err) });
+      return false;
+    }
   }
 
   // ---- doc sync (Q8) ------------------------------------------------------
