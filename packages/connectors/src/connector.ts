@@ -55,6 +55,12 @@ export interface OutboundReply {
   inThread?: boolean;
 }
 
+/** The source message a user replied to when issuing a control command. */
+export interface ReplyTarget {
+  messageId: string;
+  senderId?: string;
+}
+
 /**
  * The connector surface the orchestrator consumes. `start` streams normalized
  * events to `onEvent` until `stop` is called. `reply`/`notice` send outbound.
@@ -70,4 +76,6 @@ export interface Connector {
   addReaction?(messageId: string, emojiType: string): Promise<string | undefined>;
   /** remove a previously-added platform-native reaction */
   removeReaction?(messageId: string, reactionId: string): Promise<void>;
+  /** resolve the original message targeted by a reply/thread command */
+  resolveReplyTarget?(messageId: string): Promise<ReplyTarget | undefined>;
 }

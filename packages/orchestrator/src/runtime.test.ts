@@ -119,6 +119,68 @@ describe("orchestrator trunk (cli connector, no feishu)", () => {
     expect(engine.registry.store("personal/ou_me").index().countRaw(true)).toBe(1);
   });
 
+  test("replying 别记这条 retracts the source and does not capture the command", async () => {
+    const reactive = connector as CliConnector & Connector;
+    reactive.resolveReplyTarget = async () => ({
+      messageId: "om_cli-1",
+      senderId: "ou_me",
+    });
+
+    await orch.start();
+    await connector.sendGroup("本群测试代号是北极星", false);
+    await connector.sendGroup("别记这条", true);
+
+    expect(connector.sent.at(-1)?.markdown).toContain("已撤回");
+    expect(
+      await engine.retractMessage("team/oc_team", {
+        chatId: "oc_team",
+        messageId: "om_cli-1",
+        requestedBy: "ou_me",
+      }),
+    ).toEqual({ status: "not_found", affectedPages: [], requeuedSources: 0 });
+    expect((await engine.runDreamCycle("team/oc_team")).examined).toBe(0);
+  });
+
+  test("retraction without a reply target gives actionable guidance", async () => {
+    const reactive = connector as CliConnector & Connector;
+    reactive.resolveReplyTarget = async () => undefined;
+
+    await orch.start();
+    await connector.sendGroup("别记这条", true);
+
+    expect(connector.sent.at(-1)?.markdown).toContain("请回复要撤回的那条原消息");
+    expect((await engine.runDreamCycle("team/oc_team")).examined).toBe(0);
+  });
+
+  test("retraction refuses to remove another user's message", async () => {
+    const reactive = connector as CliConnector & Connector;
+    reactive.resolveReplyTarget = async () => ({ messageId: "om_other", senderId: "ou_other" });
+
+    await orch.start();
+    await connector.inject({
+      kind: "message",
+      eventId: "evt_other",
+      chatType: "group",
+      chatId: "oc_team",
+      senderId: "ou_other",
+      text: "别人的知识",
+      messageId: "om_other",
+      mentionsBot: false,
+      createdAt: Date.now(),
+    });
+    await connector.sendGroup("别记这条", true);
+
+    expect(connector.sent.at(-1)?.markdown).toContain("只能撤回自己发送的消息");
+    expect(
+      await engine.retractMessage("team/oc_team", {
+        chatId: "oc_team",
+        messageId: "om_other",
+        requestedBy: "ou_other",
+      }),
+    ).toEqual({ status: "retracted", affectedPages: [], requeuedSources: 0 });
+    expect((await engine.runDreamCycle("team/oc_team")).examined).toBe(0);
+  });
+
   test("shows a transient thinking reaction only for messages that get a reply", async () => {
     const events: string[] = [];
     const reactive = connector as CliConnector & Connector;

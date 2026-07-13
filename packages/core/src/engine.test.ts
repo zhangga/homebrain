@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Knowledge } from "./knowledge.ts";
 import { KnowledgeEngine } from "./engine.ts";
+import { FakeLlm } from "./testing.ts";
 import type { Page, SpaceId } from "@homebrain/shared";
 
 let dir: string;
@@ -52,6 +53,7 @@ describe("Knowledge seam contract", () => {
     const k: Knowledge = engine;
     for (const method of [
       "remember",
+      "retractMessage",
       "runDreamCycle",
       "ask",
       "search",
@@ -74,6 +76,142 @@ describe("Knowledge seam contract", () => {
     expect(typeof id).toBe("string");
     // no pages yet (distillation is a separate step)
     expect(await engine.listPages(SPACE)).toEqual([]);
+  });
+
+  test("message author can retract a pending capture by chat and message id", async () => {
+    await engine.remember({
+      space: SPACE,
+      source: "message",
+      author: "ou_owner",
+      chatId: "oc_contract",
+      messageId: "om_source",
+      content: "测试代号是北极星",
+    });
+
+    expect(
+      await engine.retractMessage(SPACE, {
+        chatId: "oc_contract",
+        messageId: "om_source",
+        requestedBy: "ou_owner",
+      }),
+    ).toEqual({ status: "retracted", affectedPages: [], requeuedSources: 0 });
+
+    expect(
+      await engine.retractMessage(SPACE, {
+        chatId: "oc_contract",
+        messageId: "om_source",
+        requestedBy: "ou_owner",
+      }),
+    ).toEqual({ status: "not_found", affectedPages: [], requeuedSources: 0 });
+    expect((await engine.runDreamCycle(SPACE)).examined).toBe(0);
+  });
+
+  test("one user cannot retract another user's captured message", async () => {
+    await engine.remember({
+      space: SPACE,
+      source: "message",
+      author: "ou_owner",
+      chatId: "oc_contract",
+      messageId: "om_source",
+      content: "只有作者能撤回",
+    });
+
+    expect(
+      await engine.retractMessage(SPACE, {
+        chatId: "oc_contract",
+        messageId: "om_source",
+        requestedBy: "ou_other",
+      }),
+    ).toEqual({ status: "forbidden", affectedPages: [], requeuedSources: 0 });
+    expect((await engine.runDreamCycle(SPACE)).examined).toBe(1);
+  });
+
+  test("retraction removes every raw record derived from the same message", async () => {
+    for (const source of ["message", "doc"] as const) {
+      await engine.remember({
+        space: SPACE,
+        source,
+        author: "ou_owner",
+        chatId: "oc_contract",
+        messageId: "om_source",
+        content: source === "message" ? "见项目文档" : "文档正文",
+      });
+    }
+
+    expect(
+      await engine.retractMessage(SPACE, {
+        chatId: "oc_contract",
+        messageId: "om_source",
+        requestedBy: "ou_owner",
+      }),
+    ).toEqual({ status: "retracted", affectedPages: [], requeuedSources: 0 });
+    expect(
+      await engine.retractMessage(SPACE, {
+        chatId: "oc_contract",
+        messageId: "om_source",
+        requestedBy: "ou_owner",
+      }),
+    ).toEqual({ status: "not_found", affectedPages: [], requeuedSources: 0 });
+    expect((await engine.runDreamCycle(SPACE)).examined).toBe(0);
+  });
+
+  test("retracting an ingested source removes affected pages and requeues surviving sources", async () => {
+    const fake = new FakeLlm();
+    const retractEngine = new KnowledgeEngine({ dataDir: join(dir, "retraction"), llm: fake });
+    const removedId = await retractEngine.remember({
+      space: SPACE,
+      source: "message",
+      author: "ou_owner",
+      chatId: "oc_contract",
+      messageId: "om_remove",
+      content: "项目代号是北极星",
+    });
+    const survivingId = await retractEngine.remember({
+      space: SPACE,
+      source: "message",
+      author: "ou_owner",
+      chatId: "oc_contract",
+      messageId: "om_keep",
+      content: "项目负责人是 Alice",
+    });
+    fake.queueJSON({
+      operations: [
+        {
+          type: "concept",
+          name: "project-facts",
+          title: "项目信息",
+          rawIds: [removedId, survivingId],
+        },
+      ],
+      skippedRawIds: [],
+    });
+    fake.queueJSON({
+      title: "项目信息",
+      summary: "项目代号与负责人",
+      aliases: [],
+      tags: [],
+      links: [],
+      content: "# 项目信息\n项目代号是北极星，负责人是 Alice。",
+    });
+    await retractEngine.runDreamCycle(SPACE);
+    expect(await retractEngine.getPage(SPACE, "concepts/project-facts")).not.toBeNull();
+
+    expect(
+      await retractEngine.retractMessage(SPACE, {
+        chatId: "oc_contract",
+        messageId: "om_remove",
+        requestedBy: "ou_owner",
+      }),
+    ).toEqual({
+      status: "retracted",
+      affectedPages: ["concepts/project-facts"],
+      requeuedSources: 1,
+    });
+    expect(await retractEngine.getPage(SPACE, "concepts/project-facts")).toBeNull();
+
+    fake.queueJSON({ operations: [], skippedRawIds: [survivingId] });
+    expect((await retractEngine.runDreamCycle(SPACE)).examined).toBe(1);
+    retractEngine.close();
   });
 
   test("upsertPage writes markdown file and is searchable", async () => {

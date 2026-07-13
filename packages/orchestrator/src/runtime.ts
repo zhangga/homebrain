@@ -30,6 +30,7 @@ import { GROUP_ADDED_NOTICE, NO_PROVIDER_NOTICE, coldStartNote } from "./message
 import { parseTaskCommand, handleTaskCommand } from "./task-commands.ts";
 
 const log = logger.child("orchestrator");
+const RETRACTION_RE = /别记|撤回|删掉这条|不要记/;
 
 export interface RuntimeOptions {
   engine: KnowledgeEngine;
@@ -122,6 +123,12 @@ export class Orchestrator {
 
     const decision = gate(msg, { mentionsOnly: meta?.mentionsOnly });
 
+    // Retraction is a deterministic control command. Handle it before capture
+    // so the command itself never becomes knowledge.
+    if (decision.respond && RETRACTION_RE.test(msg.text)) {
+      return this.withThinking(msg, () => this.handleRetraction(msg, writeSpace));
+    }
+
     // Always capture (收录 != 应答).
     if (decision.capture && msg.text.trim() !== "") {
       await this.engine.remember({
@@ -201,18 +208,52 @@ export class Orchestrator {
 
   private async runCommand(msg: InboundMessage, writeSpace: SpaceId): Promise<void> {
     const t = msg.text;
-    if (/别记|撤回|删掉这条|不要记/.test(t)) {
-      // MVP: acknowledge; a precise retraction ties to the last raw id, which we
-      // capture in Slice 5 when we wire message->raw id mapping per chat.
-      await this.send(msg, "好的，这条我不会纳入知识（撤回已收到）。");
-      return;
-    }
     if (/重新提炼|重新整理|整理知识|dream/i.test(t)) {
       await this.send(msg, "开始重新提炼本空间知识，稍后完成。");
       void this.engine.runDreamCycle(writeSpace).catch((err) => log.error("manual dream failed", { err: String(err) }));
       return;
     }
     await this.send(msg, "收到指令。目前支持：『别记这条』撤回、『重新提炼』触发整理。");
+  }
+
+  private async handleRetraction(msg: InboundMessage, writeSpace: SpaceId): Promise<void> {
+    let target;
+    try {
+      target = await this.connector.resolveReplyTarget?.(msg.messageId);
+    } catch (err) {
+      log.warn("reply target resolution failed", { messageId: msg.messageId, err: String(err) });
+    }
+    if (!target) {
+      await this.send(msg, "请回复要撤回的那条原消息，并 @我 说「别记这条」。");
+      return;
+    }
+
+    const result = await this.engine.retractMessage(writeSpace, {
+      chatId: msg.chatId,
+      messageId: target.messageId,
+      requestedBy: msg.senderId,
+    });
+    if (result.status === "forbidden") {
+      await this.send(msg, "这条消息不是你发送的；目前只能撤回自己发送的消息。");
+      return;
+    }
+    if (result.status === "not_found") {
+      await this.send(msg, "没有找到这条消息的收录记录；它可能尚未收录或已经撤回。");
+      return;
+    }
+
+    const pageNote =
+      result.affectedPages.length > 0
+        ? `，并清理了 ${result.affectedPages.length} 个受影响的知识页`
+        : "，原始记录已删除";
+    const rebuildNote = result.requeuedSources > 0 ? "；其余有效来源会重新提炼" : "";
+    await this.send(msg, `已撤回这条消息${pageNote}${rebuildNote}。`);
+
+    if (result.requeuedSources > 0) {
+      void this.engine
+        .runDreamCycle(writeSpace)
+        .catch((err) => log.warn("post-retraction redistillation failed", { space: writeSpace, err: String(err) }));
+    }
   }
 
   private async syncDocs(msg: InboundMessage, writeSpace: SpaceId): Promise<void> {

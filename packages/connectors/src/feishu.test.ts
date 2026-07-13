@@ -261,6 +261,73 @@ describe("FeishuConnector outbound", () => {
     expect(commands[1]).toContain("reaction_1");
   });
 
+  test("resolves the original message from a quoted reply", async () => {
+    const responses = [
+      JSON.stringify({
+        ok: true,
+        data: { messages: [{ message_id: "om_command", parent_id: "om_source" }] },
+      }),
+      JSON.stringify({
+        ok: true,
+        data: {
+          messages: [
+            {
+              message_id: "om_source",
+              sender: { id: "ou_owner" },
+            },
+          ],
+        },
+      }),
+    ];
+    connector = new FeishuConnector({
+      spawner: new FakeSpawner(),
+      runCommand: async () => responses.shift()!,
+    });
+
+    expect(await connector.resolveReplyTarget("om_command")).toEqual({
+      messageId: "om_source",
+      senderId: "ou_owner",
+    });
+  });
+
+  test("resolves the thread root when the command is a topic reply", async () => {
+    connector = new FeishuConnector({
+      spawner: new FakeSpawner(),
+      runCommand: async () =>
+        JSON.stringify({
+          ok: true,
+          data: {
+            messages: [
+              {
+                message_id: "om_command",
+                thread_id: "omt_1",
+                thread_message_position: "1",
+                thread_replies: [
+                  {
+                    message_id: "om_source",
+                    thread_id: "omt_1",
+                    thread_message_position: "-1",
+                    sender: { id: "ou_owner" },
+                  },
+                  {
+                    message_id: "om_command",
+                    thread_id: "omt_1",
+                    thread_message_position: "1",
+                    sender: { id: "ou_owner" },
+                  },
+                ],
+              },
+            ],
+          },
+        }),
+    });
+
+    expect(await connector.resolveReplyTarget("om_command")).toEqual({
+      messageId: "om_source",
+      senderId: "ou_owner",
+    });
+  });
+
   test("fetchDoc parses markdown from CLI json", async () => {
     const spawner = new FakeSpawner();
     connector = new FeishuConnector({

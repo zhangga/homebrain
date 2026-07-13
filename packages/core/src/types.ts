@@ -28,6 +28,22 @@ export interface SearchOptions {
   limit?: number;
 }
 
+export interface RetractionRequest {
+  chatId: string;
+  messageId: string;
+  requestedBy: string;
+}
+
+export type RetractionStatus = "retracted" | "not_found" | "forbidden";
+
+export interface RetractionResult {
+  status: RetractionStatus;
+  /** content pages removed because they included the retracted source */
+  affectedPages: string[];
+  /** surviving sources put back into the distillation queue */
+  requeuedSources: number;
+}
+
 /** A space and its on-disk purpose/schema, as tracked by the registry. */
 export interface SpaceMeta {
   id: SpaceId;

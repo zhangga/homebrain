@@ -67,6 +67,7 @@ export class SpaceIndex {
       )
     `);
     this.db.run(`CREATE INDEX IF NOT EXISTS raw_ingested ON raw(ingested, created)`);
+    this.db.run(`CREATE INDEX IF NOT EXISTS raw_message ON raw(chat_id, message_id)`);
     this.db.run(`CREATE INDEX IF NOT EXISTS pages_type ON pages(type)`);
   }
 
@@ -214,10 +215,34 @@ export class SpaceIndex {
     return row ? rowToRaw(row) : null;
   }
 
+  findRawsByMessageId(messageId: string, chatId: string): RawRecord[] {
+    const rows = this.db
+      .query(
+        `SELECT * FROM raw
+         WHERE message_id = ? AND chat_id = ?
+         ORDER BY created ASC`,
+      )
+      .all(messageId, chatId) as Record<string, unknown>[];
+    return rows.map(rowToRaw);
+  }
+
+  deleteRaw(id: string): void {
+    this.db.query(`DELETE FROM raw WHERE id = ?`).run(id);
+  }
+
   markIngested(ids: string[]): void {
     if (ids.length === 0) return;
     const tx = this.db.transaction((batch: string[]) => {
       const stmt = this.db.query(`UPDATE raw SET ingested = 1 WHERE id = ?`);
+      for (const id of batch) stmt.run(id);
+    });
+    tx(ids);
+  }
+
+  markPending(ids: string[]): void {
+    if (ids.length === 0) return;
+    const tx = this.db.transaction((batch: string[]) => {
+      const stmt = this.db.query(`UPDATE raw SET ingested = 0 WHERE id = ?`);
       for (const id of batch) stmt.run(id);
     });
     tx(ids);

@@ -18,6 +18,7 @@ import type {
   Connector,
   InboundEvent,
   OutboundReply,
+  ReplyTarget,
 } from "./connector.ts";
 import {
   normalizeBotAdded,
@@ -58,6 +59,15 @@ interface Consumer {
   attempts: number;
   /** consecutive failures to ever reach the ready marker */
   neverReady: number;
+}
+
+interface FetchedMessage {
+  message_id?: string;
+  parent_id?: string;
+  root_id?: string;
+  thread_message_position?: string;
+  sender?: { id?: string };
+  thread_replies?: FetchedMessage[];
 }
 
 export class FeishuConnector implements Connector {
@@ -297,6 +307,43 @@ export class FeishuConnector implements Connector {
     } catch (err) {
       log.warn("remove reaction failed", { messageId, reactionId, err: String(err) });
     }
+  }
+
+  async resolveReplyTarget(messageId: string): Promise<ReplyTarget | undefined> {
+    try {
+      const current = await this.fetchMessage(messageId);
+      const threadRoot = current?.thread_replies?.find(
+        (item) => item.thread_message_position === "-1" && item.message_id !== messageId,
+      );
+      const targetId = current?.parent_id ?? current?.root_id ?? threadRoot?.message_id;
+      if (!targetId || targetId === messageId) return undefined;
+      const target = threadRoot?.message_id === targetId ? threadRoot : await this.fetchMessage(targetId);
+      return {
+        messageId: targetId,
+        senderId: target?.sender?.id,
+      };
+    } catch (err) {
+      log.warn("resolve reply target failed", { messageId, err: String(err) });
+      return undefined;
+    }
+  }
+
+  private async fetchMessage(messageId: string): Promise<FetchedMessage | undefined> {
+    const out = await this.runCommand([
+      this.larkBin,
+      "im",
+      "+messages-mget",
+      "--as",
+      "bot",
+      "--message-ids",
+      messageId,
+      "--no-reactions",
+      "--json",
+    ]);
+    const parsed = JSON.parse(out) as Record<string, unknown>;
+    const data = parsed.data as Record<string, unknown> | undefined;
+    const messages = data?.messages;
+    return Array.isArray(messages) ? (messages[0] as FetchedMessage | undefined) : undefined;
   }
 
   // ---- doc sync (Q8) ------------------------------------------------------

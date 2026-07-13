@@ -21,11 +21,18 @@ import type {
 import { Serializer, config, logger } from "@homebrain/shared";
 import { ping, isCliProvider, type ProviderId } from "@homebrain/llm";
 import type { Knowledge } from "./knowledge.ts";
-import type { AskOptions, DreamOptions, SearchOptions } from "./types.ts";
+import type {
+  AskOptions,
+  DreamOptions,
+  RetractionRequest,
+  RetractionResult,
+  SearchOptions,
+} from "./types.ts";
 import { SpaceRegistry } from "./registry.ts";
 import { AgentStore, type Agent } from "./agents.ts";
 import { TaskStore, type Task } from "./tasks.ts";
 import { runDreamCycle } from "./dream.ts";
+import { refreshDigest } from "./digest.ts";
 import { ask as askImpl } from "./ask.ts";
 import { gatewayClient, type LlmClient } from "./llm.ts";
 import { makeCliClient, type RunProviderFn } from "./cli-client.ts";
@@ -152,6 +159,56 @@ export class KnowledgeEngine implements Knowledge {
       const id = store.index().insertRaw(entry);
       log.debug("remembered raw entry", { space: entry.space, source: entry.source, id });
       return id;
+    });
+  }
+
+  async retractMessage(space: SpaceId, request: RetractionRequest): Promise<RetractionResult> {
+    return this.serializer.run(space, async () => {
+      const empty = (status: RetractionResult["status"]): RetractionResult => ({
+        status,
+        affectedPages: [],
+        requeuedSources: 0,
+      });
+      if (!this.registry.has(space)) return empty("not_found");
+      const idx = this.registry.store(space).index();
+      const raws = idx.findRawsByMessageId(request.messageId, request.chatId);
+      if (raws.length === 0) return empty("not_found");
+      if (raws.some((raw) => !raw.author || raw.author !== request.requestedBy)) {
+        return empty("forbidden");
+      }
+      const removedSourceIds = new Set(raws.map((raw) => raw.id));
+
+      const store = this.registry.store(space);
+      const affectedPages = idx
+        .allPages()
+        .filter((page) => page.sources.some((sourceId) => removedSourceIds.has(sourceId)))
+        .map((page) => page.slug)
+        .sort();
+      const survivingSourceIds = new Set<string>();
+      for (const slug of affectedPages) {
+        const page = idx.getPage(slug);
+        for (const sourceId of page?.sources ?? []) {
+          if (!removedSourceIds.has(sourceId) && idx.getRaw(sourceId)) survivingSourceIds.add(sourceId);
+        }
+        // Delete first so a crash can only lose derived content; it can never
+        // leave content derived from a source that has already been removed.
+        store.deletePage(slug);
+      }
+      for (const raw of raws) idx.deleteRaw(raw.id);
+      idx.markPending([...survivingSourceIds]);
+      if (affectedPages.length > 0) refreshDigest(store);
+      log.info("retracted raw message", {
+        space,
+        messageId: request.messageId,
+        rawIds: [...removedSourceIds],
+        affectedPages,
+        requeuedSources: survivingSourceIds.size,
+      });
+      return {
+        status: "retracted",
+        affectedPages,
+        requeuedSources: survivingSourceIds.size,
+      };
     });
   }
 
