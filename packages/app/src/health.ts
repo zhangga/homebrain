@@ -55,7 +55,25 @@ function loopComponent(label: string, health?: RuntimeLoopHealth): ComponentHeal
   };
 }
 
-/** Build a cached async reporter suitable for /healthz and /readyz. */
+function probeLoopComponent(
+  label: string,
+  probe: () => RuntimeLoopHealth | undefined,
+): { health?: RuntimeLoopHealth; component: ComponentHealth } {
+  try {
+    const health = probe();
+    return { health, component: loopComponent(label, health) };
+  } catch (err) {
+    return {
+      component: {
+        status: "down",
+        summary: `${label}状态检查失败`,
+        details: { error: String(err) },
+      },
+    };
+  }
+}
+
+/** Build a cached async reporter suitable for /readyz and the management UI. */
 export function createSystemHealthReporter(
   sources: SystemHealthSources,
 ): () => Promise<SystemHealthSnapshot> {
@@ -102,25 +120,40 @@ export function createSystemHealthReporter(
       };
     }
 
-    const connector = sources.connectorHealth();
-    const failedConsumers = connector.consumers.filter((consumer) => consumer.state === "failed");
-    const pendingConsumers = connector.consumers.filter((consumer) => consumer.state !== "ready");
-    components.feishu = {
-      status: connector.ready ? "ok" : failedConsumers.length > 0 ? "down" : "degraded",
-      summary: connector.ready
-        ? "飞书事件消费者已就绪"
-        : `未就绪：${pendingConsumers.map((consumer) => consumer.key).join("、") || "尚未启动"}`,
-      details: { ...connector },
-    };
+    let connector: ConnectorHealth;
+    try {
+      connector = sources.connectorHealth();
+      const failedConsumers = connector.consumers.filter((consumer) => consumer.state === "failed");
+      const pendingConsumers = connector.consumers.filter((consumer) => consumer.state !== "ready");
+      components.feishu = {
+        status: connector.ready ? "ok" : failedConsumers.length > 0 ? "down" : "degraded",
+        summary: connector.ready
+          ? "飞书事件消费者已就绪"
+          : `未就绪：${pendingConsumers.map((consumer) => consumer.key).join("、") || "尚未启动"}`,
+        details: { ...connector },
+      };
+    } catch (err) {
+      connector = { name: "feishu", ready: false, consumers: [] };
+      components.feishu = {
+        status: "down",
+        summary: "飞书事件消费者状态检查失败",
+        details: { error: String(err) },
+      };
+    }
 
     let detected: DetectedProvider[] = [];
-    let providerProbeError: string | undefined;
+    const providerErrors: string[] = [];
     try {
       detected = await providers();
     } catch (err) {
-      providerProbeError = String(err);
+      providerErrors.push(`CLI 探测：${String(err)}`);
     }
-    const required = [...new Set(requiredProviderIds())].sort();
+    let required: string[] = [];
+    try {
+      required = [...new Set(requiredProviderIds())].sort();
+    } catch (err) {
+      providerErrors.push(`必需 CLI 配置：${String(err)}`);
+    }
     const detectedById = new Map<string, DetectedProvider>(
       detected.map((provider) => [provider.id, provider]),
     );
@@ -131,13 +164,13 @@ export function createSystemHealthReporter(
       (run) => required.includes(String(run.provider)) && run.lastStatus === "error",
     );
     const providerReady =
-      !providerProbeError && required.length > 0 && unavailable.length === 0 && latestRuntimeFailures.length === 0;
+      providerErrors.length === 0 && required.length > 0 && unavailable.length === 0 && latestRuntimeFailures.length === 0;
     components.providers = {
       status: providerReady ? "ok" : "down",
       summary: providerReady
         ? `必需 CLI 可用：${required.join("、")}`
-        : providerProbeError
-          ? "CLI 探测失败"
+        : providerErrors.length > 0
+          ? "CLI 状态检查失败"
           : unavailable.length > 0
             ? `CLI 不可用：${unavailable.join("、")}`
             : latestRuntimeFailures.length > 0
@@ -147,7 +180,7 @@ export function createSystemHealthReporter(
         required,
         detected,
         providerRuns,
-        ...(providerProbeError ? { error: providerProbeError } : {}),
+        ...(providerErrors.length > 0 ? { errors: providerErrors } : {}),
       },
     };
 
@@ -178,17 +211,21 @@ export function createSystemHealthReporter(
       details: { tasks },
     };
 
-    const dreamHealth = sources.dreamSchedulerHealth();
-    const taskHealth = sources.taskSchedulerHealth();
-    components.dreamScheduler = loopComponent("Dream Cycle 调度器", dreamHealth);
-    components.taskScheduler = loopComponent("任务调度器", taskHealth);
+    const dreamLoop = probeLoopComponent("Dream Cycle 调度器", sources.dreamSchedulerHealth);
+    const taskLoop = probeLoopComponent("任务调度器", sources.taskSchedulerHealth);
+    const dreamHealth = dreamLoop.health;
+    const taskHealth = taskLoop.health;
+    components.dreamScheduler = dreamLoop.component;
+    components.taskScheduler = taskLoop.component;
 
     const ready =
       core.ok &&
       connector.ready &&
       providerReady &&
       dreamHealth?.started === true &&
-      taskHealth?.started === true;
+      dreamHealth.lastStatus !== "error" &&
+      taskHealth?.started === true &&
+      taskHealth.lastStatus !== "error";
     const statuses = Object.values(components).map((component) => component.status);
     const status = !ready || statuses.includes("down")
       ? "down"

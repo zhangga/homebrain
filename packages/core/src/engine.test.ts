@@ -361,6 +361,50 @@ describe("Knowledge seam contract", () => {
     ]);
   });
 
+  test("health keeps a task running until all concurrent runs finish", async () => {
+    const completions: Array<(value: string) => void> = [];
+    const healthEngine = new KnowledgeEngine({
+      dataDir: join(dir, "concurrent-health"),
+      runProvider: async () => new Promise<string>((resolve) => completions.push(resolve)),
+    });
+    healthEngine.ensureSpace(SPACE);
+    const task = healthEngine.tasks.create({ name: "并发任务", space: SPACE, topic: "并发" })!;
+
+    const first = healthEngine.runTask(task.id, { distill: false });
+    const second = healthEngine.runTask(task.id, { distill: false });
+    expect(completions).toHaveLength(2);
+
+    completions[0]!("第一次完成");
+    await first;
+    let tasks = (await healthEngine.health()).details?.tasks as Array<Record<string, unknown>>;
+    expect(tasks[0]?.running).toBe(true);
+
+    completions[1]!("第二次完成");
+    await second;
+    tasks = (await healthEngine.health()).details?.tasks as Array<Record<string, unknown>>;
+    expect(tasks[0]?.running).toBe(false);
+    healthEngine.close();
+  });
+
+  test("health clears running state when task setup throws", async () => {
+    const healthEngine = new KnowledgeEngine({
+      dataDir: join(dir, "setup-failure-health"),
+      runProvider: async () => "unused",
+    });
+    healthEngine.ensureSpace(SPACE);
+    const task = healthEngine.tasks.create({ name: "失败任务", space: SPACE, topic: "失败" })!;
+    healthEngine.agentForSpace = () => {
+      throw new Error("agent store unavailable");
+    };
+
+    await expect(healthEngine.runTask(task.id, { distill: false })).rejects.toThrow(
+      "agent store unavailable",
+    );
+    const tasks = (await healthEngine.health()).details?.tasks as Array<Record<string, unknown>>;
+    expect(tasks[0]?.running).toBe(false);
+    healthEngine.close();
+  });
+
   test("space scaffold seeds purpose.md and schema.md", async () => {
     await engine.upsertPage(SPACE, page("entities/a", "A", "x"));
     const store = engine.registry.store(SPACE);

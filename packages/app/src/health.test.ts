@@ -110,4 +110,76 @@ describe("system health reporter", () => {
     );
     engine.close();
   });
+
+  test("is not ready when a scheduler's latest tick failed", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "hb-health-scheduler-"));
+    dirs.push(dir);
+    const engine = new KnowledgeEngine({ dataDir: dir, runProvider: async () => "ok" });
+    engine.ensureSpace("team/oc_health", { chatId: "oc_health" });
+    const reportHealth = createSystemHealthReporter({
+      engine,
+      connectorHealth: () => ({
+        name: "feishu",
+        ready: true,
+        consumers: [
+          { key: "im.message.receive_v1", state: "ready", attempts: 0 },
+          { key: "im.chat.member.bot.added_v1", state: "ready", attempts: 0 },
+        ],
+      }),
+      dreamSchedulerHealth: () => ({
+        ...loopHealth,
+        lastStatus: "error",
+        lastFailureAt: loopHealth.lastSuccessAt,
+        lastError: "database locked",
+      }),
+      taskSchedulerHealth: () => loopHealth,
+      detectProviders: async () => [
+        { id: "codex", name: "Codex", bin: "codex", available: true, detail: "1.0" },
+      ],
+      requiredProviderIds: () => ["codex"],
+    });
+
+    const snapshot = await reportHealth();
+    expect(snapshot.ready).toBe(false);
+    expect(snapshot.components.dreamScheduler).toEqual(
+      expect.objectContaining({ status: "degraded" }),
+    );
+    engine.close();
+  });
+
+  test("isolates failures from each component probe", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "hb-health-isolation-"));
+    dirs.push(dir);
+    const engine = new KnowledgeEngine({ dataDir: dir, runProvider: async () => "ok" });
+    engine.ensureSpace("team/oc_health", { chatId: "oc_health" });
+    const reportHealth = createSystemHealthReporter({
+      engine,
+      connectorHealth: () => {
+        throw new Error("connector probe failed");
+      },
+      dreamSchedulerHealth: () => {
+        throw new Error("dream scheduler probe failed");
+      },
+      taskSchedulerHealth: () => {
+        throw new Error("task scheduler probe failed");
+      },
+      detectProviders: async () => [],
+      requiredProviderIds: () => {
+        throw new Error("provider config failed");
+      },
+    });
+
+    const snapshot = await reportHealth();
+    expect(snapshot.ready).toBe(false);
+    expect(snapshot.components).toEqual(
+      expect.objectContaining({
+        knowledge: expect.objectContaining({ status: "ok" }),
+        feishu: expect.objectContaining({ status: "down" }),
+        providers: expect.objectContaining({ status: "down" }),
+        dreamScheduler: expect.objectContaining({ status: "down" }),
+        taskScheduler: expect.objectContaining({ status: "down" }),
+      }),
+    );
+    engine.close();
+  });
 });

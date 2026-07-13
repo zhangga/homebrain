@@ -141,7 +141,7 @@ export class KnowledgeEngine implements Knowledge {
   private runProvider: RunProviderFn;
   private providerRuns = new Map<ProviderId, ProviderRunHealth>();
   private dreamCycles = new Map<SpaceId, DreamCycleHealth>();
-  private runningTaskIds = new Set<string>();
+  private runningTaskCounts = new Map<string, number>();
 
   constructor(opts: EngineOptions = {}) {
     this.dataDir = opts.dataDir ?? config().dataDir;
@@ -337,53 +337,57 @@ export class KnowledgeEngine implements Knowledge {
     const task = this.tasks.get(taskId);
     if (!task) throw new Error(`unknown task: ${taskId}`);
     const startedAt = Date.now();
-    this.runningTaskIds.add(taskId);
-    this.registry.ensure(task.space);
-    const agent = this.agentForSpace(task.space);
+    this.runningTaskCounts.set(taskId, (this.runningTaskCounts.get(taskId) ?? 0) + 1);
     try {
-      // The LLM call runs OUTSIDE the per-space serializer — research is
-      // long-running and must not block captures/distillation. Only the write
-      // (remember) is serialized, and it acquires the lock itself.
-      const client = this.clientForSpace(task.space, TASK_TIMEOUT_MS);
-      const res = await client.complete({
-        system: agent?.instruction || undefined,
-        prompt: researchPrompt(task.topic),
-        model: agent?.model || undefined,
-        purpose: "distill",
-        space: task.space,
-      });
-      const text = res.text.trim();
-      if (!text) throw new Error("task produced empty output");
-      const rawId = await this.remember({
-        space: task.space,
-        source: "task",
-        content: `# 任务研究：${task.name}\n主题：${task.topic}\n\n${text}`,
-      });
-      // Distill immediately so the research becomes a wiki page now, not at the
-      // next nightly cycle. The per-task `distillOnRun` is the default; an
-      // explicit opts.distill overrides it. Best-effort: a distillation failure
-      // doesn't fail the task (the raw entry is safely captured for later).
-      let pagesWritten: number | undefined;
-      const distill = opts.distill ?? task.distillOnRun;
-      if (distill) {
-        try {
-          const report = await this.runDreamCycle(task.space);
-          pagesWritten = report.pagesWritten;
-        } catch (err) {
-          log.warn("post-task distillation failed (raw kept for nightly)", { taskId, err: String(err) });
+      this.registry.ensure(task.space);
+      const agent = this.agentForSpace(task.space);
+      try {
+        // The LLM call runs OUTSIDE the per-space serializer — research is
+        // long-running and must not block captures/distillation. Only the write
+        // (remember) is serialized, and it acquires the lock itself.
+        const client = this.clientForSpace(task.space, TASK_TIMEOUT_MS);
+        const res = await client.complete({
+          system: agent?.instruction || undefined,
+          prompt: researchPrompt(task.topic),
+          model: agent?.model || undefined,
+          purpose: "distill",
+          space: task.space,
+        });
+        const text = res.text.trim();
+        if (!text) throw new Error("task produced empty output");
+        const rawId = await this.remember({
+          space: task.space,
+          source: "task",
+          content: `# 任务研究：${task.name}\n主题：${task.topic}\n\n${text}`,
+        });
+        // Distill immediately so the research becomes a wiki page now, not at the
+        // next nightly cycle. The per-task `distillOnRun` is the default; an
+        // explicit opts.distill overrides it. Best-effort: a distillation failure
+        // doesn't fail the task (the raw entry is safely captured for later).
+        let pagesWritten: number | undefined;
+        const distill = opts.distill ?? task.distillOnRun;
+        if (distill) {
+          try {
+            const report = await this.runDreamCycle(task.space);
+            pagesWritten = report.pagesWritten;
+          } catch (err) {
+            log.warn("post-task distillation failed (raw kept for nightly)", { taskId, err: String(err) });
+          }
         }
+        const summary = text.slice(0, 200);
+        this.tasks.setLastRun(taskId, { at: Date.now(), status: "ok", summary });
+        log.info("task run ok", { taskId, space: task.space, rawId, pagesWritten });
+        return { taskId, space: task.space, ok: true, summary, rawId, pagesWritten, startedAt, finishedAt: Date.now() };
+      } catch (err) {
+        const error = String(err);
+        this.tasks.setLastRun(taskId, { at: Date.now(), status: "error", error });
+        log.error("task run failed", { taskId, space: task.space, err: error });
+        return { taskId, space: task.space, ok: false, error, startedAt, finishedAt: Date.now() };
       }
-      const summary = text.slice(0, 200);
-      this.tasks.setLastRun(taskId, { at: Date.now(), status: "ok", summary });
-      log.info("task run ok", { taskId, space: task.space, rawId, pagesWritten });
-      return { taskId, space: task.space, ok: true, summary, rawId, pagesWritten, startedAt, finishedAt: Date.now() };
-    } catch (err) {
-      const error = String(err);
-      this.tasks.setLastRun(taskId, { at: Date.now(), status: "error", error });
-      log.error("task run failed", { taskId, space: task.space, err: error });
-      return { taskId, space: task.space, ok: false, error, startedAt, finishedAt: Date.now() };
     } finally {
-      this.runningTaskIds.delete(taskId);
+      const remaining = (this.runningTaskCounts.get(taskId) ?? 1) - 1;
+      if (remaining > 0) this.runningTaskCounts.set(taskId, remaining);
+      else this.runningTaskCounts.delete(taskId);
     }
   }
 
@@ -466,7 +470,7 @@ export class KnowledgeEngine implements Knowledge {
           name: task.name,
           space: task.space,
           enabled: task.enabled,
-          running: this.runningTaskIds.has(task.id),
+          running: (this.runningTaskCounts.get(task.id) ?? 0) > 0,
           lastRunAt: task.lastRunAt,
           lastStatus: task.lastStatus,
           lastError: task.lastError,

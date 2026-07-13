@@ -170,7 +170,7 @@ bun run packages/app/src/main.ts
 启动后：feishu 连接器监听事件、只读后台在 `HOMEBRAIN_WEB_PORT`、调度器做启动 catch-up + 每日 03:00 提炼。
 SIGTERM/SIGINT 优雅退出（对 lark-cli 子进程发 SIGTERM，绝不 kill -9）。
 
-部署探针：`GET /healthz` 始终以 200 返回当前进程健康快照；`GET /readyz` 只有在知识存储、必需 CLI、两条飞书事件消费者及两个调度器都可用时返回 200，否则返回 503。管理后台 `/health` 提供同一快照的人类可读视图。
+部署探针：`GET /healthz` 是不依赖外部组件的快速进程存活检查，始终返回 200；`GET /readyz` 只有在知识存储、必需 CLI、两条飞书事件消费者及两个调度器都可用时返回 200，否则返回 503。管理后台 `/health` 提供完整健康快照的人类可读视图。
 
 ## 需人工完成的飞书配置
 

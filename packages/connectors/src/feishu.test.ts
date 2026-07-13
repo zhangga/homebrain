@@ -206,6 +206,27 @@ describe("FeishuConnector daemon (fake spawn)", () => {
     expect(second).not.toBe(first);
   });
 
+  test("reports the exit code when a ready consumer crashes", async () => {
+    const spawner = new FakeSpawner();
+    connector = new FeishuConnector({
+      spawner,
+      runCommand: async () => "{}",
+      backoffBaseMs: 1000,
+      backoffMaxMs: 1000,
+    });
+    await connector.start(() => {});
+
+    const proc = await spawner.waitForProc("im.message.receive_v1");
+    proc.emitStderr("[event] ready event_key=im.message.receive_v1");
+    await Bun.sleep(10);
+    proc.finish(7);
+    await Bun.sleep(10);
+
+    expect(
+      connector.health().consumers.find((consumer) => consumer.key === "im.message.receive_v1"),
+    ).toEqual(expect.objectContaining({ state: "backoff", lastError: "consumer exited with code 7" }));
+  });
+
   test("gives up on a consumer that never reaches ready", async () => {
     const spawner = new FakeSpawner();
     connector = new FeishuConnector({

@@ -85,7 +85,9 @@ describe("web backend (read-only)", () => {
 
     const live = await healthApp.request("/healthz");
     expect(live.status).toBe(200);
-    expect(await live.json()).toEqual(snapshot);
+    expect(await live.json()).toEqual(
+      expect.objectContaining({ status: "ok", checkedAt: expect.any(Number) }),
+    );
 
     const ready = await healthApp.request("/readyz");
     expect(ready.status).toBe(503);
@@ -103,20 +105,26 @@ describe("web backend (read-only)", () => {
     const live = await healthApp.request("/healthz");
     expect(live.status).toBe(200);
     expect(await live.json()).toEqual(
-      expect.objectContaining({
-        status: "down",
-        ready: false,
-        components: {
-          healthReporter: expect.objectContaining({
-            status: "down",
-            summary: "运行状态聚合失败",
-          }),
-        },
-      }),
+      expect.objectContaining({ status: "ok", checkedAt: expect.any(Number) }),
     );
 
     expect((await healthApp.request("/readyz")).status).toBe(503);
     expect((await healthApp.request("/health")).status).toBe(200);
+  });
+
+  test("liveness does not wait for readiness aggregation", async () => {
+    const healthApp = createWebApp({
+      engine,
+      health: () => new Promise<SystemHealthSnapshot>(() => {}),
+    });
+
+    const live = await Promise.race([
+      healthApp.request("/healthz"),
+      Bun.sleep(50).then(() => {
+        throw new Error("liveness timed out");
+      }),
+    ]);
+    expect(live.status).toBe(200);
   });
 
   test("management backend renders component failures and a global readiness alert", async () => {

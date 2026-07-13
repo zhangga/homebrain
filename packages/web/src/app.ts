@@ -129,7 +129,7 @@ export function createWebApp(opts: WebOptions): Hono {
 
   app.get("/healthz", async (c) => {
     c.header("cache-control", "no-store");
-    return c.json(await getHealth());
+    return c.json({ status: "ok", checkedAt: Date.now() });
   });
 
   app.get("/readyz", async (c) => {

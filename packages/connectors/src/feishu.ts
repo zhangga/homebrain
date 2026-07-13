@@ -277,7 +277,10 @@ export class FeishuConnector implements Connector {
       c.lastError = String(err);
       log.warn("stdout pump error", { key: c.key, err: String(err) });
     }
-    await proc.exited.catch(() => 0);
+    const exitCode = await proc.exited.catch(() => null);
+    if (!c.stopped && !this.stopping && !c.lastError) {
+      c.lastError = `consumer exited with code ${exitCode ?? "unknown"}`;
+    }
   }
 
   // ---- outbound -----------------------------------------------------------
