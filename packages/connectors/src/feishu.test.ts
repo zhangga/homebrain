@@ -130,6 +130,62 @@ describe("FeishuConnector daemon (fake spawn)", () => {
     expect((added[0] as { chatId: string }).chatId).toBe("oc_new");
   });
 
+  test("reports consumer readiness and the last received event", async () => {
+    const spawner = new FakeSpawner();
+    connector = new FeishuConnector({ spawner, runCommand: async () => "{}" });
+    await connector.start(() => {});
+
+    const messageProc = await spawner.waitForProc("im.message.receive_v1");
+    const addedProc = await spawner.waitForProc("im.chat.member.bot.added_v1");
+    messageProc.emitStderr("[event] ready event_key=im.message.receive_v1");
+    addedProc.emitStderr("[event] ready event_key=im.chat.member.bot.added_v1");
+    await Bun.sleep(20);
+    messageProc.emitStdout(
+      JSON.stringify({
+        chat_id: "oc_1",
+        chat_type: "p2p",
+        content: "hello",
+        message_id: "om_1",
+        event_id: "evt_1",
+        sender_id: "ou_1",
+      }),
+    );
+    await Bun.sleep(20);
+
+    const status = connector.health();
+    expect(status.ready).toBe(true);
+    expect(status.lastEventAt).toBeNumber();
+    expect(status.consumers).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ key: "im.message.receive_v1", state: "ready" }),
+        expect.objectContaining({ key: "im.chat.member.bot.added_v1", state: "ready" }),
+      ]),
+    );
+  });
+
+  test("reports a terminal failure when the consumer process cannot spawn", async () => {
+    const spawner: ProcSpawner = {
+      spawn: () => {
+        throw new Error("lark-cli not found");
+      },
+    };
+    connector = new FeishuConnector({
+      spawner,
+      runCommand: async () => "{}",
+      maxNeverReady: 1,
+    });
+
+    await connector.start(() => {});
+    await Bun.sleep(10);
+
+    const status = connector.health();
+    expect(status.ready).toBe(false);
+    expect(status.consumers).toEqual([
+      expect.objectContaining({ state: "failed", lastError: "Error: lark-cli not found" }),
+      expect.objectContaining({ state: "failed", lastError: "Error: lark-cli not found" }),
+    ]);
+  });
+
   test("restarts a crashed consumer with backoff", async () => {
     const spawner = new FakeSpawner();
     connector = new FeishuConnector({

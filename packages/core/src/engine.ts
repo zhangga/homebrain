@@ -19,7 +19,11 @@ import type {
   SpaceId,
 } from "@homebrain/shared";
 import { Serializer, config, logger } from "@homebrain/shared";
-import { ping, isCliProvider, type ProviderId } from "@homebrain/llm";
+import {
+  isCliProvider,
+  runProvider as runLocalProvider,
+  type ProviderId,
+} from "@homebrain/llm";
 import type { Knowledge } from "./knowledge.ts";
 import type {
   AskOptions,
@@ -105,6 +109,28 @@ export interface EngineOptions {
   runProvider?: RunProviderFn;
 }
 
+interface ProviderRunHealth {
+  provider: ProviderId;
+  running: number;
+  lastStatus?: "ok" | "error";
+  lastStartedAt?: number;
+  lastSuccessAt?: number;
+  lastFailureAt?: number;
+  lastError?: string;
+}
+
+interface DreamCycleHealth {
+  space: SpaceId;
+  running: boolean;
+  lastStatus?: "ok" | "error";
+  lastStartedAt?: number;
+  lastSuccessAt?: number;
+  lastFailureAt?: number;
+  lastError?: string;
+  lastExamined?: number;
+  lastPagesWritten?: number;
+}
+
 export class KnowledgeEngine implements Knowledge {
   readonly registry: SpaceRegistry;
   readonly agents: AgentStore;
@@ -112,7 +138,10 @@ export class KnowledgeEngine implements Knowledge {
   readonly serializer: Serializer;
   private dataDir: string;
   private llm?: LlmClient;
-  private runProvider?: RunProviderFn;
+  private runProvider: RunProviderFn;
+  private providerRuns = new Map<ProviderId, ProviderRunHealth>();
+  private dreamCycles = new Map<SpaceId, DreamCycleHealth>();
+  private runningTaskIds = new Set<string>();
 
   constructor(opts: EngineOptions = {}) {
     this.dataDir = opts.dataDir ?? config().dataDir;
@@ -121,7 +150,27 @@ export class KnowledgeEngine implements Knowledge {
     this.tasks = new TaskStore(this.dataDir);
     this.serializer = opts.serializer ?? new Serializer();
     this.llm = opts.llm;
-    this.runProvider = opts.runProvider;
+    const providerRunner = opts.runProvider ?? runLocalProvider;
+    this.runProvider = async (provider, input, timeoutMs) => {
+      const run = this.providerRuns.get(provider) ?? { provider, running: 0 };
+      run.running += 1;
+      run.lastStartedAt = Date.now();
+      this.providerRuns.set(provider, run);
+      try {
+        const output = await providerRunner(provider, input, timeoutMs);
+        run.lastSuccessAt = Date.now();
+        run.lastStatus = "ok";
+        run.lastError = undefined;
+        return output;
+      } catch (err) {
+        run.lastFailureAt = Date.now();
+        run.lastStatus = "error";
+        run.lastError = String(err);
+        throw err;
+      } finally {
+        run.running -= 1;
+      }
+    };
   }
 
   /** Ensure a space exists (used by connectors when a group is joined). */
@@ -246,10 +295,34 @@ export class KnowledgeEngine implements Knowledge {
 
   async runDreamCycle(space: SpaceId, opts: DreamOptions = {}): Promise<DreamReport> {
     return this.serializer.run(space, async () => {
-      const store = this.registry.ensure(space);
-      const report = await runDreamCycle(store, opts, { client: this.clientForSpace(space) });
-      this.registry.setLastDream(space, report.finishedAt);
-      return report;
+      const health = this.dreamCycles.get(space) ?? { space, running: false };
+      health.running = true;
+      health.lastStartedAt = Date.now();
+      this.dreamCycles.set(space, health);
+      try {
+        const store = this.registry.ensure(space);
+        const report = await runDreamCycle(store, opts, { client: this.clientForSpace(space) });
+        this.registry.setLastDream(space, report.finishedAt);
+        health.lastExamined = report.examined;
+        health.lastPagesWritten = report.pagesWritten;
+        if (report.errors.length === 0) {
+          health.lastSuccessAt = report.finishedAt;
+          health.lastStatus = "ok";
+          health.lastError = undefined;
+        } else {
+          health.lastFailureAt = report.finishedAt;
+          health.lastStatus = "error";
+          health.lastError = report.errors.join("; ").slice(0, 500);
+        }
+        return report;
+      } catch (err) {
+        health.lastFailureAt = Date.now();
+        health.lastStatus = "error";
+        health.lastError = String(err).slice(0, 500);
+        throw err;
+      } finally {
+        health.running = false;
+      }
     });
   }
 
@@ -264,6 +337,7 @@ export class KnowledgeEngine implements Knowledge {
     const task = this.tasks.get(taskId);
     if (!task) throw new Error(`unknown task: ${taskId}`);
     const startedAt = Date.now();
+    this.runningTaskIds.add(taskId);
     this.registry.ensure(task.space);
     const agent = this.agentForSpace(task.space);
     try {
@@ -308,6 +382,8 @@ export class KnowledgeEngine implements Knowledge {
       this.tasks.setLastRun(taskId, { at: Date.now(), status: "error", error });
       log.error("task run failed", { taskId, space: task.space, err: error });
       return { taskId, space: task.space, ok: false, error, startedAt, finishedAt: Date.now() };
+    } finally {
+      this.runningTaskIds.delete(taskId);
     }
   }
 
@@ -358,18 +434,44 @@ export class KnowledgeEngine implements Knowledge {
 
   async health(): Promise<HealthReport> {
     const spaces = this.registry.list();
-    const gatewayOk = await ping().catch(() => false);
+    let ok = true;
+    const spaceDetails = spaces.map((space) => {
+      try {
+        const index = this.registry.store(space.id).index();
+        return {
+          id: space.id,
+          ok: true,
+          pages: index.countPages(),
+          pendingRaw: index.countRaw(true),
+          lastDreamAt: space.lastDreamAt,
+        };
+      } catch (err) {
+        ok = false;
+        return { id: space.id, ok: false, error: String(err), lastDreamAt: space.lastDreamAt };
+      }
+    });
     return {
-      ok: gatewayOk,
+      ok,
       spaces: spaces.length,
       details: {
-        gatewayOk,
-        spaces: spaces.map((s) => ({
-          id: s.id,
-          pages: this.registry.store(s.id).index().countPages(),
-          pendingRaw: this.registry.store(s.id).index().countRaw(true),
-          lastDreamAt: s.lastDreamAt,
+        mode: "cli-only",
+        providerRuns: [...this.providerRuns.values()]
+          .map((run) => ({ ...run }))
+          .sort((a, b) => a.provider.localeCompare(b.provider)),
+        dreamCycles: [...this.dreamCycles.values()]
+          .map((cycle) => ({ ...cycle }))
+          .sort((a, b) => a.space.localeCompare(b.space)),
+        tasks: this.tasks.list().map((task) => ({
+          id: task.id,
+          name: task.name,
+          space: task.space,
+          enabled: task.enabled,
+          running: this.runningTaskIds.has(task.id),
+          lastRunAt: task.lastRunAt,
+          lastStatus: task.lastStatus,
+          lastError: task.lastError,
         })),
+        spaces: spaceDetails,
       },
     };
   }

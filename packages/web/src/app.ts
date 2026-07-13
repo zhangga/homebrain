@@ -13,7 +13,14 @@
 import { Hono } from "hono";
 import { readdirSync, readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
-import { config, saveSettings, isSpaceId, type SpaceId, type PersistedSettings } from "@homebrain/shared";
+import {
+  config,
+  saveSettings,
+  isSpaceId,
+  type SpaceId,
+  type PersistedSettings,
+  type SystemHealthSnapshot,
+} from "@homebrain/shared";
 import { detectProviders, providerModels, type DetectedProvider } from "@homebrain/llm";
 import type { KnowledgeEngine } from "@homebrain/core";
 import { layout } from "./layout.ts";
@@ -21,6 +28,7 @@ import {
   agentsView,
   askView,
   integrationsView,
+  healthView,
   logsView,
   pageView,
   rawListView,
@@ -32,6 +40,8 @@ import {
 
 export interface WebOptions {
   engine: KnowledgeEngine;
+  /** process-level health reporter; production wires all runtime components */
+  health?: () => Promise<SystemHealthSnapshot>;
   /** injected for tests; defaults to probing local CLIs. */
   detectProviders?: () => Promise<DetectedProvider[]>;
   /** injected for tests; defaults to the live gateway + curated CLI catalog. */
@@ -62,6 +72,41 @@ export function createWebApp(opts: WebOptions): Hono {
   // Detect local agent CLIs once, lazily, then cache (probing spawns processes).
   const detect = opts.detectProviders ?? detectProviders;
   const listModels = opts.providerModels ?? providerModels;
+  const reportHealth =
+    opts.health ??
+    (async (): Promise<SystemHealthSnapshot> => {
+      const core = await engine.health();
+      return {
+        status: core.ok ? "ok" : "down",
+        ready: core.ok,
+        checkedAt: Date.now(),
+        components: {
+          knowledge: {
+            status: core.ok ? "ok" : "down",
+            summary: core.ok ? "知识引擎可用" : "知识引擎不可用",
+            details: core.details,
+          },
+        },
+      };
+    });
+  const getHealth = async (): Promise<SystemHealthSnapshot> => {
+    try {
+      return await reportHealth();
+    } catch (err) {
+      return {
+        status: "down",
+        ready: false,
+        checkedAt: Date.now(),
+        components: {
+          healthReporter: {
+            status: "down",
+            summary: "运行状态聚合失败",
+            details: { error: String(err) },
+          },
+        },
+      };
+    }
+  };
   let providerCache: DetectedProvider[] | null = null;
   let modelCache: Record<string, string[]> | null = null;
   const getProviders = async (): Promise<DetectedProvider[]> => {
@@ -79,6 +124,30 @@ export function createWebApp(opts: WebOptions): Hono {
     const decoded = decodeURIComponent(raw);
     return isSpaceId(decoded) ? decoded : null;
   };
+
+  // ---- health probes ------------------------------------------------------
+
+  app.get("/healthz", async (c) => {
+    c.header("cache-control", "no-store");
+    return c.json(await getHealth());
+  });
+
+  app.get("/readyz", async (c) => {
+    c.header("cache-control", "no-store");
+    const snapshot = await getHealth();
+    return snapshot.ready ? c.json(snapshot) : c.json(snapshot, 503);
+  });
+
+  app.get("/health", async (c) => {
+    return c.html(
+      await layout(
+        "运行状态",
+        [{ label: "运行状态" }],
+        await healthView(await getHealth()),
+        "health",
+      ),
+    );
+  });
 
   // ---- spaces / knowledge --------------------------------------------------
 

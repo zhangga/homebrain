@@ -102,4 +102,42 @@ describe("Scheduler.tick", () => {
     // covered indirectly; DEFAULT_SCHEDULE hour is 3
     expect(DEFAULT_SCHEDULE.hour).toBe(3);
   });
+
+  test("exposes whether the scheduler loop is started and its last successful tick", async () => {
+    engine.ensureSpace(SPACE);
+    const sched = new Scheduler(engine, cfg);
+
+    await sched.start();
+    expect(sched.health()).toEqual(
+      expect.objectContaining({
+        started: true,
+        running: false,
+        lastStatus: "ok",
+        lastSuccessAt: expect.any(Number),
+        lastReason: "startup-catchup",
+      }),
+    );
+
+    sched.stop();
+    expect(sched.health().started).toBe(false);
+  });
+
+  test("records a startup failure and does not claim the loop started", async () => {
+    engine.registry.list = () => {
+      throw new Error("registry unavailable");
+    };
+    const sched = new Scheduler(engine, cfg);
+
+    await expect(sched.start()).rejects.toThrow("registry unavailable");
+    expect(sched.health()).toEqual(
+      expect.objectContaining({
+        started: false,
+        running: false,
+        lastStatus: "error",
+        lastFailureAt: expect.any(Number),
+        lastReason: "startup-catchup",
+        lastError: expect.stringContaining("registry unavailable"),
+      }),
+    );
+  });
 });

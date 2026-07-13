@@ -16,6 +16,7 @@
 import { config, logger } from "@homebrain/shared";
 import type {
   Connector,
+  ConnectorHealth,
   InboundEvent,
   OutboundReply,
   ReplyTarget,
@@ -59,6 +60,10 @@ interface Consumer {
   attempts: number;
   /** consecutive failures to ever reach the ready marker */
   neverReady: number;
+  state: "starting" | "ready" | "backoff" | "failed" | "stopped";
+  lastReadyAt?: number;
+  lastEventAt?: number;
+  lastError?: string;
 }
 
 interface FetchedMessage {
@@ -100,8 +105,8 @@ export class FeishuConnector implements Connector {
     this.handler = onEvent;
     this.stopping = false;
     this.consumers = [
-      { key: MESSAGE_KEY, stopped: false, attempts: 0, neverReady: 0 },
-      { key: BOT_ADDED_KEY, stopped: false, attempts: 0, neverReady: 0 },
+      { key: MESSAGE_KEY, stopped: false, attempts: 0, neverReady: 0, state: "starting" },
+      { key: BOT_ADDED_KEY, stopped: false, attempts: 0, neverReady: 0, state: "starting" },
     ];
     // Launch each consumer loop; do not await (they run for the connector's life).
     for (const c of this.consumers) void this.runConsumer(c);
@@ -111,35 +116,80 @@ export class FeishuConnector implements Connector {
     this.stopping = true;
     for (const c of this.consumers) {
       c.stopped = true;
+      c.state = "stopped";
       c.proc?.kill(); // SIGTERM
     }
+  }
+
+  health(): ConnectorHealth {
+    const consumers = this.consumers.map((consumer) => ({
+      key: consumer.key,
+      state: consumer.state,
+      attempts: consumer.attempts,
+      lastReadyAt: consumer.lastReadyAt,
+      lastEventAt: consumer.lastEventAt,
+      lastError: consumer.lastError,
+    }));
+    const eventTimes = consumers
+      .map((consumer) => consumer.lastEventAt)
+      .filter((at): at is number => at !== undefined);
+    return {
+      name: this.name,
+      ready: consumers.length > 0 && consumers.every((consumer) => consumer.state === "ready"),
+      lastEventAt: eventTimes.length > 0 ? Math.max(...eventTimes) : undefined,
+      consumers,
+    };
   }
 
   // ---- inbound: consumer loop with ready-gating + backoff -----------------
 
   private async runConsumer(c: Consumer): Promise<void> {
     while (!c.stopped && !this.stopping) {
+      c.state = "starting";
       const cmd = [this.larkBin, "event", "consume", c.key, "--as", "bot"];
       log.info("starting consumer", { key: c.key });
-      const proc = this.spawner.spawn(cmd);
+      let proc: ProcHandle;
+      try {
+        proc = this.spawner.spawn(cmd);
+      } catch (err) {
+        c.neverReady += 1;
+        c.lastError = String(err).slice(-300);
+        log.warn("consumer process failed to spawn", {
+          key: c.key,
+          neverReady: c.neverReady,
+          err: c.lastError,
+        });
+        if (c.neverReady >= this.maxNeverReady) {
+          c.state = "failed";
+          log.error("giving up on consumer (process could not spawn)", { key: c.key });
+          break;
+        }
+        await this.backoff(c);
+        continue;
+      }
       c.proc = proc;
 
       const { ready, stderrTail } = await this.awaitReady(proc, c.key);
       if (ready) {
         c.attempts = 0; // healthy start resets backoff
         c.neverReady = 0;
+        c.state = "ready";
+        c.lastReadyAt = Date.now();
+        c.lastError = undefined;
         await this.pumpStdout(proc, c);
       } else {
         // Process ended before ready — a startup failure. Track separately from
         // post-ready crashes so a permanently-misconfigured event key (e.g. not
         // enabled in the console) stops retrying instead of looping forever.
         c.neverReady += 1;
+        c.lastError = stderrTail.slice(-300) || "consumer exited before ready";
         log.warn("consumer exited before ready", {
           key: c.key,
           neverReady: c.neverReady,
           detail: stderrTail.slice(-300),
         });
         if (c.neverReady >= this.maxNeverReady) {
+          c.state = "failed";
           log.error("giving up on consumer (never reached ready)", {
             key: c.key,
             hint: "check that the event is enabled in the developer console and the bot has the required scope",
@@ -150,13 +200,23 @@ export class FeishuConnector implements Connector {
 
       if (c.stopped || this.stopping) break;
       // crashed / exited: exponential backoff before restart (plan R4)
-      c.attempts += 1;
-      const backoff = Math.min(this.backoffBaseMs * 2 ** (c.attempts - 1), this.backoffMaxMs);
-      const jitter = Math.random() * Math.min(500, backoff);
-      log.warn("consumer down; backing off", { key: c.key, attempts: c.attempts, backoffMs: Math.round(backoff + jitter) });
-      await Bun.sleep(backoff + jitter);
+      await this.backoff(c);
     }
+    if (c.stopped || this.stopping) c.state = "stopped";
     log.info("consumer loop ended", { key: c.key });
+  }
+
+  private async backoff(c: Consumer): Promise<void> {
+    c.attempts += 1;
+    c.state = "backoff";
+    const backoff = Math.min(this.backoffBaseMs * 2 ** (c.attempts - 1), this.backoffMaxMs);
+    const jitter = Math.random() * Math.min(500, backoff);
+    log.warn("consumer down; backing off", {
+      key: c.key,
+      attempts: c.attempts,
+      backoffMs: Math.round(backoff + jitter),
+    });
+    await Bun.sleep(backoff + jitter);
   }
 
   /**
@@ -206,6 +266,7 @@ export class FeishuConnector implements Connector {
             ? normalizeMessage(obj, this.identity)
             : normalizeBotAdded(obj);
         if (!event) continue;
+        c.lastEventAt = Date.now();
         try {
           await this.handler?.(event);
         } catch (err) {
@@ -213,6 +274,7 @@ export class FeishuConnector implements Connector {
         }
       }
     } catch (err) {
+      c.lastError = String(err);
       log.warn("stdout pump error", { key: c.key, err: String(err) });
     }
     await proc.exited.catch(() => 0);

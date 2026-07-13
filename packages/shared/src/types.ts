@@ -151,3 +151,20 @@ export interface HealthReport {
   spaces: number;
   details?: Record<string, unknown>;
 }
+
+export type ComponentHealthStatus = "ok" | "degraded" | "down";
+
+export interface ComponentHealth {
+  status: ComponentHealthStatus;
+  summary: string;
+  details?: Record<string, unknown>;
+}
+
+/** Process-level health snapshot consumed by probes and the management UI. */
+export interface SystemHealthSnapshot {
+  status: ComponentHealthStatus;
+  /** whether the process can safely receive and handle new work */
+  ready: boolean;
+  checkedAt: number;
+  components: Record<string, ComponentHealth>;
+}

@@ -85,8 +85,12 @@ const STYLE = `
   .badge { font-size:12px; padding:2px 8px; border-radius:10px; }
   .badge.knowledge { background:var(--ok-soft); color:#166534; }
   .badge.general { background:var(--warn-soft); color:var(--warn); }
+  .badge.ok { background:var(--ok-soft); color:#166534; }
+  .badge.degraded { background:var(--warn-soft); color:var(--warn); }
+  .badge.down { background:#fee2e2; color:#991b1b; }
   .empty { color:var(--muted); padding:22px; text-align:center; }
   .flash { background:var(--ok-soft); color:#166534; border:1px solid #bbf7d0; border-radius:8px; padding:9px 13px; margin-bottom:16px; font-size:14px; }
+  .health-alert { background:#fee2e2; color:#991b1b; border:1px solid #fecaca; border-radius:8px; padding:9px 13px; margin-bottom:16px; font-size:14px; }
 
   /* toggle switch */
   .switch { position:relative; display:inline-block; width:40px; height:22px; }
@@ -109,6 +113,7 @@ const NAV: { key: string; label: string; href: string; ico: string }[] = [
   { key: "agents", label: "Agents", href: "/agents", ico: "🤖" },
   { key: "tasks", label: "任务", href: "/tasks", ico: "⏰" },
   { key: "integrations", label: "Integrations", href: "/integrations", ico: "🔌" },
+  { key: "health", label: "运行状态", href: "/health", ico: "🩺" },
   { key: "logs", label: "调用日志", href: "/logs", ico: "📋" },
   { key: "settings", label: "设置", href: "/settings", ico: "⚙️" },
 ];
@@ -149,9 +154,21 @@ export function layout(
     <div class="content">
       <main>
         <div class="crumbs">${trail}</div>
+        <div id="runtime-health-alert" class="health-alert" hidden>
+          运行状态异常，部分能力可能不可用。<a href="/health">查看详情</a>
+        </div>
         ${body}
       </main>
     </div>
+    <script>
+      fetch("/readyz", { cache: "no-store" })
+        .then(function (response) {
+          if (!response.ok) document.getElementById("runtime-health-alert").hidden = false;
+        })
+        .catch(function () {
+          document.getElementById("runtime-health-alert").hidden = false;
+        });
+    </script>
   </body>
 </html>`;
 }

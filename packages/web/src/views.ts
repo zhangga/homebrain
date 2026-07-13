@@ -6,7 +6,14 @@
  */
 import { html, raw } from "hono/html";
 import type { HtmlEscapedString } from "hono/utils/html";
-import type { AskResult, PageRef, RawRecord, SpaceId, Page } from "@homebrain/shared";
+import type {
+  AskResult,
+  PageRef,
+  RawRecord,
+  SpaceId,
+  Page,
+  SystemHealthSnapshot,
+} from "@homebrain/shared";
 import type { SpaceMeta, Agent, Task } from "@homebrain/core";
 import { AGENT_PERMISSIONS, TASK_CADENCES } from "@homebrain/core";
 import type { DetectedProvider } from "@homebrain/llm";
@@ -173,6 +180,46 @@ export function logsView(logs: { day: string; lines: string[] }[]): HtmlEscapedS
 
 function escapePre(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+// ---- runtime health -------------------------------------------------------
+
+export function healthView(
+  snapshot: SystemHealthSnapshot,
+): HtmlEscapedString | Promise<HtmlEscapedString> {
+  const labels: Record<string, string> = {
+    knowledge: "知识存储",
+    providers: "本机 CLI",
+    feishu: "飞书事件消费者",
+    dreamCycles: "Dream Cycle",
+    tasks: "任务执行",
+    dreamScheduler: "Dream Cycle 调度器",
+    taskScheduler: "任务调度器",
+  };
+  const rows = Object.entries(snapshot.components).map(([key, component]) => {
+    const details = component.details
+      ? html`<details><summary class="muted">查看详情</summary><pre>${raw(
+          escapePre(JSON.stringify(component.details, null, 2)),
+        )}</pre></details>`
+      : "";
+    return html`<div class="card">
+      <div class="row">
+        <strong>${labels[key] ?? key}</strong>
+        <span class="badge ${component.status}">${component.status}</span>
+      </div>
+      <div style="margin-top:8px">${component.summary}</div>
+      ${details}
+    </div>`;
+  });
+  return html`<h1>运行状态</h1>
+    <p class="subtitle">检查时间：${fmtTime(snapshot.checkedAt)} · Ready：${snapshot.ready ? "是" : "否"}</p>
+    <div class="card">
+      <div class="row">
+        <strong>总体状态</strong>
+        <span class="badge ${snapshot.status}">${snapshot.status}</span>
+      </div>
+    </div>
+    ${rows}`;
 }
 
 // ---- Agents (mew two-pane: list + editor) ----------------------------------

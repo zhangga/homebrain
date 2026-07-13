@@ -91,4 +91,41 @@ describe("TaskScheduler.tick", () => {
     expect(ran).not.toContain(t.id);
     expect(notified).toEqual([]);
   });
+
+  test("exposes whether the task scheduler loop is started", async () => {
+    const sched = new TaskScheduler(engine);
+
+    await sched.start();
+    expect(sched.health()).toEqual(
+      expect.objectContaining({
+        started: true,
+        running: false,
+        lastStatus: "ok",
+        lastSuccessAt: expect.any(Number),
+        lastReason: "startup-catchup",
+      }),
+    );
+
+    sched.stop();
+    expect(sched.health().started).toBe(false);
+  });
+
+  test("records a startup failure and does not claim the loop started", async () => {
+    engine.tasks.list = () => {
+      throw new Error("task registry unavailable");
+    };
+    const sched = new TaskScheduler(engine);
+
+    await expect(sched.start()).rejects.toThrow("task registry unavailable");
+    expect(sched.health()).toEqual(
+      expect.objectContaining({
+        started: false,
+        running: false,
+        lastStatus: "error",
+        lastFailureAt: expect.any(Number),
+        lastReason: "startup-catchup",
+        lastError: expect.stringContaining("task registry unavailable"),
+      }),
+    );
+  });
 });

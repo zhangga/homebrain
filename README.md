@@ -134,7 +134,7 @@ bun run packages/app/src/repl.ts       # 启动横幅列出全部命令
 
 ## 管理后台（mew 风格，可读写，内网自用无鉴权）
 
-左侧导航分六区：
+左侧导航分七区：
 
 - **空间 / 知识**：空间列表、知识页、原始条目、问答测试、手动触发提炼。
 - **Agents**（中列列表 + 右侧编辑器）：新建 / 编辑 / 删除智能体，配置 **名称、Provider、Instruction（人格，会注入到回答）、Model、Visibility**。
@@ -151,6 +151,7 @@ bun run packages/app/src/repl.ts       # 启动横幅列出全部命令
     - `/task help` — 帮助
   - **消息撤回**：回复原消息，@机器人说「别记这条」。原作者、群主或群管理员可执行；系统会删除该消息派生的全部原始记录，二次撤回会明确提示且事件重投不会重新入库。若内容已经进入知识页，会先移除受影响页面，再用仍有效的来源完成重新提炼后回复。撤回控制命令本身不会入库。
 - **Integrations**：**Lark bot**（收发消息的机器人身份）+ **Lark groups**（每个群：指定 Agent、`Topic reply`、`@ mentions only` 开关）。
+- **运行状态**：集中展示飞书事件消费者、必需 CLI、知识存储、待提炼数量、任务、Dream Cycle 与两个调度器的状态；任一关键组件未就绪时，所有后台页面会显示异常提示。
 - **设置**：**默认 Provider + 默认 Model**（群未指定 Agent 时用它）、每日预算、提炼时刻、端口。
 
 对上 mew 的 `Codex Agent · Topic reply · @ mentions only`：给群指定 Agent 后，回答用该 Agent 的 CLI 与人格；
@@ -169,6 +170,8 @@ bun run packages/app/src/main.ts
 启动后：feishu 连接器监听事件、只读后台在 `HOMEBRAIN_WEB_PORT`、调度器做启动 catch-up + 每日 03:00 提炼。
 SIGTERM/SIGINT 优雅退出（对 lark-cli 子进程发 SIGTERM，绝不 kill -9）。
 
+部署探针：`GET /healthz` 始终以 200 返回当前进程健康快照；`GET /readyz` 只有在知识存储、必需 CLI、两条飞书事件消费者及两个调度器都可用时返回 200，否则返回 503。管理后台 `/health` 提供同一快照的人类可读视图。
+
 ## 需人工完成的飞书配置
 
 代码已就绪，但以下需在飞书开放平台 / 开发者后台操作（一次性）：
@@ -183,5 +186,5 @@ SIGTERM/SIGINT 优雅退出（对 lark-cli 子进程发 SIGTERM，绝不 kill -9
 ## 实施状态
 
 MVP = Slice 0–6，均已完成并通过测试；Slice 7（调度器 + 端到端联调）亦已完成。
-后续已完成：学习任务、真实飞书 E2E、思考表情、精确消息撤回。
-未纳入 MVP（已预留）：每日反馈、多模态附件提炼、健康检查与可观测性。
+后续已完成：学习任务、真实飞书 E2E、思考表情、精确消息撤回、健康检查与可观测性（`/healthz`、`/readyz`、运行状态页与异常提示）。
+未纳入 MVP（已预留）：每日反馈、多模态附件提炼。

@@ -289,6 +289,78 @@ describe("Knowledge seam contract", () => {
     expect(typeof report.finishedAt).toBe("number");
   });
 
+  test("health reports CLI execution success and failure without probing the old gateway", async () => {
+    const healthEngine = new KnowledgeEngine({
+      dataDir: join(dir, "health"),
+      runProvider: async (_provider, input) => {
+        if (input.prompt.includes("失败主题")) throw new Error("CLI authentication failed");
+        return "研究结果";
+      },
+    });
+    healthEngine.ensureSpace(SPACE);
+    const agent = healthEngine.agents.create({ name: "Codex", provider: "codex" });
+    healthEngine.registry.updateMeta(SPACE, { agentId: agent.id });
+    const successful = healthEngine.tasks.create({
+      name: "成功任务",
+      space: SPACE,
+      topic: "成功主题",
+      distillOnRun: false,
+    })!;
+    const failed = healthEngine.tasks.create({
+      name: "失败任务",
+      space: SPACE,
+      topic: "失败主题",
+      distillOnRun: false,
+    })!;
+
+    await healthEngine.runTask(successful.id);
+    await healthEngine.runTask(failed.id);
+    const report = await healthEngine.health();
+    const providerRuns = report.details?.providerRuns as Array<Record<string, unknown>>;
+    const tasks = report.details?.tasks as Array<Record<string, unknown>>;
+
+    expect(report.ok).toBe(true);
+    expect(report.details?.mode).toBe("cli-only");
+    expect(providerRuns).toEqual([
+      expect.objectContaining({
+        provider: "codex",
+        running: 0,
+        lastStatus: "error",
+        lastSuccessAt: expect.any(Number),
+        lastFailureAt: expect.any(Number),
+        lastError: "Error: CLI authentication failed",
+      }),
+    ]);
+    expect(tasks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: successful.id, running: false, lastStatus: "ok" }),
+        expect.objectContaining({
+          id: failed.id,
+          running: false,
+          lastStatus: "error",
+          lastError: "Error: CLI authentication failed",
+        }),
+      ]),
+    );
+    healthEngine.close();
+  });
+
+  test("health reports the latest dream-cycle outcome for each space", async () => {
+    await engine.remember({ space: SPACE, source: "message", content: "待提炼知识" });
+    await engine.runDreamCycle(SPACE);
+
+    const report = await engine.health();
+    expect(report.details?.dreamCycles).toEqual([
+      expect.objectContaining({
+        space: SPACE,
+        running: false,
+        lastStatus: "ok",
+        lastSuccessAt: expect.any(Number),
+        lastExamined: 1,
+      }),
+    ]);
+  });
+
   test("space scaffold seeds purpose.md and schema.md", async () => {
     await engine.upsertPage(SPACE, page("entities/a", "A", "x"));
     const store = engine.registry.store(SPACE);

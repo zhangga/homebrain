@@ -14,6 +14,7 @@ import { Orchestrator } from "@homebrain/orchestrator";
 import { createWebApp } from "@homebrain/web";
 import { Scheduler } from "./scheduler.ts";
 import { TaskScheduler } from "./task-scheduler.ts";
+import { createSystemHealthReporter } from "./health.ts";
 
 const log = logger.child("app");
 
@@ -41,9 +42,19 @@ async function main(): Promise<void> {
     await connector.notice(chatId, `🔎 任务「${name}」已完成：\n\n${summary}`);
   };
 
+  let scheduler: Scheduler | undefined;
+  let taskScheduler: TaskScheduler | undefined;
+  const reportHealth = createSystemHealthReporter({
+    engine,
+    connectorHealth: () => connector.health(),
+    dreamSchedulerHealth: () => scheduler?.health(),
+    taskSchedulerHealth: () => taskScheduler?.health(),
+  });
+
   // 2. read-only web backend
   const app = createWebApp({
     engine,
+    health: reportHealth,
     onTaskRun: (taskId) => {
       const t = engine.tasks.get(taskId);
       if (t) void notifyTaskDone(t.space, t.name, t.lastSummary).catch(() => {});
@@ -54,13 +65,13 @@ async function main(): Promise<void> {
   log.info("web backend live", { url: `http://localhost:${server.port}` });
 
   // 3. dream-cycle scheduler (runs an immediate catch-up pass)
-  const scheduler = new Scheduler(engine);
+  scheduler = new Scheduler(engine);
   await scheduler.start();
   log.info("scheduler started (nightly + catch-up)");
 
   // 4. task scheduler (research tasks). On completion, push a summary to the
   // task's space-bound feishu chat when the task opts in.
-  const taskScheduler = new TaskScheduler(engine, {
+  taskScheduler = new TaskScheduler(engine, {
     notify: async (task, report) => {
       await notifyTaskDone(task.space, task.name, report.summary);
     },

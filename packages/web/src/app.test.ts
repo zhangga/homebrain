@@ -3,7 +3,12 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Hono } from "hono";
-import { resetConfig, type Page, type SpaceId } from "@homebrain/shared";
+import {
+  resetConfig,
+  type Page,
+  type SpaceId,
+  type SystemHealthSnapshot,
+} from "@homebrain/shared";
 import { KnowledgeEngine, FakeLlm } from "@homebrain/core";
 import { createWebApp } from "./app.ts";
 
@@ -61,6 +66,85 @@ afterEach(() => {
 });
 
 describe("web backend (read-only)", () => {
+  test("health endpoints distinguish liveness from readiness", async () => {
+    const snapshot: SystemHealthSnapshot = {
+      status: "degraded",
+      ready: false,
+      checkedAt: 1_783_932_000_000,
+      components: {
+        feishu: {
+          status: "down",
+          summary: "消息消费者未就绪",
+        },
+      },
+    };
+    const healthApp = createWebApp({
+      engine,
+      health: async () => snapshot,
+    });
+
+    const live = await healthApp.request("/healthz");
+    expect(live.status).toBe(200);
+    expect(await live.json()).toEqual(snapshot);
+
+    const ready = await healthApp.request("/readyz");
+    expect(ready.status).toBe(503);
+    expect(await ready.json()).toEqual(snapshot);
+  });
+
+  test("health routes degrade safely when the reporter itself fails", async () => {
+    const healthApp = createWebApp({
+      engine,
+      health: async () => {
+        throw new Error("health aggregation failed");
+      },
+    });
+
+    const live = await healthApp.request("/healthz");
+    expect(live.status).toBe(200);
+    expect(await live.json()).toEqual(
+      expect.objectContaining({
+        status: "down",
+        ready: false,
+        components: {
+          healthReporter: expect.objectContaining({
+            status: "down",
+            summary: "运行状态聚合失败",
+          }),
+        },
+      }),
+    );
+
+    expect((await healthApp.request("/readyz")).status).toBe(503);
+    expect((await healthApp.request("/health")).status).toBe(200);
+  });
+
+  test("management backend renders component failures and a global readiness alert", async () => {
+    const snapshot: SystemHealthSnapshot = {
+      status: "down",
+      ready: false,
+      checkedAt: 1_783_932_000_000,
+      components: {
+        feishu: {
+          status: "down",
+          summary: "消息消费者未就绪",
+          details: { lastEventAt: 1_783_931_000_000 },
+        },
+      },
+    };
+    const healthApp = createWebApp({ engine, health: async () => snapshot });
+
+    const page = await healthApp.request("/health");
+    expect(page.status).toBe(200);
+    const healthBody = await page.text();
+    expect(healthBody).toContain("运行状态");
+    expect(healthBody).toContain("消息消费者未就绪");
+
+    const homeBody = await (await healthApp.request("/")).text();
+    expect(homeBody).toContain("runtime-health-alert");
+    expect(homeBody).toContain("/readyz");
+  });
+
   test("home lists spaces", async () => {
     const res = await app.request("/");
     expect(res.status).toBe(200);

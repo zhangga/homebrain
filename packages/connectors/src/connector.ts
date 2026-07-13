@@ -61,6 +61,24 @@ export interface ReplyTarget {
   senderId?: string;
 }
 
+export type ConsumerState = "starting" | "ready" | "backoff" | "failed" | "stopped";
+
+export interface ConsumerHealth {
+  key: string;
+  state: ConsumerState;
+  attempts: number;
+  lastReadyAt?: number;
+  lastEventAt?: number;
+  lastError?: string;
+}
+
+export interface ConnectorHealth {
+  name: string;
+  ready: boolean;
+  lastEventAt?: number;
+  consumers: ConsumerHealth[];
+}
+
 /**
  * The connector surface the orchestrator consumes. `start` streams normalized
  * events to `onEvent` until `stop` is called. `reply`/`notice` send outbound.
@@ -80,4 +98,6 @@ export interface Connector {
   resolveReplyTarget?(messageId: string): Promise<ReplyTarget | undefined>;
   /** whether a user may administer knowledge for the given group chat */
   isChatAdministrator?(chatId: string, userId: string): Promise<boolean>;
+  /** current transport health for readiness probes and management UI */
+  health?(): ConnectorHealth;
 }
