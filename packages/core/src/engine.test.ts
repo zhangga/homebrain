@@ -94,7 +94,7 @@ describe("Knowledge seam contract", () => {
         messageId: "om_source",
         requestedBy: "ou_owner",
       }),
-    ).toEqual({ status: "retracted", affectedPages: [], requeuedSources: 0 });
+    ).toEqual({ status: "retracted", affectedPages: [], requeuedSourceIds: [] });
 
     expect(
       await engine.retractMessage(SPACE, {
@@ -102,7 +102,7 @@ describe("Knowledge seam contract", () => {
         messageId: "om_source",
         requestedBy: "ou_owner",
       }),
-    ).toEqual({ status: "already_retracted", affectedPages: [], requeuedSources: 0 });
+    ).toEqual({ status: "already_retracted", affectedPages: [], requeuedSourceIds: [] });
     await engine.remember({
       space: SPACE,
       source: "message",
@@ -130,7 +130,7 @@ describe("Knowledge seam contract", () => {
         messageId: "om_source",
         requestedBy: "ou_other",
       }),
-    ).toEqual({ status: "forbidden", affectedPages: [], requeuedSources: 0 });
+    ).toEqual({ status: "forbidden", affectedPages: [], requeuedSourceIds: [] });
     expect((await engine.runDreamCycle(SPACE)).examined).toBe(1);
   });
 
@@ -151,7 +151,7 @@ describe("Knowledge seam contract", () => {
         requestedBy: "ou_admin",
         requesterIsAdmin: true,
       }),
-    ).toEqual({ status: "retracted", affectedPages: [], requeuedSources: 0 });
+    ).toEqual({ status: "retracted", affectedPages: [], requeuedSourceIds: [] });
     expect((await engine.runDreamCycle(SPACE)).examined).toBe(0);
   });
 
@@ -173,14 +173,14 @@ describe("Knowledge seam contract", () => {
         messageId: "om_source",
         requestedBy: "ou_owner",
       }),
-    ).toEqual({ status: "retracted", affectedPages: [], requeuedSources: 0 });
+    ).toEqual({ status: "retracted", affectedPages: [], requeuedSourceIds: [] });
     expect(
       await engine.retractMessage(SPACE, {
         chatId: "oc_contract",
         messageId: "om_source",
         requestedBy: "ou_owner",
       }),
-    ).toEqual({ status: "already_retracted", affectedPages: [], requeuedSources: 0 });
+    ).toEqual({ status: "already_retracted", affectedPages: [], requeuedSourceIds: [] });
     expect((await engine.runDreamCycle(SPACE)).examined).toBe(0);
   });
 
@@ -234,7 +234,6 @@ describe("Knowledge seam contract", () => {
     ).toEqual({
       status: "retracted",
       affectedPages: ["concepts/project-facts"],
-      requeuedSources: 1,
       requeuedSourceIds: [survivingId],
     });
     expect(await retractEngine.getPage(SPACE, "concepts/project-facts")).toBeNull();

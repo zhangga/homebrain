@@ -278,14 +278,15 @@ export class Orchestrator {
         ? `，并清理了 ${result.affectedPages.length} 个受影响的知识页`
         : "，原始记录已删除";
     let rebuildNote = "";
-    if (result.requeuedSources > 0) {
-      const sourceIds = result.requeuedSourceIds ?? [];
+    if (result.requeuedSourceIds.length > 0) {
       try {
-        const report = await this.engine.runDreamCycle(writeSpace, { rawIds: sourceIds });
-        const index = this.engine.registry.store(writeSpace).index();
-        const rebuiltAllSources =
-          sourceIds.length === result.requeuedSources &&
-          sourceIds.every((sourceId) => index.getRaw(sourceId)?.ingested === true);
+        const report = await this.engine.runDreamCycle(writeSpace, {
+          rawIds: result.requeuedSourceIds,
+        });
+        const processedSourceIds = new Set(report.processedRawIds);
+        const rebuiltAllSources = result.requeuedSourceIds.every((sourceId) =>
+          processedSourceIds.has(sourceId),
+        );
         rebuildNote =
           report.errors.length === 0 && rebuiltAllSources
             ? "；其余有效来源已重新提炼"

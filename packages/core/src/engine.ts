@@ -180,7 +180,7 @@ export class KnowledgeEngine implements Knowledge {
       const resultFor = (status: RetractionResult["status"]): RetractionResult => ({
         status,
         affectedPages: [],
-        requeuedSources: 0,
+        requeuedSourceIds: [],
       });
       if (!this.registry.has(space)) return resultFor("not_found");
       const index = this.registry.store(space).index();
@@ -239,10 +239,7 @@ export class KnowledgeEngine implements Knowledge {
       return {
         status: "retracted",
         affectedPages,
-        requeuedSources: survivingSourceIds.size,
-        ...(survivingSourceIds.size > 0
-          ? { requeuedSourceIds: [...survivingSourceIds] }
-          : {}),
+        requeuedSourceIds: [...survivingSourceIds],
       };
     });
   }

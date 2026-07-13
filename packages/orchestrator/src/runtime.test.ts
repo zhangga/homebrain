@@ -139,7 +139,7 @@ describe("orchestrator trunk (cli connector, no feishu)", () => {
         messageId: "om_cli-1",
         requestedBy: "ou_me",
       }),
-    ).toEqual({ status: "already_retracted", affectedPages: [], requeuedSources: 0 });
+    ).toEqual({ status: "already_retracted", affectedPages: [], requeuedSourceIds: [] });
     expect((await engine.runDreamCycle("team/oc_team")).examined).toBe(0);
   });
 
@@ -210,7 +210,7 @@ describe("orchestrator trunk (cli connector, no feishu)", () => {
         messageId: "om_other",
         requestedBy: "ou_other",
       }),
-    ).toEqual({ status: "retracted", affectedPages: [], requeuedSources: 0 });
+    ).toEqual({ status: "retracted", affectedPages: [], requeuedSourceIds: [] });
     expect((await engine.runDreamCycle("team/oc_team")).examined).toBe(0);
   });
 
@@ -240,7 +240,7 @@ describe("orchestrator trunk (cli connector, no feishu)", () => {
         messageId: "om_other",
         requestedBy: "ou_other",
       }),
-    ).toEqual({ status: "already_retracted", affectedPages: [], requeuedSources: 0 });
+    ).toEqual({ status: "already_retracted", affectedPages: [], requeuedSourceIds: [] });
   });
 
   test("retraction finishes rebuilding affected knowledge before confirming", async () => {

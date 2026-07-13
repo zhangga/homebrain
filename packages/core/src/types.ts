@@ -44,10 +44,8 @@ export interface RetractionResult {
   status: RetractionStatus;
   /** content pages removed because they included the retracted source */
   affectedPages: string[];
-  /** surviving sources put back into the distillation queue */
-  requeuedSources: number;
   /** exact surviving source ids to rebuild before confirming the retraction */
-  requeuedSourceIds?: string[];
+  requeuedSourceIds: string[];
 }
 
 /** A space and its on-disk purpose/schema, as tracked by the registry. */

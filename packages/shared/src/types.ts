@@ -130,6 +130,8 @@ export interface DreamReport {
   space: SpaceId;
   /** raw entries examined this run */
   examined: number;
+  /** raw ids successfully handled (distilled, skipped, cached, or quarantined) */
+  processedRawIds: string[];
   /** raw entries judged worth distilling */
   distilled: number;
   /** raw entries skipped as noise */

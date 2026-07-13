@@ -346,6 +346,7 @@ export async function runDreamCycle(
   const report: DreamReport = {
     space: store.space,
     examined: batch.length,
+    processedRawIds: [],
     distilled: 0,
     skipped: 0,
     pagesWritten: 0,
@@ -420,6 +421,7 @@ export async function runDreamCycle(
   }
 
   idx.markIngested([...ingestedIds]);
+  report.processedRawIds = [...ingestedIds];
 
   // Refresh the deterministic map pages and append a log line.
   if (report.pagesWritten > 0) {
