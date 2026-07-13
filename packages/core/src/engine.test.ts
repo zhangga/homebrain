@@ -235,6 +235,7 @@ describe("Knowledge seam contract", () => {
       status: "retracted",
       affectedPages: ["concepts/project-facts"],
       requeuedSources: 1,
+      requeuedSourceIds: [survivingId],
     });
     expect(await retractEngine.getPage(SPACE, "concepts/project-facts")).toBeNull();
 

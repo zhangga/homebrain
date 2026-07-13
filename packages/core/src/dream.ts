@@ -332,10 +332,16 @@ export async function runDreamCycle(
   const errors: string[] = [];
 
   const idx = store.index();
-  const batch = idx.listRaw({
-    onlyPending: !force,
-    limit: opts.maxEntries ?? DEFAULT_MAX_ENTRIES,
-  });
+  const batch =
+    opts.rawIds === undefined
+      ? idx.listRaw({
+          onlyPending: !force,
+          limit: opts.maxEntries ?? DEFAULT_MAX_ENTRIES,
+        })
+      : idx.listRawByIds(opts.rawIds, {
+          onlyPending: !force,
+          limit: opts.maxEntries,
+        });
 
   const report: DreamReport = {
     space: store.space,

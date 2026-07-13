@@ -154,6 +154,24 @@ describe("orchestrator trunk (cli connector, no feishu)", () => {
     expect((await engine.runDreamCycle("team/oc_team")).examined).toBe(0);
   });
 
+  test("group retraction requires an explicit bot mention even when mentions-only is disabled", async () => {
+    const reactive = connector as CliConnector & Connector;
+    let resolvedTarget = false;
+    reactive.resolveReplyTarget = async () => {
+      resolvedTarget = true;
+      return { messageId: "om_target", senderId: "ou_me" };
+    };
+    engine.ensureSpace("team/oc_team", { chatId: "oc_team" });
+    engine.registry.updateMeta("team/oc_team", { mentionsOnly: false });
+
+    await orch.start();
+    await connector.sendGroup("别记这条", false);
+
+    expect(connector.sent.at(-1)?.markdown).toContain("@我");
+    expect(resolvedTarget).toBe(false);
+    expect(engine.registry.store("team/oc_team").index().countRaw()).toBe(0);
+  });
+
   test("a question containing 撤回 is not mistaken for a retraction command", async () => {
     const reactive = connector as CliConnector & Connector;
     reactive.resolveReplyTarget = async () => {
@@ -256,6 +274,20 @@ describe("orchestrator trunk (cli connector, no feishu)", () => {
       updatedAt: Date.now(),
       contentHash: "before-retraction",
     });
+    // Older unrelated pending entries fill the normal 40-entry dream batch.
+    // Retraction rebuild must target the surviving source instead of claiming
+    // success after processing this unrelated backlog.
+    for (let i = 0; i < 40; i += 1) {
+      await engine.remember({
+        space: "team/oc_team",
+        source: "message",
+        author: "ou_me",
+        chatId: "oc_team",
+        messageId: `om_backlog_${i}`,
+        content: `待整理历史消息 ${i}`,
+        createdAt: i + 1,
+      });
+    }
     fake.onJSON((call) => {
       const props = (call.schema as { properties?: Record<string, unknown> }).properties ?? {};
       if ("operations" in props) {
@@ -290,6 +322,7 @@ describe("orchestrator trunk (cli connector, no feishu)", () => {
     const rebuilt = await engine.getPage("team/oc_team", "concepts/project-facts");
     expect(rebuilt?.content).toContain("Alice");
     expect(rebuilt?.content).not.toContain("北极星");
+    expect(engine.registry.store("team/oc_team").index().getRaw(survivingId)?.ingested).toBe(true);
   });
 
   test("shows a transient thinking reaction only for messages that get a reply", async () => {

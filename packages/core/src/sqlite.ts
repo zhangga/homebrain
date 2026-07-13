@@ -236,6 +236,25 @@ export class SpaceIndex {
     return rows.map(rowToRaw);
   }
 
+  listRawByIds(
+    ids: string[],
+    opts: { onlyPending?: boolean; limit?: number } = {},
+  ): RawRecord[] {
+    const uniqueIds = [...new Set(ids)];
+    if (uniqueIds.length === 0) return [];
+    const placeholders = uniqueIds.map(() => "?").join(", ");
+    const pending = opts.onlyPending ? "AND ingested = 0" : "";
+    const limit = opts.limit === undefined ? "" : `LIMIT ${Math.max(0, Math.floor(opts.limit))}`;
+    const rows = this.db
+      .query(
+        `SELECT * FROM raw
+         WHERE id IN (${placeholders}) ${pending}
+         ORDER BY created ASC ${limit}`,
+      )
+      .all(...uniqueIds) as Record<string, unknown>[];
+    return rows.map(rowToRaw);
+  }
+
   deleteRaw(id: string): void {
     this.db.query(`DELETE FROM raw WHERE id = ?`).run(id);
   }

@@ -240,6 +240,9 @@ export class KnowledgeEngine implements Knowledge {
         status: "retracted",
         affectedPages,
         requeuedSources: survivingSourceIds.size,
+        ...(survivingSourceIds.size > 0
+          ? { requeuedSourceIds: [...survivingSourceIds] }
+          : {}),
       };
     });
   }

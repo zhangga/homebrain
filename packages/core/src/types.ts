@@ -7,6 +7,8 @@ import type { SpaceId } from "@homebrain/shared";
 export interface DreamOptions {
   /** cap on raw entries processed this run (cost control) */
   maxEntries?: number;
+  /** process only these raw entries; when set, the normal 40-entry batch cap is not applied */
+  rawIds?: string[];
   /** re-distill even if the source hash is unchanged */
   force?: boolean;
   /** model override for distillation */
@@ -44,6 +46,8 @@ export interface RetractionResult {
   affectedPages: string[];
   /** surviving sources put back into the distillation queue */
   requeuedSources: number;
+  /** exact surviving source ids to rebuild before confirming the retraction */
+  requeuedSourceIds?: string[];
 }
 
 /** A space and its on-disk purpose/schema, as tracked by the registry. */

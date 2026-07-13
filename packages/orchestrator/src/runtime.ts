@@ -134,7 +134,12 @@ export class Orchestrator {
 
     // Retraction is a deterministic control command. Handle it before capture
     // so the command itself never becomes knowledge.
-    if (decision.respond && isRetractionCommand(msg.text)) {
+    const retractionCommand = isRetractionCommand(msg.text);
+    if (retractionCommand && msg.chatType === "group" && !msg.mentionsBot) {
+      if (!decision.respond) return;
+      return this.withThinking(msg, () => this.send(msg, "群聊中请回复原消息，并 @我 说「别记这条」。"));
+    }
+    if (decision.respond && retractionCommand) {
       return this.withThinking(msg, () => this.handleRetraction(msg, writeSpace));
     }
 
@@ -237,11 +242,12 @@ export class Orchestrator {
       return;
     }
 
-    let result = await this.engine.retractMessage(writeSpace, {
+    const retractionRequest = {
       chatId: msg.chatId,
       messageId: target.messageId,
       requestedBy: msg.senderId,
-    });
+    };
+    let result = await this.engine.retractMessage(writeSpace, retractionRequest);
     if (result.status === "forbidden" && msg.chatType === "group") {
       const requesterIsAdmin = await this.connector.isChatAdministrator?.(
         msg.chatId,
@@ -249,9 +255,7 @@ export class Orchestrator {
       );
       if (requesterIsAdmin) {
         result = await this.engine.retractMessage(writeSpace, {
-          chatId: msg.chatId,
-          messageId: target.messageId,
-          requestedBy: msg.senderId,
+          ...retractionRequest,
           requesterIsAdmin: true,
         });
       }
@@ -275,10 +279,15 @@ export class Orchestrator {
         : "，原始记录已删除";
     let rebuildNote = "";
     if (result.requeuedSources > 0) {
+      const sourceIds = result.requeuedSourceIds ?? [];
       try {
-        const report = await this.engine.runDreamCycle(writeSpace);
+        const report = await this.engine.runDreamCycle(writeSpace, { rawIds: sourceIds });
+        const index = this.engine.registry.store(writeSpace).index();
+        const rebuiltAllSources =
+          sourceIds.length === result.requeuedSources &&
+          sourceIds.every((sourceId) => index.getRaw(sourceId)?.ingested === true);
         rebuildNote =
-          report.errors.length === 0
+          report.errors.length === 0 && rebuiltAllSources
             ? "；其余有效来源已重新提炼"
             : "；其余来源的自动重建未完全成功，请稍后重新提炼";
       } catch (err) {
