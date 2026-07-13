@@ -1,0 +1,170 @@
+/**
+ * Central configuration. Resolved from environment variables and then overlaid
+ * with an editable settings file (data/config/settings.json) written by the
+ * management backend. Precedence: settings.json (admin's explicit choice) wins
+ * over env defaults for the editable subset; host-injected secrets
+ * (ANTHROPIC_BASE_URL / ANTHROPIC_AUTH_TOKEN) are env-only and never persisted.
+ *
+ * Model IDs are the gateway's real identifiers (verified against /v1/models):
+ * haiku is used for cheap classification, the default (sonnet) for ask, and a
+ * heavy tier (opus) reserved for expensive distillation when warranted.
+ */
+import { resolve, join } from "node:path";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+
+export interface Config {
+  gatewayBaseUrl: string;
+  gatewayToken: string;
+  dataDir: string;
+  /** default model for ask/distill */
+  model: string;
+  /** cheap model for intent classification and short judgments */
+  modelFast: string;
+  /** heavy model reserved for complex synthesis (opt-in) */
+  modelHeavy: string;
+  dailyBudgetUsd: number;
+  webPort: number;
+  /** local hour (Asia/Shanghai) for the nightly dream cycle */
+  dreamHour: number;
+  /**
+   * Default local agent CLI (provider id: claude / codex / trae-cli) used when a
+   * space's agent doesn't specify one. All LLM work (ask + dream) runs through a
+   * CLI; there is no network-API fallback.
+   */
+  defaultProvider: string;
+  /** default model passed to the default CLI (empty => the CLI's own default) */
+  defaultModel: string;
+  /** feishu bot display name, for precise @-mention detection (optional) */
+  feishuBotName?: string;
+  /** feishu bot open_id, for precise @-mention detection (optional) */
+  feishuBotOpenId?: string;
+}
+
+/**
+ * The subset of Config the management backend may edit and persist. Secrets and
+ * dataDir are intentionally excluded.
+ */
+export interface PersistedSettings {
+  model?: string;
+  modelFast?: string;
+  modelHeavy?: string;
+  dailyBudgetUsd?: number;
+  webPort?: number;
+  dreamHour?: number;
+  defaultProvider?: string;
+  defaultModel?: string;
+  feishuBotName?: string;
+  feishuBotOpenId?: string;
+}
+
+export const EDITABLE_KEYS: (keyof PersistedSettings)[] = [
+  "model",
+  "modelFast",
+  "modelHeavy",
+  "dailyBudgetUsd",
+  "webPort",
+  "dreamHour",
+  "defaultProvider",
+  "defaultModel",
+  "feishuBotName",
+  "feishuBotOpenId",
+];
+
+function req(name: string): string {
+  const v = process.env[name];
+  if (!v) throw new Error(`missing required env var ${name}`);
+  return v;
+}
+
+function num(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (raw === undefined || raw === "") return fallback;
+  const n = Number(raw);
+  if (!Number.isFinite(n)) throw new Error(`env ${name} must be a number, got ${raw}`);
+  return n;
+}
+
+function settingsPath(dataDir: string): string {
+  return join(dataDir, "config", "settings.json");
+}
+
+/** Read the persisted editable settings, tolerating a missing/corrupt file. */
+export function readSettings(dataDir: string): PersistedSettings {
+  const path = settingsPath(dataDir);
+  if (!existsSync(path)) return {};
+  try {
+    const parsed = JSON.parse(readFileSync(path, "utf8")) as PersistedSettings;
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+let cached: Config | undefined;
+
+export function loadConfig(env = process.env): Config {
+  const dataDir = resolve(env.HOMEBRAIN_DATA_DIR ?? "./data");
+  const persisted = readSettings(dataDir);
+
+  const base: Config = {
+    gatewayBaseUrl: (env.ANTHROPIC_BASE_URL ?? req("ANTHROPIC_BASE_URL")).replace(/\/+$/, ""),
+    gatewayToken: env.ANTHROPIC_AUTH_TOKEN ?? req("ANTHROPIC_AUTH_TOKEN"),
+    dataDir,
+    model: env.HOMEBRAIN_LLM_MODEL ?? "claude-sonnet-5",
+    modelFast: env.HOMEBRAIN_LLM_MODEL_FAST ?? "claude-haiku-4-5-20251001",
+    modelHeavy: env.HOMEBRAIN_LLM_MODEL_HEAVY ?? "claude-opus-4-8",
+    dailyBudgetUsd: num("HOMEBRAIN_DAILY_BUDGET_USD", 5),
+    webPort: num("HOMEBRAIN_WEB_PORT", 3000),
+    dreamHour: num("HOMEBRAIN_DREAM_HOUR", 3),
+    defaultProvider: env.HOMEBRAIN_DEFAULT_PROVIDER || "claude",
+    defaultModel: env.HOMEBRAIN_DEFAULT_MODEL || "",
+    feishuBotName: env.HOMEBRAIN_FEISHU_BOT_NAME || undefined,
+    feishuBotOpenId: env.HOMEBRAIN_FEISHU_BOT_OPEN_ID || undefined,
+  };
+
+  // Overlay persisted editable settings (admin's explicit choices win).
+  if (persisted.model) base.model = persisted.model;
+  if (persisted.modelFast) base.modelFast = persisted.modelFast;
+  if (persisted.modelHeavy) base.modelHeavy = persisted.modelHeavy;
+  if (typeof persisted.dailyBudgetUsd === "number") base.dailyBudgetUsd = persisted.dailyBudgetUsd;
+  if (typeof persisted.webPort === "number") base.webPort = persisted.webPort;
+  if (typeof persisted.dreamHour === "number") base.dreamHour = persisted.dreamHour;
+  if (persisted.defaultProvider) base.defaultProvider = persisted.defaultProvider;
+  if (persisted.defaultModel !== undefined) base.defaultModel = persisted.defaultModel;
+  if (persisted.feishuBotName !== undefined) base.feishuBotName = persisted.feishuBotName || undefined;
+  if (persisted.feishuBotOpenId !== undefined) base.feishuBotOpenId = persisted.feishuBotOpenId || undefined;
+
+  return base;
+}
+
+/** Memoized config for the running process. */
+export function config(): Config {
+  if (!cached) cached = loadConfig();
+  return cached;
+}
+
+/**
+ * Persist a patch to data/config/settings.json and clear the memoized config so
+ * the next config() reflects it. Unknown keys are ignored. Runtime consumers
+ * that read config() lazily (ask, dream, scheduler) pick the change up; those
+ * that snapshot at startup (feishu bot identity, web port) need a restart.
+ */
+export function saveSettings(patch: PersistedSettings, dataDir = config().dataDir): PersistedSettings {
+  const current = readSettings(dataDir);
+  const next: PersistedSettings = { ...current };
+  for (const key of EDITABLE_KEYS) {
+    if (patch[key] !== undefined) {
+      // Empty strings clear optional string fields; keep numbers as-is.
+      (next as Record<string, unknown>)[key] = patch[key];
+    }
+  }
+  mkdirSync(join(dataDir, "config"), { recursive: true });
+  writeFileSync(settingsPath(dataDir), JSON.stringify(next, null, 2), "utf8");
+  resetConfig();
+  return next;
+}
+
+/** Test/rebind helper: clears the memoized config. */
+export function resetConfig(): void {
+  cached = undefined;
+}

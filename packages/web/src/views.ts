@@ -1,0 +1,621 @@
+/**
+ * Individual page bodies for the management backend. Each is a pure function of
+ * data already loaded by the routes, returning an html fragment for `layout`.
+ * Auto-escaping is on by default (hono/html); `raw()` is used only for trusted
+ * static markup. Mutating pages render POST forms.
+ */
+import { html, raw } from "hono/html";
+import type { HtmlEscapedString } from "hono/utils/html";
+import type { AskResult, PageRef, RawRecord, SpaceId, Page } from "@homebrain/shared";
+import type { SpaceMeta, Agent, Task } from "@homebrain/core";
+import { AGENT_PERMISSIONS, TASK_CADENCES } from "@homebrain/core";
+import type { DetectedProvider } from "@homebrain/llm";
+
+const SINGLETON = new Set(["index", "overview", "log", "glossary"]);
+
+function fmtTime(ms?: number): string {
+  if (!ms) return "—";
+  return new Date(ms).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" });
+}
+
+function flash(msg?: string): HtmlEscapedString | Promise<HtmlEscapedString> | string {
+  return msg ? html`<div class="flash">${msg}</div>` : "";
+}
+
+/** A friendly label for a space: its display name, else the id. */
+function spaceLabel(meta: SpaceMeta): string {
+  return meta.name?.trim() || meta.id;
+}
+
+// ---- spaces / knowledge (adapted from the read-only viewer) ----------------
+
+export function spaceListView(
+  spaces: { meta: SpaceMeta; pages: number; pending: number }[],
+): HtmlEscapedString | Promise<HtmlEscapedString> {
+  if (spaces.length === 0) {
+    return html`<h1>空间 / 知识</h1>
+      <div class="empty">还没有任何空间。把机器人加入飞书群或私聊它即可创建。</div>`;
+  }
+  const rows = spaces.map(
+    (s) => html`<tr>
+      <td><a href="/spaces/${encodeURIComponent(s.meta.id)}">${spaceLabel(s.meta)}</a>
+        <div class="muted">${s.meta.id}</div></td>
+      <td>${s.pages}</td>
+      <td>${s.pending}</td>
+      <td class="muted">${fmtTime(s.meta.lastDreamAt)}</td>
+    </tr>`,
+  );
+  return html`<h1>空间 / 知识</h1>
+    <p class="subtitle">每个飞书群或私聊对应一个知识空间。</p>
+    <table>
+      <tr><th>空间</th><th>知识页</th><th>待提炼</th><th>上次提炼</th></tr>
+      ${rows}
+    </table>`;
+}
+
+export function spaceDetailView(
+  space: SpaceId,
+  pages: PageRef[],
+  rawCount: number,
+  meta?: SpaceMeta,
+): HtmlEscapedString | Promise<HtmlEscapedString> {
+  const content = pages.filter((p) => !SINGLETON.has(p.slug));
+  const enc = encodeURIComponent(space);
+  const isTeam = space.startsWith("team/");
+  const pageRows = content.length
+    ? content.map(
+        (p) => html`<tr>
+          <td><a href="/spaces/${enc}/pages/${encodeURIComponent(p.slug)}">${p.title}</a></td>
+          <td><span class="tag">${p.type}</span></td>
+          <td class="muted">${p.summary}</td>
+        </tr>`,
+      )
+    : [html`<tr><td colspan="3" class="empty">暂无知识页，运行提炼后生成。</td></tr>`];
+
+  const groupSettingsLink = isTeam
+    ? html` · <a href="/integrations">群设置</a>`
+    : "";
+
+  return html`<h1>${meta ? spaceLabel(meta) : space}</h1>
+    <p class="subtitle">${space}</p>
+    <div class="card">
+      <div class="muted">绑定群：${meta?.chatId ?? "—"} · 上次提炼：${fmtTime(meta?.lastDreamAt)}</div>
+      <div style="margin-top:10px" class="actions">
+        <a href="/spaces/${enc}/raw">原始条目（${rawCount}）</a> ·
+        <a href="/spaces/${enc}/ask">问答测试</a>${groupSettingsLink} ·
+        <form method="post" action="/spaces/${enc}/dream" class="inline-form">
+          <button type="submit">手动触发提炼</button>
+        </form>
+      </div>
+    </div>
+    <h2>知识页（${content.length}）</h2>
+    <table>
+      <tr><th>标题</th><th>类型</th><th>摘要</th></tr>
+      ${pageRows}
+    </table>`;
+}
+
+export function pageView(space: SpaceId, page: Page): HtmlEscapedString | Promise<HtmlEscapedString> {
+  const enc = encodeURIComponent(space);
+  const aliases = page.aliases.length ? html`<div class="muted">别名：${page.aliases.join("、")}</div>` : "";
+  const links = page.links.length
+    ? html`<div class="muted">链接：${page.links.map(
+        (l) => html`<a href="/spaces/${enc}/pages/${encodeURIComponent(l)}">${l}</a> `,
+      )}</div>`
+    : "";
+  const tags = page.tags.map((t) => html`<span class="tag">${t}</span>`);
+  return html`<h1>${page.title} <span class="tag">${page.type}</span></h1>
+    <div class="card">
+      <div class="muted">slug：${page.slug} · 更新：${fmtTime(page.updatedAt)}</div>
+      ${aliases}${links}
+      <div style="margin-top:8px">${tags}</div>
+      <div class="muted" style="margin-top:8px">来源 raw：${page.sources.length ? page.sources.join(", ") : "—"}</div>
+    </div>
+    <h2>正文</h2>
+    <div class="contentbox">${page.content}</div>`;
+}
+
+export function rawListView(space: SpaceId, raws: RawRecord[]): HtmlEscapedString | Promise<HtmlEscapedString> {
+  const rows = raws.length
+    ? raws.map(
+        (r) => html`<tr>
+          <td class="muted">${fmtTime(r.createdAt)}</td>
+          <td><span class="tag">${r.source}</span></td>
+          <td>${r.ingested ? "✓" : "…"}</td>
+          <td>${r.content.slice(0, 160)}</td>
+        </tr>`,
+      )
+    : [html`<tr><td colspan="4" class="empty">暂无原始条目。</td></tr>`];
+  return html`<h1>原始条目 · ${space}</h1>
+    <table>
+      <tr><th>时间</th><th>来源</th><th>已提炼</th><th>内容</th></tr>
+      ${rows}
+    </table>`;
+}
+
+export function askView(
+  space: SpaceId,
+  question: string | null,
+  result: AskResult | null,
+): HtmlEscapedString | Promise<HtmlEscapedString> {
+  const enc = encodeURIComponent(space);
+  let answer: HtmlEscapedString | Promise<HtmlEscapedString> | string = "";
+  if (result) {
+    const badge = result.source === "knowledge"
+      ? html`<span class="badge knowledge">知识库</span>`
+      : html`<span class="badge general">通用</span>`;
+    const cites = result.citations.length
+      ? html`<div class="muted" style="margin-top:8px">引用：${result.citations.map(
+          (c) => html`<a href="/spaces/${enc}/pages/${encodeURIComponent(c.slug)}">${c.title}</a> `,
+        )}</div>`
+      : "";
+    answer = html`<div class="card">
+      <div>${badge}</div>
+      <div class="contentbox" style="margin-top:10px">${result.answer}</div>
+      ${cites}
+    </div>`;
+  }
+  return html`<h1>问答测试 · ${space}</h1>
+    <form method="get" action="/spaces/${enc}/ask" class="actions">
+      <input type="text" name="q" placeholder="问一个问题…" value="${question ?? ""}" />
+      <button type="submit">提问</button>
+    </form>
+    ${answer}`;
+}
+
+export function logsView(logs: { day: string; lines: string[] }[]): HtmlEscapedString | Promise<HtmlEscapedString> {
+  if (logs.length === 0) return html`<h1>LLM 调用日志</h1><div class="empty">暂无调用记录。</div>`;
+  const blocks = logs.map(
+    (l) => html`<h2>${l.day}</h2><pre>${raw(escapePre(l.lines.join("\n")))}</pre>`,
+  );
+  return html`<h1>LLM 调用日志</h1>${blocks}`;
+}
+
+function escapePre(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+// ---- Agents (mew two-pane: list + editor) ----------------------------------
+
+/** Agents page: list column + right editor. `selected` is the agent being edited (or null = new). */
+export function agentsView(
+  agents: Agent[],
+  selected: Agent | null,
+  providers: DetectedProvider[],
+  models: Record<string, string[]>,
+  flashMsg?: string,
+): HtmlEscapedString | Promise<HtmlEscapedString> {
+  const listItems = agents.map((a) => {
+    const active = selected && a.id === selected.id;
+    return html`<a class="item ${active ? "active" : ""}" href="/agents/${encodeURIComponent(a.id)}">
+      <div class="name"><span class="dot"></span>${a.name}</div>
+      <div class="sub">${a.provider} / ${a.model || "默认模型"}</div>
+    </a>`;
+  });
+  const newActive = selected === null ? "active" : "";
+
+  const editing = selected;
+  const formAction = editing ? `/agents/${encodeURIComponent(editing.id)}` : "/agents";
+  const submitLabel = editing ? "保存" : "创建";
+  const nameVal = editing?.name ?? "";
+  const instrVal = editing?.instruction ?? "";
+  const modelVal = editing?.model ?? "";
+  const providerVal = editing?.provider ?? providers.find((p) => p.available)?.id ?? "claude";
+  const visVal = editing?.visibility ?? "Team";
+  // Reserved task-execution fields (not consumed by ask/dream yet).
+  const workdirVal = editing?.workdir ?? "";
+  const permVal = editing?.permission ?? "read-only";
+  const skillsVal = (editing?.skills ?? []).join(", ");
+  const permLabels: Record<string, string> = { "read-only": "只读", write: "可写", full: "完全访问" };
+
+  // Provider dropdown: only local CLIs, selectable when detected as runnable,
+  // else greyed with the reason. (The internal API is used by the claude CLI
+  // itself, not exposed as a homebrain provider.)
+  const availableList = providers.filter((p) => p.available).map((p) => p.name).join("、");
+  const providerOptions = providers.map((p) => {
+    const sel = p.id === providerVal ? "selected" : "";
+    const disabled = p.available ? "" : "disabled";
+    const suffix = p.available ? `（${p.detail}）` : `（不可用：${p.detail}）`;
+    return html`<option value="${p.id}" ${sel} ${disabled}>${p.name}${suffix}</option>`;
+  });
+
+  // Model options for the initially-selected provider (server-rendered); the
+  // client script below repopulates them whenever Provider changes (mew shows a
+  // different model list per provider).
+  const initialModels = models[providerVal] ?? [];
+  const modelOpts = [
+    html`<option value="" ${modelVal === "" ? "selected" : ""}>（使用全局默认）</option>`,
+    ...initialModels.map((m) => html`<option value="${m}" ${m === modelVal ? "selected" : ""}>${m}</option>`),
+  ];
+  if (modelVal && !initialModels.includes(modelVal)) {
+    modelOpts.push(html`<option value="${modelVal}" selected>${modelVal}（自定义）</option>`);
+  }
+
+  // A tiny client script: on provider change, rebuild the Model <select> from
+  // the embedded catalog. No framework — plain DOM.
+  const catalogJson = JSON.stringify(models);
+  const modelScript = raw(`<script>
+(function(){
+  var CATALOG = ${catalogJson};
+  var prov = document.getElementById('agent-provider');
+  var model = document.getElementById('agent-model');
+  if (!prov || !model) return;
+  prov.addEventListener('change', function(){
+    var list = CATALOG[prov.value] || [];
+    var cur = model.value;
+    model.innerHTML = '';
+    var def = document.createElement('option');
+    def.value = ''; def.textContent = '（使用全局默认）';
+    model.appendChild(def);
+    list.forEach(function(m){
+      var o = document.createElement('option');
+      o.value = m; o.textContent = m;
+      if (m === cur) o.selected = true;
+      model.appendChild(o);
+    });
+  });
+})();
+</script>`);
+
+  const deleteForm = editing
+    ? html`<form method="post" action="/agents/${encodeURIComponent(editing.id)}/delete" class="inline-form"
+        onsubmit="return confirm('删除该 Agent？已指定它的群将回退到默认。')">
+        <button type="submit" class="danger">删除</button>
+      </form>`
+    : "";
+
+  return html`<h1>Agents</h1>
+    <p class="subtitle">配置回答用的智能体：Provider（执行后端）、人格（Instruction）与模型。可在 Integrations 里给每个群指定 Agent。</p>
+    <div class="split">
+      <div class="listcol">
+        <a class="item ${newActive}" href="/agents"><div class="name">＋ 新建 Agent</div>
+          <div class="sub">创建一个新的回答智能体</div></a>
+        ${listItems}
+      </div>
+      <div>
+        ${flash(flashMsg)}
+        <form method="post" action="${formAction}" class="stack card">
+          <div class="field">
+            <label>名称</label>
+            <input type="text" name="name" value="${nameVal}" placeholder="例如：知识助手" required />
+          </div>
+          <div class="field">
+            <label>Instruction <span class="hint">（人格 / 额外系统提示，会注入到回答中）</span></label>
+            <textarea name="instruction" placeholder="描述这个 agent 的语气、角色与回答风格…">${instrVal}</textarea>
+          </div>
+          <div class="grid2">
+            <div class="field">
+              <label>Provider <span class="hint">本机已检测：${availableList || "无（未装 CLI）"}</span></label>
+              <select name="provider" id="agent-provider">
+                ${providerOptions}
+              </select>
+            </div>
+            <div class="field">
+              <label>Model <span class="hint">随 Provider 变化</span></label>
+              <select name="model" id="agent-model">
+                ${modelOpts}
+              </select>
+            </div>
+            <div class="field">
+              <label>Visibility</label>
+              <select name="visibility">
+                ${["Team", "Personal"].map(
+                  (v) => html`<option value="${v}" ${v === visVal ? "selected" : ""}>${v}</option>`,
+                )}
+              </select>
+            </div>
+            <div class="field">
+              <label>Permission <span class="hint">任务执行权限 · 尚未生效</span></label>
+              <select name="permission">
+                ${AGENT_PERMISSIONS.map(
+                  (p) => html`<option value="${p}" ${p === permVal ? "selected" : ""}>${permLabels[p] ?? p}</option>`,
+                )}
+              </select>
+            </div>
+          </div>
+          <h2 style="font-size:14px;margin:18px 0 4px">任务执行 <span class="hint" style="font-weight:400">（为学习任务 / 待办等预留，暂未接入 —— 目前问答与提炼不使用以下字段）</span></h2>
+          <div class="grid2">
+            <div class="field">
+              <label>Workdir <span class="hint">CLI 执行任务的工作目录</span></label>
+              <input type="text" name="workdir" value="${workdirVal}" placeholder="~/work/项目目录" />
+            </div>
+            <div class="field">
+              <label>Skills <span class="hint">逗号分隔，预留</span></label>
+              <input type="text" name="skills" value="${skillsVal}" placeholder="例如：code-review, web-search" />
+            </div>
+          </div>
+          <div class="actions">
+            <button type="submit">${submitLabel}</button>
+            ${deleteForm}
+          </div>
+        </form>
+      </div>
+    </div>
+    ${modelScript}`;
+}
+
+// ---- Tasks (research task execution) ---------------------------------------
+
+const CADENCE_LABELS: Record<string, string> = { hourly: "每小时", daily: "每天" };
+
+/** Tasks page: list column + right editor. `selected` is the task being edited (or null = new). */
+export function tasksView(
+  tasks: Task[],
+  selected: Task | null,
+  spaces: SpaceMeta[],
+  flashMsg?: string,
+): HtmlEscapedString | Promise<HtmlEscapedString> {
+  const statusBadge = (t: Task) => {
+    if (!t.lastStatus) return html`<span class="muted">未运行</span>`;
+    return t.lastStatus === "ok"
+      ? html`<span class="badge knowledge">成功</span>`
+      : html`<span class="badge general">失败</span>`;
+  };
+  const listItems = tasks.map((t) => {
+    const active = selected && t.id === selected.id;
+    const cad = CADENCE_LABELS[t.cadence] ?? t.cadence;
+    return html`<a class="item ${active ? "active" : ""}" href="/tasks/${encodeURIComponent(t.id)}">
+      <div class="name"><span class="dot" style="${t.enabled ? "" : "background:#cbd5e1"}"></span>${t.name}</div>
+      <div class="sub">${cad}${t.cadence === "daily" ? ` ${t.hour}:00` : ""} · ${t.space}</div>
+    </a>`;
+  });
+  const newActive = selected === null ? "active" : "";
+
+  const editing = selected;
+  const formAction = editing ? `/tasks/${encodeURIComponent(editing.id)}` : "/tasks";
+  const submitLabel = editing ? "保存" : "创建";
+  const nameVal = editing?.name ?? "";
+  const topicVal = editing?.topic ?? "";
+  const spaceVal = editing?.space ?? spaces[0]?.id ?? "";
+  const cadenceVal = editing?.cadence ?? "daily";
+  const hourVal = editing?.hour ?? 8;
+  const enabledOn = editing ? editing.enabled : true;
+  const notifyOn = editing ? editing.notify : true;
+  const distillOn = editing ? editing.distillOnRun : true;
+
+  const spaceOptions = spaces.length
+    ? spaces.map((s) => html`<option value="${s.id}" ${s.id === spaceVal ? "selected" : ""}>${s.name?.trim() || s.id}</option>`)
+    : [html`<option value="">（还没有空间，先让机器人进群或私聊）</option>`];
+
+  const deleteForm = editing
+    ? html`<form method="post" action="/tasks/${encodeURIComponent(editing.id)}/delete" class="inline-form"
+        onsubmit="return confirm('删除该任务？')">
+        <button type="submit" class="danger">删除</button>
+      </form>`
+    : "";
+  const runForm = editing
+    ? html`<form method="post" action="/tasks/${encodeURIComponent(editing.id)}/run" class="inline-form">
+        <button type="submit" class="secondary">立即运行</button>
+      </form>`
+    : "";
+
+  const lastRun = editing?.lastRunAt
+    ? html`<div class="muted" style="margin-top:8px">上次运行：${fmtTime(editing.lastRunAt)} · ${statusBadge(editing)}</div>
+        ${editing.lastStatus === "error" && editing.lastError
+          ? html`<div class="muted">错误：${editing.lastError.slice(0, 200)}</div>`
+          : ""}
+        ${editing.lastSummary ? html`<div class="contentbox" style="margin-top:8px">${editing.lastSummary}</div>` : ""}`
+    : "";
+
+  return html`<h1>任务</h1>
+    <p class="subtitle">让空间的 Agent 定期研究一个主题，结果写入该空间知识库（夜间提炼成页）并可推送到飞书。</p>
+    <div class="split">
+      <div class="listcol">
+        <a class="item ${newActive}" href="/tasks"><div class="name">＋ 新建任务</div>
+          <div class="sub">创建一个研究任务</div></a>
+        ${listItems}
+      </div>
+      <div>
+        ${flash(flashMsg)}
+        <form method="post" action="${formAction}" class="stack card">
+          <div class="field">
+            <label>名称</label>
+            <input type="text" name="name" value="${nameVal}" placeholder="例如：每日 AI 进展" required />
+          </div>
+          <div class="field">
+            <label>研究主题 <span class="hint">交给空间 Agent 的调研提示</span></label>
+            <textarea name="topic" placeholder="例如：总结大模型 Agent 领域本周的重要进展与观点">${topicVal}</textarea>
+          </div>
+          <div class="grid2">
+            <div class="field">
+              <label>目标空间 <span class="hint">结果写入这里，用其 Agent</span></label>
+              <select name="space">${spaceOptions}</select>
+            </div>
+            <div class="field">
+              <label>周期</label>
+              <select name="cadence">
+                ${TASK_CADENCES.map(
+                  (c) => html`<option value="${c}" ${c === cadenceVal ? "selected" : ""}>${CADENCE_LABELS[c] ?? c}</option>`,
+                )}
+              </select>
+            </div>
+            <div class="field">
+              <label>每天几点 <span class="hint">0-23，仅每天周期用</span></label>
+              <input type="number" min="0" max="23" name="hour" value="${hourVal}" />
+            </div>
+          </div>
+          <div class="toggle-row">
+            <div><strong>启用</strong><div class="hint">关闭后调度器不会自动运行</div></div>
+            <label class="switch"><input type="checkbox" name="enabled" ${enabledOn ? "checked" : ""} /><span class="slider"></span></label>
+          </div>
+          <div class="toggle-row">
+            <div><strong>推送飞书</strong><div class="hint">完成后把摘要发到空间绑定的群/私聊</div></div>
+            <label class="switch"><input type="checkbox" name="notify" ${notifyOn ? "checked" : ""} /><span class="slider"></span></label>
+          </div>
+          <div class="toggle-row">
+            <div><strong>完成后立即提炼</strong><div class="hint">运行结束就把结果提炼成知识页（关闭则等夜间提炼）</div></div>
+            <label class="switch"><input type="checkbox" name="distillOnRun" ${distillOn ? "checked" : ""} /><span class="slider"></span></label>
+          </div>
+          ${lastRun}
+          <div class="actions">
+            <button type="submit">${submitLabel}</button>
+            ${runForm}
+            ${deleteForm}
+          </div>
+        </form>
+      </div>
+    </div>`;
+}
+
+// ---- Integrations (mew: Lark bot + Lark groups) ----------------------------
+export function integrationsView(
+  botName: string,
+  botOpenId: string,
+  groups: SpaceMeta[],
+  agents: Agent[],
+  flashMsg?: string,
+): HtmlEscapedString | Promise<HtmlEscapedString> {
+  const agentName = (id?: string) => agents.find((a) => a.id === id)?.name;
+
+  const groupCards = groups.length
+    ? groups.map((g) => {
+        const enc = encodeURIComponent(g.id);
+        const assigned = agentName(g.agentId) ?? "默认";
+        const replyMode = (g.replyInThread ?? true) ? "Topic reply" : "普通回复";
+        const mentionMode = (g.mentionsOnly ?? true) ? "@ mentions only" : "响应全部消息";
+        const agentOpts = [
+          html`<option value="" ${!g.agentId ? "selected" : ""}>默认（全局）</option>`,
+          ...agents.map(
+            (a) => html`<option value="${a.id}" ${a.id === g.agentId ? "selected" : ""}>${a.name}</option>`,
+          ),
+        ];
+        return html`<div class="card">
+          <div class="row">
+            <div>
+              <div style="font-weight:600">${spaceLabel(g)}</div>
+              <div class="muted">${assigned} · ${replyMode} · ${mentionMode}</div>
+              <div class="muted">Bot ${g.chatId ?? g.id}</div>
+            </div>
+          </div>
+          <form method="post" action="/integrations/groups/${enc}" class="stack" style="margin-top:12px">
+            <div class="grid2">
+              <div class="field">
+                <label>群名称</label>
+                <input type="text" name="name" value="${g.name ?? ""}" placeholder="${g.id}" />
+              </div>
+              <div class="field">
+                <label>指定 Agent</label>
+                <select name="agentId">${agentOpts}</select>
+              </div>
+            </div>
+            <div class="toggle-row">
+              <div><strong>Topic reply</strong><div class="hint">在话题/分组内回复（飞书 thread）</div></div>
+              <label class="switch"><input type="checkbox" name="replyInThread" ${(g.replyInThread ?? true) ? "checked" : ""} /><span class="slider"></span></label>
+            </div>
+            <div class="toggle-row">
+              <div><strong>@ mentions only</strong><div class="hint">仅在被 @ 时回复；关闭后响应群内全部消息</div></div>
+              <label class="switch"><input type="checkbox" name="mentionsOnly" ${(g.mentionsOnly ?? true) ? "checked" : ""} /><span class="slider"></span></label>
+            </div>
+            <div class="actions"><button type="submit">保存群设置</button></div>
+          </form>
+        </div>`;
+      })
+    : [html`<div class="empty">还没有群空间。把机器人加入飞书群即可出现在这里。</div>`];
+
+  return html`<h1>Integrations</h1>
+    <p class="subtitle">Connect homebrain to external channels and tools.</p>
+    ${flash(flashMsg)}
+
+    <div class="card">
+      <div class="row">
+        <div>
+          <div style="font-weight:600">Lark bot</div>
+          <div class="muted">用于收发飞书群消息的机器人身份（改动需重启生效）。</div>
+        </div>
+      </div>
+      <form method="post" action="/integrations/bot" class="stack" style="margin-top:12px">
+        <div class="grid2">
+          <div class="field">
+            <label>Bot 名称 <span class="hint">HOMEBRAIN_FEISHU_BOT_NAME</span></label>
+            <input type="text" name="feishuBotName" value="${botName}" placeholder="homebrain" />
+          </div>
+          <div class="field">
+            <label>Bot open_id <span class="hint">HOMEBRAIN_FEISHU_BOT_OPEN_ID</span></label>
+            <input type="text" name="feishuBotOpenId" value="${botOpenId}" placeholder="ou_..." />
+          </div>
+        </div>
+        <div class="actions"><button type="submit">保存 Bot</button></div>
+      </form>
+    </div>
+
+    <h2>Lark groups</h2>
+    <p class="subtitle" style="margin-top:-8px">管理群连接及其默认响应设置。</p>
+    ${groupCards}`;
+}
+
+// ---- Settings --------------------------------------------------------------
+
+export interface SettingsData {
+  defaultProvider: string;
+  defaultModel: string;
+  dailyBudgetUsd: number;
+  dreamHour: number;
+  webPort: number;
+}
+
+export function settingsView(
+  s: SettingsData,
+  providers: DetectedProvider[],
+  models: Record<string, string[]>,
+  flashMsg?: string,
+): HtmlEscapedString | Promise<HtmlEscapedString> {
+  // Default provider: only CLIs; available ones selectable, others greyed.
+  const providerOptions = providers.map((p) => {
+    const sel = p.id === s.defaultProvider ? "selected" : "";
+    const disabled = p.available ? "" : "disabled";
+    const suffix = p.available ? `（${p.detail}）` : `（不可用：${p.detail}）`;
+    return html`<option value="${p.id}" ${sel} ${disabled}>${p.name}${suffix}</option>`;
+  });
+  const initialModels = models[s.defaultProvider] ?? [];
+  const modelOpts = [
+    html`<option value="" ${s.defaultModel === "" ? "selected" : ""}>（CLI 自身默认）</option>`,
+    ...initialModels.map((m) => html`<option value="${m}" ${m === s.defaultModel ? "selected" : ""}>${m}</option>`),
+  ];
+  if (s.defaultModel && !initialModels.includes(s.defaultModel)) {
+    modelOpts.push(html`<option value="${s.defaultModel}" selected>${s.defaultModel}（自定义）</option>`);
+  }
+  const catalogJson = JSON.stringify(models);
+  const modelScript = raw(`<script>
+(function(){
+  var CATALOG = ${catalogJson};
+  var prov = document.getElementById('default-provider');
+  var model = document.getElementById('default-model');
+  if (!prov || !model) return;
+  prov.addEventListener('change', function(){
+    var list = CATALOG[prov.value] || [];
+    var cur = model.value;
+    model.innerHTML = '';
+    var def = document.createElement('option');
+    def.value = ''; def.textContent = '（CLI 自身默认）';
+    model.appendChild(def);
+    list.forEach(function(m){
+      var o = document.createElement('option');
+      o.value = m; o.textContent = m;
+      if (m === cur) o.selected = true;
+      model.appendChild(o);
+    });
+  });
+})();
+</script>`);
+
+  return html`<h1>设置</h1>
+    <p class="subtitle">全局默认配置。默认 Provider / Model、预算、提炼时刻即时生效；端口需重启生效。</p>
+    ${flash(flashMsg)}
+    <form method="post" action="/settings" class="stack card">
+      <h2 style="margin-top:0">默认 Agent（未指定时使用）</h2>
+      <div class="grid2">
+        <div class="field"><label>默认 Provider <span class="hint">本机 CLI</span></label>
+          <select name="defaultProvider" id="default-provider">${providerOptions}</select></div>
+        <div class="field"><label>默认 Model <span class="hint">随 Provider 变化</span></label>
+          <select name="defaultModel" id="default-model">${modelOpts}</select></div>
+      </div>
+      <h2>运行</h2>
+      <div class="grid2">
+        <div class="field"><label>每日预算 (USD) <span class="hint">仅对可计费的 provider 有意义</span></label><input type="number" step="0.01" min="0" name="dailyBudgetUsd" value="${s.dailyBudgetUsd}" /></div>
+        <div class="field"><label>提炼时刻 <span class="hint">0-23，Asia/Shanghai</span></label><input type="number" min="0" max="23" name="dreamHour" value="${s.dreamHour}" /></div>
+        <div class="field"><label>后台端口 <span class="hint">重启生效</span></label><input type="number" min="1" max="65535" name="webPort" value="${s.webPort}" /></div>
+      </div>
+      <div class="actions"><button type="submit">保存设置</button></div>
+    </form>
+    ${modelScript}`;
+}

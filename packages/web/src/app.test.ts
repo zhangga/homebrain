@@ -1,0 +1,345 @@
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { Hono } from "hono";
+import { resetConfig, type Page, type SpaceId } from "@homebrain/shared";
+import { KnowledgeEngine, FakeLlm } from "@homebrain/core";
+import { createWebApp } from "./app.ts";
+
+let dir: string;
+let engine: KnowledgeEngine;
+let app: Hono;
+let fake: FakeLlm;
+const SPACE: SpaceId = "team/oc_web";
+
+function page(slug: string, title: string, content: string): Page {
+  return {
+    slug,
+    type: "entity",
+    title,
+    summary: content.slice(0, 30),
+    aliases: ["爱丽丝"],
+    tags: ["team"],
+    sources: ["raw-1"],
+    links: [],
+    content,
+    updatedAt: Date.now(),
+    contentHash: "h",
+  };
+}
+
+beforeEach(async () => {
+  dir = mkdtempSync(join(tmpdir(), "hb-web-"));
+  process.env.HOMEBRAIN_DATA_DIR = dir;
+  resetConfig();
+  fake = new FakeLlm();
+  engine = new KnowledgeEngine({ dataDir: dir, llm: fake });
+  await engine.upsertPage(SPACE, page("entities/alice", "Alice", "Alice 负责后端服务。"));
+  await engine.remember({ space: SPACE, source: "message", content: "一条原始消息" });
+  app = createWebApp({
+    engine,
+    // deterministic + fast: don't spawn real CLIs
+    detectProviders: async () => [
+      { id: "claude", name: "Claude Code", bin: "claude", available: true, detail: "2.x" },
+      { id: "codex", name: "Codex", bin: "codex", available: false, detail: "node not found" },
+      { id: "trae-cli", name: "TRAE CLI", bin: "trae-cli", available: true, detail: "0.2" },
+    ],
+    providerModels: async () => ({
+      claude: ["sonnet", "opus"],
+      codex: ["gpt-5.5", "gpt-5.4", "gpt-5.3-codex-spark"],
+      "trae-cli": ["openrouter-3o"],
+    }),
+  });
+});
+
+afterEach(() => {
+  engine.close();
+  rmSync(dir, { recursive: true, force: true });
+  delete process.env.HOMEBRAIN_DATA_DIR;
+  resetConfig();
+});
+
+describe("web backend (read-only)", () => {
+  test("home lists spaces", async () => {
+    const res = await app.request("/");
+    expect(res.status).toBe(200);
+    const body = await res.text();
+    expect(body).toContain("team/oc_web");
+    expect(body).toContain("homebrain");
+  });
+
+  test("space detail shows knowledge pages", async () => {
+    const res = await app.request(`/spaces/${encodeURIComponent(SPACE)}`);
+    expect(res.status).toBe(200);
+    const body = await res.text();
+    expect(body).toContain("Alice");
+    expect(body).toContain("知识页");
+  });
+
+  test("page view shows full content and metadata", async () => {
+    const res = await app.request(`/spaces/${encodeURIComponent(SPACE)}/pages/${encodeURIComponent("entities/alice")}`);
+    expect(res.status).toBe(200);
+    const body = await res.text();
+    expect(body).toContain("Alice 负责后端服务");
+    expect(body).toContain("爱丽丝"); // alias
+    expect(body).toContain("raw-1"); // provenance
+  });
+
+  test("raw list shows captured entries", async () => {
+    const res = await app.request(`/spaces/${encodeURIComponent(SPACE)}/raw`);
+    expect(res.status).toBe(200);
+    expect(await res.text()).toContain("一条原始消息");
+  });
+
+  test("ask box renders a knowledge answer", async () => {
+    // script routing + synthesis
+    fake.onJSON((call) => {
+      const props = (call.schema as { properties?: Record<string, unknown> }).properties ?? {};
+      if ("relevant" in props) return { slugs: ["entities/alice"], relevant: true };
+      if ("grounded" in props)
+        return { answer: "后端由 Alice 负责。", grounded: true, usedSlugs: ["entities/alice"], gaps: [] };
+      return {};
+    });
+    const res = await app.request(`/spaces/${encodeURIComponent(SPACE)}/ask?q=${encodeURIComponent("谁负责后端？")}`);
+    expect(res.status).toBe(200);
+    const body = await res.text();
+    expect(body).toContain("后端由 Alice 负责");
+    expect(body).toContain("知识库"); // source badge
+  });
+
+  test("dream POST triggers a cycle and redirects", async () => {
+    fake.queueJSON({ operations: [], skippedRawIds: [] });
+    const res = await app.request(`/spaces/${encodeURIComponent(SPACE)}/dream`, { method: "POST" });
+    expect([302, 303]).toContain(res.status);
+  });
+
+  test("unknown space is 404", async () => {
+    const res = await app.request(`/spaces/${encodeURIComponent("team/nope")}`);
+    expect(res.status).toBe(404);
+  });
+
+  test("logs page renders", async () => {
+    const res = await app.request("/logs");
+    expect(res.status).toBe(200);
+  });
+});
+
+describe("management backend (read-write)", () => {
+  test("nav rail exposes the mew-style sections", async () => {
+    const body = await (await app.request("/")).text();
+    expect(body).toContain("Agents");
+    expect(body).toContain("Integrations");
+    expect(body).toContain("设置");
+  });
+
+  test("creating an agent via POST persists and redirects to its editor", async () => {
+    const form = new URLSearchParams({ name: "知识助手", instruction: "简洁作答", model: "", provider: "claude", visibility: "Team" });
+    const res = await app.request("/agents", {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: form.toString(),
+    });
+    expect([302, 303]).toContain(res.status);
+    const agents = engine.agents.list();
+    expect(agents.length).toBe(1);
+    expect(agents[0]!.name).toBe("知识助手");
+    // the agent editor renders the saved instruction
+    const view = await (await app.request(`/agents/${encodeURIComponent(agents[0]!.id)}`)).text();
+    expect(view).toContain("简洁作答");
+  });
+
+  test("agents page shows detected providers; unavailable ones are disabled", async () => {
+    const body = await (await app.request("/agents")).text();
+    expect(body).toContain("Claude Code");
+    expect(body).toContain("TRAE CLI");
+    // codex is unavailable in the stub -> rendered disabled with reason
+    expect(body).toContain("不可用");
+    expect(body).toContain("node not found");
+  });
+
+  test("agents page embeds a per-provider model catalog for the Model dropdown", async () => {
+    const body = await (await app.request("/agents")).text();
+    // the client-side catalog carries each provider's models (mew: model list
+    // changes with provider)
+    expect(body).toContain("openrouter-3o"); // trae-cli
+    expect(body).toContain("gpt-5.5"); // codex
+    expect(body).toContain("sonnet"); // claude
+    expect(body).toContain("agent-provider"); // the wired <select> ids
+    expect(body).toContain("agent-model");
+  });
+
+  test("agent editor shows reserved task-execution fields (marked not-yet-active)", async () => {
+    const body = await (await app.request("/agents")).text();
+    expect(body).toContain("Workdir");
+    expect(body).toContain("Permission");
+    expect(body).toContain("Skills");
+    expect(body).toContain("任务执行"); // the reserved-section heading
+    expect(body).toContain("暂未接入"); // honesty marker
+  });
+
+  test("creating an agent persists reserved fields (workdir/permission/skills)", async () => {
+    const form = new URLSearchParams({
+      name: "任务助手",
+      provider: "claude",
+      permission: "write",
+      workdir: "~/work/proj",
+      skills: "code-review, summarize",
+    });
+    const res = await app.request("/agents", {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: form.toString(),
+    });
+    expect([302, 303]).toContain(res.status);
+    const created = engine.agents.list().find((a) => a.name === "任务助手");
+    expect(created?.permission).toBe("write");
+    expect(created?.workdir).toBe("~/work/proj");
+    expect(created?.skills).toEqual(["code-review", "summarize"]);
+  });
+
+  test("creating an agent with a local CLI provider persists that provider", async () => {
+    const form = new URLSearchParams({ name: "海盗", instruction: "Arrr", model: "", provider: "claude", visibility: "Team" });
+    const res = await app.request("/agents", {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: form.toString(),
+    });
+    expect([302, 303]).toContain(res.status);
+    const created = engine.agents.list().find((a) => a.name === "海盗");
+    expect(created?.provider).toBe("claude");
+  });
+
+  test("editing then deleting an agent works", async () => {
+    const created = engine.agents.create({ name: "Temp", model: "" });
+    const edit = new URLSearchParams({ name: "Renamed", instruction: "x", model: "claude-sonnet-5", visibility: "Team" });
+    const r1 = await app.request(`/agents/${encodeURIComponent(created.id)}`, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: edit.toString(),
+    });
+    expect([302, 303]).toContain(r1.status);
+    expect(engine.agents.get(created.id)?.name).toBe("Renamed");
+
+    const r2 = await app.request(`/agents/${encodeURIComponent(created.id)}/delete`, { method: "POST" });
+    expect([302, 303]).toContain(r2.status);
+    expect(engine.agents.has(created.id)).toBe(false);
+  });
+
+  test("integrations lists team groups and binds per-group settings", async () => {
+    const agent = engine.agents.create({ name: "群助手", model: "" });
+    const listing = await (await app.request("/integrations")).text();
+    expect(listing).toContain("Lark bot");
+    expect(listing).toContain("Lark groups");
+    expect(listing).toContain(SPACE); // the seeded team space
+
+    const form = new URLSearchParams({
+      name: "研发群",
+      agentId: agent.id,
+      // mentionsOnly checkbox omitted => unchecked => respond to all
+    });
+    form.append("replyInThread", "on");
+    const res = await app.request(`/integrations/groups/${encodeURIComponent(SPACE)}`, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: form.toString(),
+    });
+    expect([302, 303]).toContain(res.status);
+    const meta = engine.registry.get(SPACE);
+    expect(meta?.name).toBe("研发群");
+    expect(meta?.agentId).toBe(agent.id);
+    expect(meta?.replyInThread).toBe(true);
+    expect(meta?.mentionsOnly).toBe(false);
+  });
+
+  test("settings POST persists default provider/model + config and reflects it back", async () => {
+    const form = new URLSearchParams({
+      defaultProvider: "trae-cli",
+      defaultModel: "openrouter-3o",
+      dailyBudgetUsd: "12",
+      dreamHour: "5",
+      webPort: "3000",
+    });
+    const res = await app.request("/settings", {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: form.toString(),
+    });
+    expect([302, 303]).toContain(res.status);
+    const view = await (await app.request("/settings")).text();
+    // the saved default provider is selected and its model shows
+    expect(view).toContain("openrouter-3o");
+    expect(view).toContain('value="trae-cli" selected');
+    // dreamHour value is rendered in the number input
+    expect(view).toContain('value="5"');
+  });
+
+  test("tasks: nav + create + edit + list rendering", async () => {
+    const home = await (await app.request("/tasks")).text();
+    expect(home).toContain("任务");
+    expect(home).toContain("新建任务");
+
+    const form = new URLSearchParams({ name: "每日AI", space: SPACE, topic: "大模型进展", cadence: "daily", hour: "9" });
+    form.append("enabled", "on");
+    form.append("notify", "on");
+    // distillOnRun checkbox omitted => unchecked => false
+    const res = await app.request("/tasks", {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: form.toString(),
+    });
+    expect([302, 303]).toContain(res.status);
+    const created = engine.tasks.list().find((t) => t.name === "每日AI");
+    expect(created?.space).toBe(SPACE);
+    expect(created?.cadence).toBe("daily");
+    expect(created?.hour).toBe(9);
+    expect(created?.enabled).toBe(true);
+    expect(created?.distillOnRun).toBe(false); // omitted checkbox
+
+    // editor renders the task + the distill toggle
+    const editor = await (await app.request(`/tasks/${encodeURIComponent(created!.id)}`)).text();
+    expect(editor).toContain("大模型进展");
+    expect(editor).toContain("立即运行");
+    expect(editor).toContain("完成后立即提炼");
+  });
+
+  test("tasks: create with invalid space is rejected with a flash", async () => {
+    const form = new URLSearchParams({ name: "bad", space: "not-a-space", topic: "x" });
+    const res = await app.request("/tasks", {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: form.toString(),
+    });
+    expect([302, 303]).toContain(res.status);
+    expect(res.headers.get("location")).toContain("ok=");
+    expect(engine.tasks.list().length).toBe(0);
+  });
+
+  test("tasks: manual run captures output and fires onTaskRun", async () => {
+    // make the fake client return research text
+    fake.onText(() => "研究结果：要点若干");
+    let ranId: string | undefined;
+    const app2 = createWebApp({
+      engine,
+      detectProviders: async () => [],
+      providerModels: async () => ({}),
+      onTaskRun: (id) => { ranId = id; },
+    });
+    const task = engine.tasks.create({ name: "run-me", space: SPACE, topic: "x" })!;
+    const res = await app2.request(`/tasks/${encodeURIComponent(task.id)}/run`, { method: "POST" });
+    expect([302, 303]).toContain(res.status);
+    // runTask is fire-and-forget; give the microtask queue a beat
+    await new Promise((r) => setTimeout(r, 20));
+    expect(engine.tasks.get(task.id)?.lastStatus).toBe("ok");
+    expect(ranId).toBe(task.id);
+    // captured into the space as a task raw entry
+    expect(engine.registry.store(SPACE).index().listRaw({}).some((r) => r.source === "task")).toBe(true);
+  });
+
+  test("tasks: delete removes it", async () => {
+    const task = engine.tasks.create({ name: "del", space: SPACE, topic: "x" })!;
+    const res = await app.request(`/tasks/${encodeURIComponent(task.id)}/delete`, { method: "POST" });
+    expect([302, 303]).toContain(res.status);
+    expect(engine.tasks.has(task.id)).toBe(false);
+  });
+});
