@@ -56,15 +56,28 @@ describe("makeCliClient", () => {
     ).rejects.toThrow(/did not return parseable JSON/);
   });
 
-  test("model precedence: opts.model wins, else the client's default", async () => {
+  test("uses the constructor model and ignores per-call opts.model", async () => {
+    // ask/dream pass network-tier model names (e.g. claude-sonnet-5, modelFast)
+    // that a local CLI would reject; the client must pin the model chosen by the
+    // engine at construction time.
     let usedModel: string | undefined;
-    const cli = makeCliClient("claude", "sonnet", async (_id, input) => {
+    const cli = makeCliClient("trae-cli", "openrouter-3o", async (_id, input) => {
       usedModel = input.model;
       return "ok";
     });
     await cli.complete({ prompt: "a" });
-    expect(usedModel).toBe("sonnet");
-    await cli.complete({ prompt: "a", model: "opus" });
-    expect(usedModel).toBe("opus");
+    expect(usedModel).toBe("openrouter-3o");
+    await cli.complete({ prompt: "a", model: "claude-sonnet-5" });
+    expect(usedModel).toBe("openrouter-3o"); // per-call model ignored
+  });
+
+  test("empty constructor model => CLI's own default (undefined passed through)", async () => {
+    let usedModel: string | undefined = "sentinel";
+    const cli = makeCliClient("trae-cli", "", async (_id, input) => {
+      usedModel = input.model;
+      return "ok";
+    });
+    await cli.complete({ prompt: "a", model: "claude-sonnet-5" });
+    expect(usedModel).toBeUndefined();
   });
 });

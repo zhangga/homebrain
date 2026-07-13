@@ -78,7 +78,12 @@ export function makeCliClient(
   run: RunProviderFn = realRunProvider,
   timeoutMs?: number,
 ): LlmClient {
-  const pickModel = (opts: { model?: string }) => opts.model || model || undefined;
+  // The model is fixed at construction (the engine already resolved it from the
+  // space's agent / global default). We deliberately IGNORE per-call opts.model:
+  // ask/dream pass network-gateway tier names (e.g. "claude-sonnet-5",
+  // config().modelFast) that a local CLI doesn't recognize and would reject.
+  // Empty model => the CLI's own default.
+  const cliModel = model || undefined;
   // Fold the system prompt into the user prompt: not every CLI honors a system
   // flag (claude does via --append-system-prompt, but codex/trae-cli don't), so
   // prepending guarantees the persona/instructions reach the model everywhere.
@@ -89,14 +94,14 @@ export function makeCliClient(
     async complete(opts: CompleteOptions): Promise<CompleteResult> {
       const base = opts.prompt ?? (opts.messages ?? []).map((m) => m.content).join("\n\n");
       const prompt = withSystem(opts.system, base);
-      const out = await run(provider, { prompt, system: opts.system, model: pickModel(opts) }, timeoutMs);
-      return { ...zeroResult(pickModel(opts) ?? provider), text: out.trim() };
+      const out = await run(provider, { prompt, system: opts.system, model: cliModel }, timeoutMs);
+      return { ...zeroResult(cliModel ?? provider), text: out.trim() };
     },
 
     async completeJSON<T>(opts: JSONOptions<T>): Promise<{ value: T; result: CompleteResult }> {
       const base = opts.prompt ?? (opts.messages ?? []).map((m) => m.content).join("\n\n");
       const prompt = withSystem(opts.system, base) + jsonInstruction(opts.schema);
-      const out = await run(provider, { prompt, system: opts.system, model: pickModel(opts) }, timeoutMs);
+      const out = await run(provider, { prompt, system: opts.system, model: cliModel }, timeoutMs);
       let parsed: unknown;
       try {
         parsed = extractJson(out);
@@ -105,7 +110,7 @@ export function makeCliClient(
         throw new Error(`provider ${provider} did not return parseable JSON`);
       }
       const value = opts.validate ? opts.validate(parsed) : (parsed as T);
-      return { value, result: zeroResult(pickModel(opts) ?? provider) };
+      return { value, result: zeroResult(cliModel ?? provider) };
     },
   };
 }
