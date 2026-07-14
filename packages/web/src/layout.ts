@@ -64,7 +64,7 @@ const STYLE = `
   .field { display:flex; flex-direction:column; gap:5px; margin-bottom:14px; }
   .field label { font-size:13px; font-weight:600; color:#374151; }
   .field .hint { font-size:12px; color:var(--muted); font-weight:400; }
-  input[type=text], input[type=number], select, textarea {
+  input[type=text], input[type=password], input[type=number], select, textarea {
     width:100%; padding:8px 11px; border:1px solid var(--border); border-radius:8px; font-size:14px; background:#fff; font-family:inherit; }
   textarea { min-height:96px; resize:vertical; }
   input:focus, select:focus, textarea:focus { outline:none; border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-soft); }

@@ -50,6 +50,10 @@ export interface CommandOptions {
   cwd?: string;
   timeoutMs?: number;
   terminationGraceMs?: number;
+  /** sensitive command input passed through a pipe, never argv */
+  stdin?: string;
+  /** per-command environment overlay */
+  env?: Record<string, string>;
   /** injectable clock seam; defaults to a cancellable setTimeout */
   deadlineFactory?: DeadlineFactory;
   /** absolute path to a command-created file that must stay within the byte limit */
@@ -575,8 +579,13 @@ export async function runFeishuCommand(
     cwd: opts?.cwd,
     stdout: "pipe",
     stderr: "pipe",
-    stdin: "ignore",
+    stdin: opts.stdin === undefined ? "ignore" : "pipe",
+    env: opts.env ? { ...process.env, ...opts.env } : undefined,
   });
+  if (opts.stdin !== undefined && proc.stdin && typeof proc.stdin !== "number") {
+    proc.stdin.write(opts.stdin);
+    proc.stdin.end();
+  }
   const stdout = collectStream(proc.stdout);
   const stderr = collectStream(proc.stderr);
   const completion = Promise.all([stdout.result, stderr.result, proc.exited]);

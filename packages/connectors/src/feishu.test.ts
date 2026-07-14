@@ -270,6 +270,15 @@ describe("FeishuConnector daemon (fake spawn)", () => {
 });
 
 describe("FeishuConnector outbound", () => {
+  test("passes sensitive command input over stdin instead of argv", async () => {
+    const output = await runFeishuCommand(
+      [process.execPath, "-e", "const input = await Bun.stdin.text(); process.stdout.write(input)"],
+      { stdin: "stdin-only-value" },
+    );
+
+    expect(output).toBe("stdin-only-value");
+  });
+
   test("cancels the command deadline after a fast successful command", async () => {
     let cancellations = 0;
     await expect(

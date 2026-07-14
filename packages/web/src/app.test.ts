@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Hono } from "hono";
 import {
+  readSettings,
   resetConfig,
   type Page,
   type SpaceId,
@@ -431,8 +432,8 @@ describe("management backend (read-write)", () => {
   test("integrations lists team groups and binds per-group settings", async () => {
     const agent = engine.agents.create({ name: "群助手", model: "" });
     const listing = await (await app.request("/integrations")).text();
-    expect(listing).toContain("Lark bot");
-    expect(listing).toContain("Lark groups");
+    expect(listing).toContain("飞书配置向导");
+    expect(listing).toContain("绑定群聊并测试");
     expect(listing).toContain(SPACE); // the seeded team space
 
     const form = new URLSearchParams({
@@ -452,6 +453,182 @@ describe("management backend (read-write)", () => {
     expect(meta?.agentId).toBe(agent.id);
     expect(meta?.replyInThread).toBe(true);
     expect(meta?.mentionsOnly).toBe(false);
+  });
+
+  test("integration setup verifies app credentials and discovers the bot identity", async () => {
+    const configured: { appId: string; appSecret: string; brand: string }[] = [];
+    const setupApp = createWebApp({
+      engine,
+      detectProviders: async () => [],
+      providerModels: async () => ({}),
+      larkSetup: {
+        status: async () => ({
+          state: "ready",
+          verified: true,
+          appId: "cli_new",
+          brand: "feishu",
+          botName: "新机器人",
+          botOpenId: "ou_new",
+          message: "Bot identity: ready",
+        }),
+        configure: async (input) => {
+          configured.push(input);
+          return {
+            state: "ready",
+            verified: true,
+            appId: input.appId,
+            brand: input.brand,
+            botName: "新机器人",
+            botOpenId: "ou_new",
+            message: "Bot identity: ready",
+          };
+        },
+      },
+    });
+
+    const form = new URLSearchParams({
+      appId: "cli_new",
+      appSecret: "top-secret-value",
+      brand: "feishu",
+    });
+    const response = await setupApp.request("/integrations/bot/setup", {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: form.toString(),
+    });
+
+    expect([302, 303]).toContain(response.status);
+    expect(configured).toEqual([
+      { appId: "cli_new", appSecret: "top-secret-value", brand: "feishu" },
+    ]);
+    expect(readSettings(dir)).toEqual(
+      expect.objectContaining({ feishuBotName: "新机器人", feishuBotOpenId: "ou_new" }),
+    );
+    expect(JSON.stringify(readSettings(dir))).not.toContain("top-secret-value");
+
+    const page = await (await setupApp.request("/integrations")).text();
+    expect(page).toContain("连接已验证");
+    expect(page).toContain("新机器人");
+    expect(page).toContain("ou_new");
+    expect(page).not.toContain("top-secret-value");
+  });
+
+  test("integration setup sends a real test message to a bound group", async () => {
+    const sent: { chatId: string; text: string }[] = [];
+    const setupApp = createWebApp({
+      engine,
+      detectProviders: async () => [],
+      providerModels: async () => ({}),
+      onIntegrationTest: async (chatId, text) => {
+        sent.push({ chatId, text });
+      },
+    });
+
+    const response = await setupApp.request(
+      `/integrations/groups/${encodeURIComponent(SPACE)}/test`,
+      { method: "POST" },
+    );
+
+    expect([302, 303]).toContain(response.status);
+    expect(sent).toEqual([
+      {
+        chatId: "oc_web",
+        text: expect.stringContaining("配置测试成功"),
+      },
+    ]);
+    expect(response.headers.get("location")).toContain(encodeURIComponent("测试消息已发送"));
+  });
+
+  test("integration setup can re-verify an existing lark-cli profile without a secret", async () => {
+    const setupApp = createWebApp({
+      engine,
+      detectProviders: async () => [],
+      providerModels: async () => ({}),
+      larkSetup: {
+        status: async () => ({
+          state: "ready",
+          verified: true,
+          appId: "cli_existing",
+          brand: "feishu",
+          botName: "现有机器人",
+          botOpenId: "ou_existing",
+          message: "Bot identity: ready",
+        }),
+        configure: async () => {
+          throw new Error("not expected");
+        },
+      },
+    });
+
+    const response = await setupApp.request("/integrations/bot/verify", { method: "POST" });
+
+    expect([302, 303]).toContain(response.status);
+    expect(readSettings(dir)).toEqual(
+      expect.objectContaining({
+        feishuBotName: "现有机器人",
+        feishuBotOpenId: "ou_existing",
+      }),
+    );
+    expect(response.headers.get("location")).toContain(encodeURIComponent("Bot 身份已同步"));
+  });
+
+  test("integration setup shows whether required Feishu event consumers are ready", async () => {
+    const setupApp = createWebApp({
+      engine,
+      detectProviders: async () => [],
+      providerModels: async () => ({}),
+      feishuRuntime: () => ({
+        ready: true,
+        consumers: [
+          { key: "im.message.receive_v1", state: "ready" },
+          { key: "im.chat.member.bot.added_v1", state: "ready" },
+        ],
+      }),
+    });
+
+    const page = await (await setupApp.request("/integrations")).text();
+
+    expect(page).toContain("事件监听已就绪");
+    expect(page).toContain("im.message.receive_v1");
+    expect(page).toContain("im.chat.member.bot.added_v1");
+    expect(page).toContain("im:message:readonly");
+  });
+
+  test("integration setup keeps a restart warning until the active connector uses the new identity", async () => {
+    const setupApp = createWebApp({
+      engine,
+      detectProviders: async () => [],
+      providerModels: async () => ({}),
+      activeFeishuIdentity: { botName: "旧机器人", botOpenId: "ou_old" },
+      larkSetup: {
+        status: async () => ({
+          state: "ready",
+          verified: true,
+          appId: "cli_new",
+          brand: "feishu",
+          botName: "新机器人",
+          botOpenId: "ou_new",
+          message: "Bot identity: ready",
+        }),
+        configure: async () => {
+          throw new Error("not expected");
+        },
+      },
+      feishuRuntime: () => ({
+        ready: true,
+        consumers: [
+          { key: "im.message.receive_v1", state: "ready" },
+          { key: "im.chat.member.bot.added_v1", state: "ready" },
+        ],
+      }),
+    });
+
+    const page = await (await setupApp.request("/integrations")).text();
+
+    expect(page).toContain("需要重启");
+    expect(page).toContain("当前消费者仍属于启动时应用");
+    expect(page).toContain("应用可用范围");
+    expect(page).not.toContain("事件监听已就绪");
   });
 
   test("settings POST persists default provider/model + config and reflects it back", async () => {

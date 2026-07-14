@@ -9,7 +9,7 @@
  */
 import { assertSafeWebBinding, config, logger } from "@homebrain/shared";
 import { KnowledgeEngine } from "@homebrain/core";
-import { FeishuConnector } from "@homebrain/connectors";
+import { FeishuConnector, LarkCliSetup } from "@homebrain/connectors";
 import { Orchestrator } from "@homebrain/orchestrator";
 import { createWebApp } from "@homebrain/web";
 import { Scheduler } from "./scheduler.ts";
@@ -62,6 +62,12 @@ async function main(): Promise<void> {
     engine,
     adminToken: cfg.webAdminToken,
     health: reportHealth,
+    larkSetup: new LarkCliSetup(),
+    feishuRuntime: () => connector.health(),
+    activeFeishuIdentity: cfg.feishuBotName && cfg.feishuBotOpenId
+      ? { botName: cfg.feishuBotName, botOpenId: cfg.feishuBotOpenId }
+      : undefined,
+    onIntegrationTest: async (chatId, text) => connector.notice(chatId, text),
     onTaskRun: (taskId) => {
       const t = engine.tasks.get(taskId);
       if (t) void notifyTaskDone(t.space, t.name, t.lastSummary).catch(() => {});

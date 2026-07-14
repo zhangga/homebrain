@@ -20,6 +20,8 @@ import {
   saveSettings,
   isSpaceId,
   isLoopbackHost,
+  type LarkBotIdentity,
+  type LarkSetupStatus,
   type SpaceId,
   type PersistedSettings,
   type SystemHealthSnapshot,
@@ -27,6 +29,7 @@ import {
 import { detectProviders, providerModels, type DetectedProvider } from "@homebrain/llm";
 import type { KnowledgeEngine } from "@homebrain/core";
 import { layout } from "./layout.ts";
+import type { FeishuRuntimeStatus, LarkSetupPort } from "./integrations.ts";
 import {
   agentsView,
   askView,
@@ -54,6 +57,14 @@ export interface WebOptions {
   detectProviders?: () => Promise<DetectedProvider[]>;
   /** injected for tests; defaults to the live gateway + curated CLI catalog. */
   providerModels?: () => Promise<Record<string, string[]>>;
+  /** Configure and verify the local lark-cli application without persisting its secret. */
+  larkSetup?: LarkSetupPort;
+  /** Send the setup wizard's explicit test message to a Feishu chat. */
+  onIntegrationTest?: (chatId: string, text: string) => Promise<void>;
+  /** Current event-consumer readiness, used to verify event subscriptions. */
+  feishuRuntime?: () => FeishuRuntimeStatus;
+  /** Bot identity snapshotted by the currently running connector. */
+  activeFeishuIdentity?: LarkBotIdentity;
   /**
    * Optional hook invoked after a manual task run (backend "立即运行"), so the
    * app can push a summary to feishu. main.ts wires this to connector.notice;
@@ -194,6 +205,40 @@ export function createWebApp(opts: WebOptions): Hono {
   const getModels = async (): Promise<Record<string, string[]>> => {
     if (!modelCache) modelCache = await listModels();
     return modelCache;
+  };
+  const getLarkStatus = async (): Promise<LarkSetupStatus> => {
+    if (!opts.larkSetup) {
+      return {
+        state: "unavailable",
+        verified: false,
+        message: "当前运行方式未接入 lark-cli 配置服务",
+      };
+    }
+    try {
+      return await opts.larkSetup.status();
+    } catch {
+      return {
+        state: "invalid",
+        verified: false,
+        message: "无法读取 lark-cli 连接状态",
+      };
+    }
+  };
+  const getFeishuRuntime = (): FeishuRuntimeStatus | undefined => {
+    try {
+      return opts.feishuRuntime?.();
+    } catch {
+      return { ready: false, consumers: [] };
+    }
+  };
+  const persistVerifiedBot = (status: LarkSetupStatus): boolean => {
+    const identity = verifiedBotIdentity(status);
+    if (!identity) return false;
+    saveSettings({
+      feishuBotName: identity.botName,
+      feishuBotOpenId: identity.botOpenId,
+    });
+    return true;
   };
 
   const parseSpace = (raw: string): SpaceId | null => {
@@ -535,14 +580,63 @@ export function createWebApp(opts: WebOptions): Hono {
     const groups = engine.registry.list().filter((m) => m.id.startsWith("team/"));
     const agents = engine.agents.list();
     const ok = c.req.query("ok") ?? undefined;
+    const setupStatus = await getLarkStatus();
+    const setupIdentity = verifiedBotIdentity(setupStatus);
+    const activeIdentity = opts.activeFeishuIdentity;
+    const restartRequired = Boolean(setupIdentity) && (
+      !activeIdentity
+      || activeIdentity.botName !== setupIdentity!.botName
+      || activeIdentity.botOpenId !== setupIdentity!.botOpenId
+    );
     return c.html(
       await layout(
         "Integrations",
         [{ label: "Integrations" }],
-        await integrationsView(cfg.feishuBotName ?? "", cfg.feishuBotOpenId ?? "", groups, agents, ok),
+        await integrationsView(
+          cfg.feishuBotName ?? "",
+          cfg.feishuBotOpenId ?? "",
+          setupStatus,
+          restartRequired,
+          getFeishuRuntime(),
+          groups,
+          agents,
+          ok,
+        ),
         "integrations",
       ),
     );
+  });
+
+  app.post("/integrations/bot/setup", async (c) => {
+    if (!opts.larkSetup) {
+      return c.redirect(`/integrations?ok=${encodeURIComponent("配置失败：当前运行方式未接入 lark-cli")}`);
+    }
+    const body = await c.req.parseBody();
+    const appId = str(body, "appId").trim();
+    const appSecret = str(body, "appSecret");
+    const brand = str(body, "brand") === "lark" ? "lark" : "feishu";
+    if (!appId || !appSecret) {
+      return c.redirect(`/integrations?ok=${encodeURIComponent("配置失败：App ID 和 App Secret 均为必填")}`);
+    }
+    try {
+      const status = await opts.larkSetup.configure({ appId, appSecret, brand });
+      if (!persistVerifiedBot(status)) {
+        return c.redirect(`/integrations?ok=${encodeURIComponent("配置失败：应用凭据未能验证 Bot 身份")}`);
+      }
+      return c.redirect(`/integrations?ok=${encodeURIComponent("连接已验证，Bot 身份已自动保存；重启服务后消息监听使用新应用")}`);
+    } catch {
+      // Deliberately avoid echoing the exception: CLI errors can include input
+      // context, while App Secret must never be rendered back to the browser.
+      return c.redirect(`/integrations?ok=${encodeURIComponent("配置失败：请检查 App ID、App Secret 和网络后重试")}`);
+    }
+  });
+
+  app.post("/integrations/bot/verify", async (c) => {
+    const status = await getLarkStatus();
+    if (!persistVerifiedBot(status)) {
+      return c.redirect(`/integrations?ok=${encodeURIComponent("验证失败：lark-cli Bot 身份尚未就绪")}`);
+    }
+    return c.redirect(`/integrations?ok=${encodeURIComponent("连接已验证，Bot 身份已同步；身份变更需重启服务")}`);
   });
 
   app.post("/integrations/bot", async (c) => {
@@ -565,6 +659,28 @@ export function createWebApp(opts: WebOptions): Hono {
       mentionsOnly: checkbox(body, "mentionsOnly"),
     });
     return c.redirect(`/integrations?ok=${encodeURIComponent("已保存群设置")}`);
+  });
+
+  app.post("/integrations/groups/:space/test", async (c) => {
+    const space = parseSpace(c.req.param("space"));
+    if (!space || !space.startsWith("team/") || !engine.registry.has(space)) return c.notFound();
+    if (!opts.onIntegrationTest) {
+      return c.redirect(`/integrations?ok=${encodeURIComponent("测试失败：当前运行方式未连接飞书发送通道")}`);
+    }
+    const meta = engine.registry.get(space);
+    const chatId = meta?.chatId ?? space.slice("team/".length);
+    if (!chatId) {
+      return c.redirect(`/integrations?ok=${encodeURIComponent("测试失败：该群没有可用的 chat_id")}`);
+    }
+    try {
+      await opts.onIntegrationTest(
+        chatId,
+        "✅ homebrain 配置测试成功：机器人发送通道可用。现在可以在群里 @我 提问。",
+      );
+      return c.redirect(`/integrations?ok=${encodeURIComponent("测试消息已发送，请到目标群确认")}`);
+    } catch {
+      return c.redirect(`/integrations?ok=${encodeURIComponent("测试失败：请检查发送消息权限、机器人可用范围和群成员状态")}`);
+    }
   });
 
   // ---- Settings ------------------------------------------------------------
@@ -622,6 +738,13 @@ export function createWebApp(opts: WebOptions): Hono {
   });
 
   return app;
+}
+
+function verifiedBotIdentity(status: LarkSetupStatus): LarkBotIdentity | undefined {
+  if (status.state !== "ready" || !status.verified || !status.botName || !status.botOpenId) {
+    return undefined;
+  }
+  return { botName: status.botName, botOpenId: status.botOpenId };
 }
 
 /** Read the last few days of LLM call logs from data/logs/*.jsonl. */

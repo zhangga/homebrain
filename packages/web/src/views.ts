@@ -13,10 +13,12 @@ import type {
   SpaceId,
   Page,
   SystemHealthSnapshot,
+  LarkSetupStatus,
 } from "@homebrain/shared";
 import type { SpaceMeta, Agent, Task } from "@homebrain/core";
 import { AGENT_PERMISSIONS, TASK_CADENCES } from "@homebrain/core";
 import type { DetectedProvider } from "@homebrain/llm";
+import type { FeishuRuntimeStatus } from "./integrations.ts";
 
 const SINGLETON = new Set(["index", "overview", "log", "glossary"]);
 
@@ -567,10 +569,31 @@ export function tasksView(
 export function integrationsView(
   botName: string,
   botOpenId: string,
+  setup: LarkSetupStatus,
+  restartRequired: boolean,
+  runtime: FeishuRuntimeStatus | undefined,
   groups: SpaceMeta[],
   agents: Agent[],
   flashMsg?: string,
 ): HtmlEscapedString | Promise<HtmlEscapedString> {
+  const setupLabel = setup.state === "ready" && setup.verified
+    ? "连接已验证"
+    : setup.state === "unconfigured"
+      ? "尚未配置"
+      : setup.state === "unavailable"
+        ? "配置服务不可用"
+        : "连接异常";
+  const setupBadge = setup.state === "ready" && setup.verified ? "ok" : "degraded";
+  const eventLabel = restartRequired
+    ? "需要重启"
+    : runtime?.ready
+      ? "事件监听已就绪"
+      : runtime
+        ? "事件监听未就绪"
+        : "重启后检查事件监听";
+  const eventBadge = !restartRequired && runtime?.ready ? "ok" : "degraded";
+  const shownBotName = setup.botName ?? botName;
+  const shownBotOpenId = setup.botOpenId ?? botOpenId;
   const agentName = (id?: string) => agents.find((a) => a.id === id)?.name;
 
   const groupCards = groups.length
@@ -612,40 +635,107 @@ export function integrationsView(
               <div><strong>@ mentions only</strong><div class="hint">仅在被 @ 时回复；关闭后响应群内全部消息</div></div>
               <label class="switch"><input type="checkbox" name="mentionsOnly" ${(g.mentionsOnly ?? true) ? "checked" : ""} /><span class="slider"></span></label>
             </div>
-            <div class="actions"><button type="submit">保存群设置</button></div>
+            <div class="actions">
+              <button type="submit">保存群设置</button>
+              <button type="submit" class="secondary" formaction="/integrations/groups/${enc}/test">发送测试消息</button>
+            </div>
           </form>
         </div>`;
       })
     : [html`<div class="empty">还没有群空间。把机器人加入飞书群即可出现在这里。</div>`];
 
-  return html`<h1>Integrations</h1>
-    <p class="subtitle">Connect homebrain to external channels and tools.</p>
+  return html`<h1>飞书配置向导</h1>
+    <p class="subtitle">按顺序完成应用连接、Agent 创建、群聊绑定和回复测试。</p>
     ${flash(flashMsg)}
 
     <div class="card">
       <div class="row">
         <div>
-          <div style="font-weight:600">Lark bot</div>
-          <div class="muted">用于收发飞书群消息的机器人身份（改动需重启生效）。</div>
+          <div style="font-weight:600">1. 连接飞书应用 <span class="badge ${setupBadge}">${setupLabel}</span></div>
+          <div class="muted">App Secret 仅通过 stdin 交给 lark-cli，homebrain 不保存也不回显。</div>
         </div>
       </div>
+      <div class="muted" style="margin-top:10px">
+        ${setup.appId ? html`App ${setup.appId} · ` : ""}${shownBotName || "未识别 Bot"}${shownBotOpenId ? html` · ${shownBotOpenId}` : ""}<br />
+        ${setup.message}
+      </div>
+      ${restartRequired
+        ? html`<div class="health-alert" style="margin-top:12px;margin-bottom:0">
+            需要重启 homebrain：当前消费者仍属于启动时应用，不能据此判断上方新应用已经接管消息。
+          </div>`
+        : ""}
+      <form method="post" action="/integrations/bot/setup" class="stack" style="margin-top:14px">
+        <div class="grid2">
+          <div class="field">
+            <label>App ID</label>
+            <input type="text" name="appId" value="${setup.appId ?? ""}" placeholder="cli_..." required autocomplete="off" />
+          </div>
+          <div class="field">
+            <label>App Secret <span class="hint">不会保存到 homebrain</span></label>
+            <input type="password" name="appSecret" value="" required autocomplete="new-password" />
+          </div>
+          <div class="field">
+            <label>平台</label>
+            <select name="brand">
+              <option value="feishu" ${setup.brand !== "lark" ? "selected" : ""}>飞书</option>
+              <option value="lark" ${setup.brand === "lark" ? "selected" : ""}>Lark</option>
+            </select>
+          </div>
+        </div>
+        <div class="actions">
+          <button type="submit">保存并验证连接</button>
+          <button type="submit" class="secondary" formnovalidate formaction="/integrations/bot/verify">只验证现有配置</button>
+        </div>
+      </form>
+      <div class="row" style="margin-top:16px">
+        <div>
+          <div style="font-weight:600">事件订阅 <span class="badge ${eventBadge}">${eventLabel}</span></div>
+          <div class="muted">
+            ${(runtime?.consumers ?? []).length
+              ? (runtime?.consumers ?? []).map((consumer) => html`${consumer.key}：${consumer.state}<br />`)
+              : "需要启用 im.message.receive_v1 与 im.chat.member.bot.added_v1；配置变更后请重启服务。"}
+          </div>
+        </div>
+      </div>
+      <details style="margin-top:14px">
+        <summary style="cursor:pointer;font-weight:600">权限与发布检查项</summary>
+        <div class="muted" style="margin-top:8px">
+          开启机器人能力并发布应用；确认应用可用范围包含目标用户与群；启用上述两个事件；开通消息发送权限、
+          <code>im:message:readonly</code>、<code>im:message.reactions:write_only</code>；
+          若需收录未 @ 消息，再开通 <code>im:message.group_msg</code>。发送权限可在第 3 步直接测试。
+        </div>
+      </details>
+    </div>
+
+    <div class="card">
+      <div class="row">
+        <div>
+          <div style="font-weight:600">2. 创建回答 Agent</div>
+          <div class="muted">选择本机 CLI、模型和回答人格。</div>
+        </div>
+        <a class="btn secondary" href="/agents">管理 Agents</a>
+      </div>
+    </div>
+
+    <details class="card">
+      <summary style="cursor:pointer;font-weight:600">高级：手工覆盖 Bot 身份</summary>
       <form method="post" action="/integrations/bot" class="stack" style="margin-top:12px">
         <div class="grid2">
           <div class="field">
             <label>Bot 名称 <span class="hint">HOMEBRAIN_FEISHU_BOT_NAME</span></label>
-            <input type="text" name="feishuBotName" value="${botName}" placeholder="homebrain" />
+            <input type="text" name="feishuBotName" value="${shownBotName}" placeholder="homebrain" />
           </div>
           <div class="field">
             <label>Bot open_id <span class="hint">HOMEBRAIN_FEISHU_BOT_OPEN_ID</span></label>
-            <input type="text" name="feishuBotOpenId" value="${botOpenId}" placeholder="ou_..." />
+            <input type="text" name="feishuBotOpenId" value="${shownBotOpenId}" placeholder="ou_..." />
           </div>
         </div>
         <div class="actions"><button type="submit">保存 Bot</button></div>
       </form>
-    </div>
+    </details>
 
-    <h2>Lark groups</h2>
-    <p class="subtitle" style="margin-top:-8px">管理群连接及其默认响应设置。</p>
+    <h2>3. 绑定群聊并测试</h2>
+    <p class="subtitle" style="margin-top:-8px">机器人加入群后，为群指定 Agent 和回复方式，再发送测试消息验证发送权限。</p>
     ${groupCards}`;
 }
 

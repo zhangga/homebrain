@@ -41,8 +41,9 @@ data/workspaces/<dir>/
 
 - **Bun**（`curl -fsSL https://bun.sh/install | bash`），Node v22 仅作参考。
 - **LLM 网关**：字节内网 `api.gameaigc.cn`，Anthropic + OpenAI 双兼容，无 embedding。
-- **飞书 `lark-cli`**：已配置应用 + bot/user 授权。附件下载使用 bot 身份，应用需开通
-  `im:message:readonly` 权限。
+- **飞书 `lark-cli`**：需已安装并可执行。应用凭据可在管理后台 **Integrations** 中配置并验证；
+  附件下载使用 bot 身份，应用需开通 `im:message:readonly` 权限。读取用户文档时的 user 授权仍由
+  `lark-cli auth login` 管理。
 
 ### 环境变量
 
@@ -157,7 +158,9 @@ bun run packages/app/src/repl.ts       # 启动横幅列出全部命令
     - `/task run <名称或序号>` — 立即运行
     - `/task help` — 帮助
   - **消息撤回**：回复原消息，@机器人说「别记这条」。原作者、群主或群管理员可执行；系统会删除该消息派生的全部原始记录，二次撤回会明确提示且事件重投不会重新入库。若内容已经进入知识页，会先移除受影响页面，再用仍有效的来源完成重新提炼后回复。撤回控制命令本身不会入库。
-- **Integrations**：**Lark bot**（收发消息的机器人身份）+ **Lark groups**（每个群：指定 Agent、`Topic reply`、`@ mentions only` 开关）。
+- **Integrations / 飞书配置向导**：录入 App ID / App Secret 后调用 `lark-cli` 验证并自动识别 Bot
+  名称与 open_id；展示两条事件消费者状态和权限检查项；引导创建 Agent；每个群可指定 Agent、
+  `Topic reply`、`@ mentions only`，并直接发送测试消息验证发送通道。
 - **运行状态**：集中展示飞书事件消费者、必需 CLI、知识存储、待提炼数量、任务、Dream Cycle 与两个调度器的状态；任一关键组件未就绪时，所有后台页面会显示异常提示。
 - **数据治理**：按空间导出 `homebrain.space v1` JSON 完整备份（知识页、原始记录、撤回标记、任务、空间元数据及关联 Agent），恢复备份，或永久删除整个空间；可按保留周期立即清理已提炼的过期消息。
 - **设置**：**默认 Provider + 默认 Model**（群未指定 Agent 时用它）、每日预算、提炼时刻、原始消息保留周期、端口。
@@ -169,6 +172,23 @@ bun run packages/app/src/repl.ts       # 启动横幅列出全部命令
 对上 mew 的 `Codex Agent · Topic reply · @ mentions only`：给群指定 Agent 后，回答用该 Agent 的 CLI 与人格；
 关掉 `@ mentions only` 则群内任意消息都会应答；`Topic reply` 控制是否在话题内回复。
 群没指定 Agent 时用「设置」里的默认 CLI；若没有可用 CLI，机器人会提示去后台配置（不静默）。
+
+### 飞书与 Agent 重新配置（P3.1）
+
+1. 启动 homebrain，打开 `http://127.0.0.1:3000/integrations`。
+2. 在第 1 步填写飞书开放平台的 App ID / App Secret，选择飞书或 Lark，点击“保存并验证连接”。
+   App Secret 只通过子进程 stdin 传给 `lark-cli config init --app-secret-stdin`；不会写入
+   `data/config/settings.json`、页面或日志。已有 `lark-cli` 配置可点击“只验证现有配置”，无需重填 Secret。
+3. 在飞书开放平台启用并发布机器人，订阅 `im.message.receive_v1` 与
+   `im.chat.member.bot.added_v1`；向导会显示当前运行进程的事件监听状态。凭据或 Bot 身份变更后需重启
+   homebrain，重启后再确认两条消费者均为 `ready`。
+4. 点击“管理 Agents”创建回答 Agent，选择本机可用 Provider、模型与 Instruction。
+5. 把机器人加入目标群。群出现在第 3 步后，为其选择 Agent 和回复方式，保存后点击“发送测试消息”。
+
+向导能自动验证应用凭据、Bot 身份、事件消费者运行态和群消息发送能力；开放平台没有提供给当前应用
+自查全部权限/事件配置的统一接口，因此 `im:message:readonly`、`im:message.reactions:write_only`、
+非 @ 消息所需的 `im:message.group_msg`、应用可用范围与发布状态仍以向导中的检查项和实际消息测试为准。
+Provider 自身的登录授权仍由对应 CLI 管理。
 
 ### 附件提炼（P2 首版）
 
@@ -199,7 +219,7 @@ SIGTERM/SIGINT 优雅退出（对 lark-cli 子进程发 SIGTERM，绝不 kill -9
 
 ## 需人工完成的飞书配置
 
-代码已就绪，但以下需在飞书开放平台 / 开发者后台操作（一次性）：
+向导已覆盖本机凭据接入、Bot 身份发现和运行态检查；以下仍需在飞书开放平台 / 开发者后台操作（一次性）：
 
 1. **订阅事件**：在开发者后台为应用启用
    - `im.message.receive_v1`（接收消息）— **已验证可用**
@@ -211,5 +231,5 @@ SIGTERM/SIGINT 优雅退出（对 lark-cli 子进程发 SIGTERM，绝不 kill -9
 ## 实施状态
 
 MVP = Slice 0–6，均已完成并通过测试；Slice 7（调度器 + 端到端联调）亦已完成。
-后续已完成：学习任务、真实飞书 E2E、思考表情、精确消息撤回、健康检查与可观测性（`/healthz`、`/readyz`、运行状态页与异常提示）、空间导出/恢复/删除、原始消息保留策略、非本机后台鉴权，以及 P2 首版附件提炼。
+后续已完成：学习任务、真实飞书 E2E、思考表情、精确消息撤回、健康检查与可观测性（`/healthz`、`/readyz`、运行状态页与异常提示）、空间导出/恢复/删除、原始消息保留策略、非本机后台鉴权、P2 首版附件提炼，以及 P3.1 飞书配置向导。
 未纳入 MVP（已预留）：每日反馈，以及音频、Office、视频和 `post` 内嵌资源的进一步多模态提炼。
