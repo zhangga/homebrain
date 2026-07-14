@@ -21,7 +21,8 @@ export interface Classification {
   prefiltered: boolean;
 }
 
-export type IntentClient = LlmClient | (() => LlmClient);
+/** Lazily resolves the space-scoped client after the no-model prefilter. */
+export type IntentClientResolver = () => LlmClient;
 
 /** Short pure-greeting / acknowledgement phrases that never need a model call. */
 const GREETINGS = new Set([
@@ -62,11 +63,13 @@ function validate(raw: unknown): { intent: Intent } {
   return { intent };
 }
 
-export async function classifyIntent(client: IntentClient, text: string): Promise<Classification> {
+export async function classifyIntent(resolveClient: IntentClientResolver, text: string): Promise<Classification> {
   if (prefilterChitchat(text)) return { intent: "chitchat", prefiltered: true };
+  // Resolve outside the classifier-failure fallback: missing configuration must
+  // reach the runtime so it can give actionable setup guidance.
+  const client = resolveClient();
   try {
-    const resolvedClient = typeof client === "function" ? client() : client;
-    const { value } = await resolvedClient.completeJSON<{ intent: Intent }>({
+    const { value } = await client.completeJSON<{ intent: Intent }>({
       model: config().modelFast,
       system: "你是意图分类器，严格按 schema 返回单一 intent。",
       prompt: `将下面这条消息分类：\n"""\n${text}\n"""`,

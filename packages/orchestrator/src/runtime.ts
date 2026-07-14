@@ -30,7 +30,7 @@ import type {
 import { extractAttachmentText } from "./attachment-extractor.ts";
 import { attribute } from "./attribution.ts";
 import { gate } from "./gateway.ts";
-import { classifyIntent } from "./intent.ts";
+import { classifyIntent, type Intent } from "./intent.ts";
 import { formatAnswer } from "./format.ts";
 import { GROUP_ADDED_NOTICE, NO_PROVIDER_NOTICE, coldStartNote } from "./messages.ts";
 import { parseTaskCommand, handleTaskCommand } from "./task-commands.ts";
@@ -194,8 +194,20 @@ export class Orchestrator {
 
     return this.withThinking(msg, async () => {
       await captureInputs();
-      const intentClient = this.llm ?? (() => this.engine.llmClientForSpace(writeSpace));
-      const { intent } = await classifyIntent(intentClient, msg.text);
+      let intent: Intent;
+      try {
+        ({ intent } = await classifyIntent(
+          () => this.llm ?? this.engine.llmClientForSpace(writeSpace),
+          msg.text,
+        ));
+      } catch (err) {
+        log.warn("intent provider unavailable; prompting to configure", {
+          space: writeSpace,
+          err: String(err),
+        });
+        await this.send(msg, NO_PROVIDER_NOTICE);
+        return;
+      }
       log.debug("classified intent", { intent, chatType: msg.chatType });
 
       switch (intent) {

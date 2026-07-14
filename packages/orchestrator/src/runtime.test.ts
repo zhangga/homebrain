@@ -3,8 +3,8 @@ import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { JSONOptions } from "@homebrain/llm";
-import { resetConfig, saveSettings } from "@homebrain/shared";
-import { KnowledgeEngine, FakeLlm } from "@homebrain/core";
+import { resetConfig, saveSettings, type SpaceId } from "@homebrain/shared";
+import { KnowledgeEngine, FakeLlm, type AgentInput } from "@homebrain/core";
 import { CliConnector, type Connector } from "@homebrain/connectors";
 import { Orchestrator } from "./runtime.ts";
 
@@ -13,6 +13,11 @@ let engine: KnowledgeEngine;
 let connector: CliConnector;
 let orch: Orchestrator;
 let fake: FakeLlm;
+const cliOnlyRuntimes: Array<{
+  engine: KnowledgeEngine;
+  connector: CliConnector;
+  orchestrator: Orchestrator;
+}> = [];
 
 /**
  * One fake serves classification, routing, and synthesis by inspecting each
@@ -51,6 +56,27 @@ function makeFake(): FakeLlm {
   return f;
 }
 
+function makeCliOnlyRuntime(
+  cliEngine: KnowledgeEngine,
+  space: SpaceId,
+  agentInput?: AgentInput,
+) {
+  cliEngine.ensureSpace(space);
+  if (agentInput) {
+    const agent = cliEngine.agents.create(agentInput);
+    cliEngine.registry.updateMeta(space, { agentId: agent.id });
+  }
+  const cliConnector = new CliConnector({
+    groupChatId: "oc_team",
+    p2pChatId: "oc_dm",
+    userId: "ou_me",
+  });
+  const cliOrch = new Orchestrator({ engine: cliEngine, connector: cliConnector });
+  const runtime = { engine: cliEngine, connector: cliConnector, orchestrator: cliOrch };
+  cliOnlyRuntimes.push(runtime);
+  return runtime;
+}
+
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "hb-orch-"));
   process.env.HOMEBRAIN_DATA_DIR = dir;
@@ -62,6 +88,10 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
+  for (const runtime of cliOnlyRuntimes.splice(0)) {
+    await runtime.orchestrator.stop();
+    runtime.engine.close();
+  }
   await orch.stop();
   engine.close();
   rmSync(dir, { recursive: true, force: true });
@@ -788,22 +818,21 @@ describe("orchestrator trunk (cli connector, no feishu)", () => {
       updatedAt: Date.now(),
       contentHash: "h",
     });
-    const agent = cliEngine.agents.create({
-      name: "海盗",
-      instruction: "像海盗一样说话，Arrr。",
-      model: "gpt-5.4-mini",
-      provider: "codex",
-    });
-    cliEngine.registry.updateMeta("team/oc_team", { agentId: agent.id });
-    const cliConnector = new CliConnector({ groupChatId: "oc_team", p2pChatId: "oc_dm", userId: "ou_me" });
-    const cliOrch = new Orchestrator({ engine: cliEngine, connector: cliConnector });
+    const { connector: cliConnector, orchestrator: cliOrch } = makeCliOnlyRuntime(
+      cliEngine,
+      "team/oc_team",
+      {
+        name: "海盗",
+        instruction: "像海盗一样说话，Arrr。",
+        model: "gpt-5.4-mini",
+        provider: "codex",
+      },
+    );
     await cliOrch.start();
     await cliConnector.sendGroup("谁负责后端服务", true);
     expect(cliConnector.sent[0]!.markdown).toContain("Alice");
     expect(sawCliClassification).toBe(true);
     expect(sawInstruction).toBe(true);
-    await cliOrch.stop();
-    cliEngine.close();
   });
 
   test("CLI-only runtime classifies a natural-language distillation command through the space agent", async () => {
@@ -821,19 +850,17 @@ describe("orchestrator trunk (cli connector, no feishu)", () => {
         return "ok";
       },
     });
-    cliEngine.ensureSpace("personal/ou_me");
-    const agent = cliEngine.agents.create({ name: "本机助手", provider: "codex" });
-    cliEngine.registry.updateMeta("personal/ou_me", { agentId: agent.id });
-    const cliConnector = new CliConnector({ groupChatId: "oc_team", p2pChatId: "oc_dm", userId: "ou_me" });
-    const cliOrch = new Orchestrator({ engine: cliEngine, connector: cliConnector });
+    const { connector: cliConnector, orchestrator: cliOrch } = makeCliOnlyRuntime(
+      cliEngine,
+      "personal/ou_me",
+      { name: "本机助手", provider: "codex" },
+    );
 
     await cliOrch.start();
     await cliConnector.sendP2P("帮我重新提炼一下知识");
 
     expect(cliConnector.sent[0]!.markdown).toContain("开始重新提炼");
     expect(sawCliClassification).toBe(true);
-    await cliOrch.stop();
-    cliEngine.close();
   });
 
   test("CLI-only runtime classifies an ordinary statement as memory through the space agent", async () => {
@@ -848,34 +875,47 @@ describe("orchestrator trunk (cli connector, no feishu)", () => {
         return "ok";
       },
     });
-    cliEngine.ensureSpace("personal/ou_me");
-    const agent = cliEngine.agents.create({ name: "本机助手", provider: "codex" });
-    cliEngine.registry.updateMeta("personal/ou_me", { agentId: agent.id });
-    const cliConnector = new CliConnector({ groupChatId: "oc_team", p2pChatId: "oc_dm", userId: "ou_me" });
-    const cliOrch = new Orchestrator({ engine: cliEngine, connector: cliConnector });
+    const { connector: cliConnector, orchestrator: cliOrch } = makeCliOnlyRuntime(
+      cliEngine,
+      "personal/ou_me",
+      { name: "本机助手", provider: "codex" },
+    );
 
     await cliOrch.start();
     await cliConnector.sendP2P("发布流程先灰度再全量");
 
     expect(cliConnector.sent[0]!.markdown).toContain("记下");
     expect(sawCliClassification).toBe(true);
-    await cliOrch.stop();
-    cliEngine.close();
   });
 
   test("CLI-only runtime gives configuration guidance when no local provider can be resolved", async () => {
     saveSettings({ defaultProvider: "gateway" }, dir);
     resetConfig();
     const cliEngine = new KnowledgeEngine({ dataDir: dir });
-    const cliConnector = new CliConnector({ groupChatId: "oc_team", p2pChatId: "oc_dm", userId: "ou_me" });
-    const cliOrch = new Orchestrator({ engine: cliEngine, connector: cliConnector });
+    const { connector: cliConnector, orchestrator: cliOrch } = makeCliOnlyRuntime(
+      cliEngine,
+      "personal/ou_me",
+    );
 
     await cliOrch.start();
-    await cliConnector.sendP2P("1+1等于几？");
+    await cliConnector.sendP2P("谁负责后端服务");
 
     expect(cliConnector.sent[0]!.markdown).toContain("回答 Agent 暂时不可用");
-    await cliOrch.stop();
-    cliEngine.close();
+  });
+
+  test("CLI-only runtime answers a prefiltered greeting without resolving a provider", async () => {
+    saveSettings({ defaultProvider: "gateway" }, dir);
+    resetConfig();
+    const cliEngine = new KnowledgeEngine({ dataDir: dir });
+    const { connector: cliConnector, orchestrator: cliOrch } = makeCliOnlyRuntime(
+      cliEngine,
+      "personal/ou_me",
+    );
+
+    await cliOrch.start();
+    await cliConnector.sendP2P("你好");
+
+    expect(cliConnector.sent[0]!.markdown).toContain("我在");
   });
 
   test("/task new is handled as a control command: creates a task, not captured, replies", async () => {

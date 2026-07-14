@@ -194,12 +194,12 @@ export class KnowledgeEngine implements Knowledge {
   }
 
   /**
-   * Resolve the LLM client for a space. Tests may inject a single client for
-   * all spaces; otherwise every space runs through a local CLI — the space's
-   * assigned agent's provider/model, or the global default (config()). Throws
-   * NoProviderError if the resolved provider isn't a known CLI.
+   * Resolve the space-scoped LLM client shared by classification, ask, dream,
+   * and tasks. Tests may inject one client for every space; production resolves
+   * the assigned Agent CLI/provider/model or the configured default CLI. Throws
+   * NoProviderError if neither resolves to a supported local CLI.
    */
-  private clientForSpace(space: SpaceId, timeoutMs?: number): LlmClient {
+  llmClientForSpace(space: SpaceId, timeoutMs?: number): LlmClient {
     if (this.llm) return this.llm;
     const agent = this.agentForSpace(space);
     const cfg = config();
@@ -207,15 +207,6 @@ export class KnowledgeEngine implements Knowledge {
     const model = agent?.model || cfg.defaultModel || undefined;
     if (!isCliProvider(provider)) throw new NoProviderError(space);
     return makeCliClient(provider as ProviderId, model, this.runProvider, timeoutMs);
-  }
-
-  /**
-   * Resolve the same space-scoped LLM client used by ask, dream, and tasks.
-   * Orchestration-level judgments such as intent classification use this seam so
-   * the production runtime never falls back to the legacy network gateway.
-   */
-  llmClientForSpace(space: SpaceId, timeoutMs?: number): LlmClient {
-    return this.clientForSpace(space, timeoutMs);
   }
 
   async remember(entry: RawEntry): Promise<string> {
@@ -318,7 +309,7 @@ export class KnowledgeEngine implements Knowledge {
       this.dreamCycles.set(space, health);
       try {
         const store = this.registry.ensure(space);
-        const report = await runDreamCycle(store, opts, { client: this.clientForSpace(space) });
+        const report = await runDreamCycle(store, opts, { client: this.llmClientForSpace(space) });
         this.registry.setLastDream(space, report.finishedAt);
         health.lastExamined = report.examined;
         health.lastPagesWritten = report.pagesWritten;
@@ -497,7 +488,7 @@ export class KnowledgeEngine implements Knowledge {
         // The LLM call runs OUTSIDE the per-space serializer — research is
         // long-running and must not block captures/distillation. Only the write
         // (remember) is serialized, and it acquires the lock itself.
-        const client = this.clientForSpace(task.space, TASK_TIMEOUT_MS);
+        const client = this.llmClientForSpace(task.space, TASK_TIMEOUT_MS);
         const res = await client.complete({
           system: agent?.instruction || undefined,
           prompt: researchPrompt(task.topic),
@@ -548,7 +539,7 @@ export class KnowledgeEngine implements Knowledge {
     // primary (write) space — the space the message belongs to.
     const stores = spaces.filter((s) => this.registry.has(s)).map((s) => this.registry.store(s));
     const primary = spaces[0] ?? stores[0]?.space;
-    const client = primary ? this.clientForSpace(primary) : this.clientForSpace(spaces[0]!);
+    const client = primary ? this.llmClientForSpace(primary) : this.llmClientForSpace(spaces[0]!);
     return askImpl(stores, question, opts, { client });
   }
 
