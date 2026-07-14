@@ -3,7 +3,9 @@
  * with an editable settings file (data/config/settings.json) written by the
  * management backend. Precedence: settings.json (admin's explicit choice) wins
  * over env defaults for the editable subset; host-injected secrets
- * (ANTHROPIC_BASE_URL / ANTHROPIC_AUTH_TOKEN) are env-only and never persisted.
+ * (ANTHROPIC_BASE_URL / ANTHROPIC_AUTH_TOKEN) are optional, env-only, and never
+ * persisted. They are validated lazily by the legacy gateway client; the main
+ * homebrain runtime uses local agent CLIs and does not need them.
  *
  * Model IDs are the gateway's real identifiers (verified against /v1/models):
  * haiku is used for cheap classification, the default (sonnet) for ask, and a
@@ -78,12 +80,6 @@ export const EDITABLE_KEYS: (keyof PersistedSettings)[] = [
   "feishuBotOpenId",
 ];
 
-function req(name: string): string {
-  const v = process.env[name];
-  if (!v) throw new Error(`missing required env var ${name}`);
-  return v;
-}
-
 function num(env: NodeJS.ProcessEnv, name: string, fallback: number): number {
   const raw = env[name];
   if (raw === undefined || raw === "") return fallback;
@@ -120,8 +116,8 @@ export function loadConfig(env = process.env): Config {
   const persisted = readSettings(dataDir);
 
   const base: Config = {
-    gatewayBaseUrl: (env.ANTHROPIC_BASE_URL ?? req("ANTHROPIC_BASE_URL")).replace(/\/+$/, ""),
-    gatewayToken: env.ANTHROPIC_AUTH_TOKEN ?? req("ANTHROPIC_AUTH_TOKEN"),
+    gatewayBaseUrl: (env.ANTHROPIC_BASE_URL ?? "").replace(/\/+$/, ""),
+    gatewayToken: env.ANTHROPIC_AUTH_TOKEN ?? "",
     dataDir,
     model: env.HOMEBRAIN_LLM_MODEL ?? "claude-sonnet-5",
     modelFast: env.HOMEBRAIN_LLM_MODEL_FAST ?? "claude-haiku-4-5-20251001",

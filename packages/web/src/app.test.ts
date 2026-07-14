@@ -202,6 +202,50 @@ describe("web backend (read-only)", () => {
     expect(homeBody).toContain("/readyz");
   });
 
+  test("managed service status exposes a guarded restart action", async () => {
+    let restarts = 0;
+    const snapshot: SystemHealthSnapshot = {
+      status: "ok",
+      ready: true,
+      checkedAt: 1_783_932_000_000,
+      components: {
+        service: {
+          status: "ok",
+          summary: "LaunchAgent 托管运行（PID 7788）",
+          details: { managed: true, pid: 7788, startedAt: 1_783_931_000_000 },
+        },
+      },
+    };
+    const managedApp = createWebApp({
+      engine,
+      health: async () => snapshot,
+      onServiceRestart: () => { restarts += 1; },
+    });
+
+    const page = await managedApp.request("/health");
+    const body = await page.text();
+    expect(body).toContain("后台服务");
+    expect(body).toContain("PID 7788");
+    expect(body).toContain('action="/service/restart"');
+
+    const restart = await managedApp.request("/service/restart", { method: "POST" });
+    expect(restart.status).toBe(302);
+    expect(restarts).toBe(1);
+
+    const manualApp = createWebApp({
+      engine,
+      health: async () => ({
+        ...snapshot,
+        components: {
+          service: { ...snapshot.components.service!, details: { managed: false, pid: 7788 } },
+        },
+      }),
+      onServiceRestart: () => { restarts += 1; },
+    });
+    expect((await manualApp.request("/service/restart", { method: "POST" })).status).toBe(409);
+    expect(restarts).toBe(1);
+  });
+
   test("home lists spaces", async () => {
     const res = await app.request("/");
     expect(res.status).toBe(200);

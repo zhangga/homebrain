@@ -37,6 +37,11 @@ describe("system health reporter", () => {
       }),
       dreamSchedulerHealth: () => loopHealth,
       taskSchedulerHealth: () => loopHealth,
+      serviceHealth: () => ({
+        managed: true,
+        pid: 7788,
+        startedAt: 1_783_931_000_000,
+      }),
       detectProviders: async () => [
         { id: "codex", name: "Codex", bin: "codex", available: true, detail: "1.0" },
       ],
@@ -56,8 +61,45 @@ describe("system health reporter", () => {
         tasks: expect.objectContaining({ status: "ok" }),
         dreamScheduler: expect.objectContaining({ status: "ok" }),
         taskScheduler: expect.objectContaining({ status: "ok" }),
+        service: expect.objectContaining({
+          status: "ok",
+          details: expect.objectContaining({ managed: true, pid: 7788 }),
+        }),
       }),
     );
+    engine.close();
+  });
+
+  test("manual foreground runtime is visible but does not make readiness fail", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "hb-health-service-"));
+    dirs.push(dir);
+    const engine = new KnowledgeEngine({ dataDir: dir, runProvider: async () => "ok" });
+    const reportHealth = createSystemHealthReporter({
+      engine,
+      connectorHealth: () => ({
+        name: "feishu",
+        ready: true,
+        consumers: [
+          { key: "im.message.receive_v1", state: "ready", attempts: 0 },
+          { key: "im.chat.member.bot.added_v1", state: "ready", attempts: 0 },
+        ],
+      }),
+      dreamSchedulerHealth: () => loopHealth,
+      taskSchedulerHealth: () => loopHealth,
+      serviceHealth: () => ({ managed: false, pid: 8899, startedAt: 1_783_931_000_000 }),
+      detectProviders: async () => [
+        { id: "claude", name: "Claude", bin: "claude", available: true, detail: "2.0" },
+      ],
+      requiredProviderIds: () => ["claude"],
+    });
+
+    const snapshot = await reportHealth();
+    expect(snapshot.ready).toBe(true);
+    expect(snapshot.status).toBe("degraded");
+    expect(snapshot.components.service).toEqual(expect.objectContaining({
+      status: "degraded",
+      summary: "当前为终端前台运行（PID 8899）",
+    }));
     engine.close();
   });
 

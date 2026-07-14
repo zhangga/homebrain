@@ -15,12 +15,17 @@ import { createWebApp } from "@homebrain/web";
 import { Scheduler } from "./scheduler.ts";
 import { TaskScheduler } from "./task-scheduler.ts";
 import { createSystemHealthReporter } from "./health.ts";
+import {
+  acquireProcessLock,
+  runtimeServiceStatus,
+  startServiceLogMaintenance,
+  type ProcessLock,
+} from "./service.ts";
 
 const log = logger.child("app");
 
-async function main(): Promise<void> {
-  const cfg = config();
-  assertSafeWebBinding(cfg.webHost, cfg.webAdminToken);
+async function run(cfg: ReturnType<typeof config>, processLock: ProcessLock): Promise<void> {
+  const stopLogMaintenance = startServiceLogMaintenance(cfg.dataDir);
   log.info("starting homebrain", {
     dataDir: cfg.dataDir,
     model: cfg.model,
@@ -55,6 +60,7 @@ async function main(): Promise<void> {
     connectorHealth: () => connector.health(),
     dreamSchedulerHealth: () => scheduler?.health(),
     taskSchedulerHealth: () => taskScheduler?.health(),
+    serviceHealth: () => runtimeServiceStatus({ startedAt: processLock.startedAt }),
   });
 
   // 2. management web backend
@@ -71,6 +77,9 @@ async function main(): Promise<void> {
     onTaskRun: (taskId) => {
       const t = engine.tasks.get(taskId);
       if (t) void notifyTaskDone(t.space, t.name, t.lastSummary).catch(() => {});
+    },
+    onServiceRestart: () => {
+      setTimeout(() => process.kill(process.pid, "SIGTERM"), 250);
     },
   });
   // Local CLI providers routinely take longer than Bun's 10-second default.
@@ -102,11 +111,24 @@ async function main(): Promise<void> {
     if (shuttingDown) return;
     shuttingDown = true;
     log.info("shutting down", { signal });
-    scheduler.stop();
-    taskScheduler.stop();
-    server.stop(true);
-    await orchestrator.stop();
-    engine.close();
+    const contain = (label: string, action: () => void) => {
+      try {
+        action();
+      } catch (err) {
+        log.error(`${label} shutdown failed`, { err: String(err) });
+      }
+    };
+    contain("dream scheduler", () => scheduler.stop());
+    contain("task scheduler", () => taskScheduler.stop());
+    contain("web server", () => server.stop(true));
+    try {
+      await orchestrator.stop();
+    } catch (err) {
+      log.error("orchestrator shutdown failed", { err: String(err) });
+    }
+    contain("knowledge engine", () => engine.close());
+    stopLogMaintenance();
+    processLock.release();
     log.info("shutdown complete");
     process.exit(0);
   };
@@ -115,6 +137,18 @@ async function main(): Promise<void> {
 
   // Keep the process alive; connectors + scheduler run in the background.
   await new Promise<void>(() => {});
+}
+
+async function main(): Promise<void> {
+  const cfg = config();
+  assertSafeWebBinding(cfg.webHost, cfg.webAdminToken);
+  const processLock = acquireProcessLock({ dataDir: cfg.dataDir });
+  try {
+    await run(cfg, processLock);
+  } catch (err) {
+    processLock.release();
+    throw err;
+  }
 }
 
 main().catch((err) => {

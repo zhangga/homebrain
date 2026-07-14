@@ -188,6 +188,8 @@ function escapePre(s: string): string {
 
 export function healthView(
   snapshot: SystemHealthSnapshot,
+  flashMsg?: string,
+  serviceRestartable = false,
 ): HtmlEscapedString | Promise<HtmlEscapedString> {
   const labels: Record<string, string> = {
     knowledge: "知识存储",
@@ -197,8 +199,23 @@ export function healthView(
     tasks: "任务执行",
     dreamScheduler: "Dream Cycle 调度器",
     taskScheduler: "任务调度器",
+    service: "后台服务",
   };
   const rows = Object.entries(snapshot.components).map(([key, component]) => {
+    const serviceDetails = key === "service" ? component.details : undefined;
+    const serviceControls = serviceDetails
+      ? html`<div class="row" style="margin-top:12px">
+          <span class="muted">PID：${String(serviceDetails.pid ?? "—")} · 启动时间：${fmtTime(
+            typeof serviceDetails.startedAt === "number" ? serviceDetails.startedAt : undefined,
+          )}</span>
+          ${serviceRestartable && serviceDetails.managed === true
+            ? html`<form method="post" action="/service/restart" class="inline-form"
+                onsubmit="return confirm('安全重启 homebrain 后台服务？')">
+                <button type="submit" class="secondary">安全重启</button>
+              </form>`
+            : ""}
+        </div>`
+      : "";
     const details = component.details
       ? html`<details><summary class="muted">查看详情</summary><pre>${raw(
           escapePre(JSON.stringify(component.details, null, 2)),
@@ -210,11 +227,13 @@ export function healthView(
         <span class="badge ${component.status}">${component.status}</span>
       </div>
       <div style="margin-top:8px">${component.summary}</div>
+      ${serviceControls}
       ${details}
     </div>`;
   });
   return html`<h1>运行状态</h1>
     <p class="subtitle">检查时间：${fmtTime(snapshot.checkedAt)} · Ready：${snapshot.ready ? "是" : "否"}</p>
+    ${flash(flashMsg)}
     <div class="card">
       <div class="row">
         <strong>总体状态</strong>

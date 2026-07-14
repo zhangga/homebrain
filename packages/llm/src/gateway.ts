@@ -76,12 +76,22 @@ function buildMessages(opts: CompleteOptions): Message[] {
 
 const RETRYABLE_STATUS = new Set([408, 409, 425, 429, 500, 502, 503, 504]);
 
+function gatewayCredentials(): { baseUrl: string; token: string } {
+  const cfg = config();
+  if (!cfg.gatewayBaseUrl || !cfg.gatewayToken) {
+    throw new Error(
+      "legacy gateway credentials are not configured (set ANTHROPIC_BASE_URL and ANTHROPIC_AUTH_TOKEN)",
+    );
+  }
+  return { baseUrl: cfg.gatewayBaseUrl, token: cfg.gatewayToken };
+}
+
 async function postMessages(
   body: Record<string, unknown>,
   retries: number,
 ): Promise<AnthropicResponse> {
-  const cfg = config();
-  const url = `${cfg.gatewayBaseUrl}/v1/messages`;
+  const credentials = gatewayCredentials();
+  const url = `${credentials.baseUrl}/v1/messages`;
   let lastErr: unknown;
   for (let attempt = 0; attempt <= retries; attempt++) {
     if (attempt > 0) {
@@ -93,7 +103,7 @@ async function postMessages(
       const res = await fetch(url, {
         method: "POST",
         headers: {
-          "x-api-key": cfg.gatewayToken,
+          "x-api-key": credentials.token,
           "anthropic-version": "2023-06-01",
           "content-type": "application/json",
         },
@@ -281,12 +291,12 @@ interface ModelsListResponse {
  * fall back to a curated list; never throws.
  */
 export async function listGatewayModels(): Promise<string[]> {
-  const cfg = config();
-  const url = `${cfg.gatewayBaseUrl}/v1/models`;
   try {
+    const credentials = gatewayCredentials();
+    const url = `${credentials.baseUrl}/v1/models`;
     const res = await fetch(url, {
       headers: {
-        "x-api-key": cfg.gatewayToken,
+        "x-api-key": credentials.token,
         "anthropic-version": "2023-06-01",
       },
     });

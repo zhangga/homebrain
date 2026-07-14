@@ -9,7 +9,8 @@
   "scripts": {
     "test": "bun test",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "start": "bun run packages/app/src/main.ts"
+    "start": "bun run packages/app/src/main.ts",
+    "service": "bun run packages/app/src/service-cli.ts"
   },
   "devDependencies": {
     "@types/bun": "^1.3.0",

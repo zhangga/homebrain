@@ -71,6 +71,8 @@ export interface WebOptions {
    * unset (tests / no connector) => run still writes to the KB, just no push.
    */
   onTaskRun?: (taskId: string) => void;
+  /** Gracefully terminate a launchd-managed process so KeepAlive can restart it. */
+  onServiceRestart?: () => void;
 }
 
 /** Read a checkbox from a parsed form body (present => true). */
@@ -264,10 +266,22 @@ export function createWebApp(opts: WebOptions): Hono {
       await layout(
         "运行状态",
         [{ label: "运行状态" }],
-        await healthView(await getHealth()),
+        await healthView(
+          await getHealth(),
+          c.req.query("ok") ?? undefined,
+          opts.onServiceRestart !== undefined,
+        ),
         "health",
       ),
     );
+  });
+
+  app.post("/service/restart", async (c) => {
+    const snapshot = await getHealth();
+    const managed = snapshot.components.service?.details?.managed === true;
+    if (!managed || !opts.onServiceRestart) return c.text("Service restart unavailable", 409);
+    opts.onServiceRestart();
+    return c.redirect(`/health?ok=${encodeURIComponent("已请求后台服务安全重启")}`);
   });
 
   // ---- data governance ---------------------------------------------------

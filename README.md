@@ -40,7 +40,7 @@ data/workspaces/<dir>/
 ## 环境要求
 
 - **Bun**（`curl -fsSL https://bun.sh/install | bash`），Node v22 仅作参考。
-- **LLM 网关**：字节内网 `api.gameaigc.cn`，Anthropic + OpenAI 双兼容，无 embedding。
+- **Agent CLI**：至少安装并登录 `claude`、`codex`、`trae-cli` 之一。旧 LLM 网关仅用于兼容测试，生产主流程不依赖它。
 - **飞书 `lark-cli`**：需已安装并可执行。应用凭据可在管理后台 **Integrations** 中配置并验证；
   附件下载使用 bot 身份，应用需开通 `im:message:readonly` 权限。读取用户文档时的 user 授权仍由
   `lark-cli auth login` 管理。
@@ -48,8 +48,9 @@ data/workspaces/<dir>/
 ### 环境变量
 
 ```bash
-export ANTHROPIC_BASE_URL=https://api.gameaigc.cn   # 已注入
-export ANTHROPIC_AUTH_TOKEN=sk-...                  # 已注入
+# 可选：仅旧网关客户端/网关 live test 使用；生产主流程无需配置
+export ANTHROPIC_BASE_URL=https://api.gameaigc.cn
+export ANTHROPIC_AUTH_TOKEN=sk-...
 export HOMEBRAIN_DATA_DIR=./data                    # 默认 ./data
 export HOMEBRAIN_LLM_MODEL=claude-sonnet-5          # ask/提炼默认模型
 export HOMEBRAIN_DAILY_BUDGET_USD=5                 # 每日预算
@@ -68,7 +69,8 @@ export HOMEBRAIN_FEISHU_BOT_OPEN_ID=ou_xxx
 > 并叠加在上述环境变量之上（后台显式设置优先）。模型 / 预算 / 提炼时刻 / 群设置即时生效；
 > Bot 身份与端口需重启生效。`HOMEBRAIN_WEB_HOST` 与 `HOMEBRAIN_WEB_ADMIN_TOKEN` 仅从环境变量读取：
 > 默认绑定 `127.0.0.1`；开放到局域网或 `0.0.0.0` 时必须配置管理令牌，后台支持浏览器 Basic Auth
-> （密码填令牌）及 Bearer Token。`ANTHROPIC_*` 为宿主注入的密钥，只读、不写盘。
+> （密码填令牌）及 Bearer Token。可选的 `ANTHROPIC_*` 只在调用旧网关客户端时校验，只读、不写盘，
+> LaunchAgent 也不会保存它们。
 
 网关关键事实（已实测验证）：认证用 `x-api-key` + `anthropic-version: 2023-06-01`；
 结构化输出走强制 `tool_use`，**网关会改写返回的 tool 名**，因此按 block 类型（而非名字）提取；
@@ -91,10 +93,9 @@ bunx tsc -p tsconfig.json --noEmit    # 类型检查
 
 ### 1. 快速回归（离线 · 最快 · 不联网不花钱）
 
-每次改完代码先跑这个。测试全程用假 LLM / 假 CLI runner，`ANTHROPIC_*` 只是占位：
+每次改完代码先跑这个。测试全程用假 LLM / 假 CLI runner，无需配置网关变量：
 
 ```bash
-export ANTHROPIC_BASE_URL=http://localhost:0 ANTHROPIC_AUTH_TOKEN=test
 bun test
 bunx tsc -p tsconfig.json --noEmit
 ```
@@ -111,8 +112,7 @@ bun run packages/web/src/dev.ts        # http://localhost:3000（启动日志：
 ### 3. 后台真跑本机 CLI（能看到真实效果 · 慢）
 
 ```bash
-export ANTHROPIC_BASE_URL=https://api.gameaigc.cn ANTHROPIC_AUTH_TOKEN=sk-...   # claude CLI 用它鉴权
-HOMEBRAIN_DEV_REAL_CLI=1 bun run packages/web/src/dev.ts                        # 启动日志：LLM=真实本机 CLI
+HOMEBRAIN_DEV_REAL_CLI=1 bun run packages/web/src/dev.ts   # 启动日志：LLM=真实本机 CLI
 ```
 
 给某群指定 Agent（或在设置里配默认 CLI），问答/任务会真的 spawn `claude`/`trae-cli`。单次数秒，任务的即时提炼会再多调几次。
@@ -120,7 +120,6 @@ HOMEBRAIN_DEV_REAL_CLI=1 bun run packages/web/src/dev.ts                        
 ### 4. 终端模拟飞书（repl · 不接飞书跑通全主干 · 会真跑 CLI）
 
 ```bash
-export ANTHROPIC_BASE_URL=https://api.gameaigc.cn ANTHROPIC_AUTH_TOKEN=sk-...
 bun run packages/app/src/repl.ts       # 启动横幅列出全部命令
 ```
 
@@ -137,7 +136,6 @@ bun run packages/app/src/repl.ts       # 启动横幅列出全部命令
 
 > **注意事项**：
 > - 第 3、4 种会 **spawn 真 claude/trae-cli**：慢、有开销，且 CLI **用它自己的鉴权和模型**，不一定尊重 homebrain 里选的 model；想快速点功能用第 2 种。
-> - repl **必须设 `ANTHROPIC_*` 两个变量**，否则 `config()` 报 `missing required env var` 起不来（dev server 会自动塞占位，不受影响）。
 > - 本机 `codex` 之前探测不可用（WSL 无 Linux node），`claude`/`trae-cli` 可用；后台每次启动**实时探测**，以界面显示为准。
 
 ## 管理后台（mew 风格，可读写）
@@ -161,7 +159,7 @@ bun run packages/app/src/repl.ts       # 启动横幅列出全部命令
 - **Integrations / 飞书配置向导**：录入 App ID / App Secret 后调用 `lark-cli` 验证并自动识别 Bot
   名称与 open_id；展示两条事件消费者状态和权限检查项；引导创建 Agent；每个群可指定 Agent、
   `Topic reply`、`@ mentions only`，并直接发送测试消息验证发送通道。
-- **运行状态**：集中展示飞书事件消费者、必需 CLI、知识存储、待提炼数量、任务、Dream Cycle 与两个调度器的状态；任一关键组件未就绪时，所有后台页面会显示异常提示。
+- **运行状态**：集中展示后台托管方式、PID、启动时间、飞书事件消费者、必需 CLI、知识存储、任务、Dream Cycle 与调度器；LaunchAgent 托管时可从页面安全重启。
 - **数据治理**：按空间导出 `homebrain.space v1` JSON 完整备份（知识页、原始记录、撤回标记、任务、空间元数据及关联 Agent），恢复备份，或永久删除整个空间；可按保留周期立即清理已提炼的过期消息。
 - **设置**：**默认 Provider + 默认 Model**（群未指定 Agent 时用它）、每日预算、提炼时刻、原始消息保留周期、端口。
 
@@ -215,6 +213,33 @@ bun run packages/app/src/main.ts
 启动后：feishu 连接器监听事件、管理后台在 `HOMEBRAIN_WEB_HOST:HOMEBRAIN_WEB_PORT`、调度器做启动 catch-up + 每日 03:00 提炼，并按保留周期清理已提炼的过期消息。
 SIGTERM/SIGINT 优雅退出（对 lark-cli 子进程发 SIGTERM，绝不 kill -9）。
 
+### macOS 后台常驻（P3.2）
+
+在仓库根目录安装当前用户的 LaunchAgent；安装后关闭终端不影响运行，重新登录 macOS 会自动启动：
+
+```bash
+bun run service install
+bun run service status
+```
+
+常用维护命令：
+
+```bash
+bun run service start
+bun run service stop
+bun run service restart
+bun run service logs                 # 最近 100 行 stdout/stderr
+bun run service logs --lines 300 --follow
+bun run service status --json
+bun run service uninstall            # 保留 data 与日志
+```
+
+服务定义写在 `~/Library/LaunchAgents/com.homebrain.agent.plist`，日志写到
+`$HOMEBRAIN_DATA_DIR/logs/service.{stdout,stderr}.log`（默认仓库内 `data/logs`）。plist 权限为 0600，
+只包含 HOME、PATH、数据目录和托管标记，不保存 Anthropic 或后台管理密钥。主进程使用
+`data/run/homebrain.lock` 上由内核自动释放的 advisory lock 阻止重复实例；SIGTERM/SIGINT 仍会优雅停止
+所有子进程。活动日志超过 10 MiB 时会保留最近 1 MiB 并轮转 3 份，所有日志文件权限均为 0600。
+
 部署探针：`GET /healthz` 是不依赖外部组件的快速进程存活检查，始终返回 200；`GET /readyz` 只有在知识存储、必需 CLI、两条飞书事件消费者及两个调度器都可用时返回 200，否则返回 503。管理后台 `/health` 提供完整健康快照的人类可读视图。
 
 ## 需人工完成的飞书配置
@@ -231,5 +256,5 @@ SIGTERM/SIGINT 优雅退出（对 lark-cli 子进程发 SIGTERM，绝不 kill -9
 ## 实施状态
 
 MVP = Slice 0–6，均已完成并通过测试；Slice 7（调度器 + 端到端联调）亦已完成。
-后续已完成：学习任务、真实飞书 E2E、思考表情、精确消息撤回、健康检查与可观测性（`/healthz`、`/readyz`、运行状态页与异常提示）、空间导出/恢复/删除、原始消息保留策略、非本机后台鉴权、P2 首版附件提炼，以及 P3.1 飞书配置向导。
+后续已完成：学习任务、真实飞书 E2E、思考表情、精确消息撤回、健康检查与可观测性（`/healthz`、`/readyz`、运行状态页与异常提示）、空间导出/恢复/删除、原始消息保留策略、非本机后台鉴权、P2 首版附件提炼、P3.1 飞书配置向导，以及 P3.2 macOS LaunchAgent 后台常驻与服务管理。
 未纳入 MVP（已预留）：每日反馈，以及音频、Office、视频和 `post` 内嵌资源的进一步多模态提炼。

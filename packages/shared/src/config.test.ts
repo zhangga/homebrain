@@ -21,6 +21,14 @@ afterEach(() => {
 });
 
 describe("editable settings overlay", () => {
+  test("local CLI runtime starts without legacy gateway credentials", () => {
+    const cfg = loadConfig({
+      HOMEBRAIN_DATA_DIR: dir,
+    });
+    expect(cfg.gatewayBaseUrl).toBe("");
+    expect(cfg.gatewayToken).toBe("");
+  });
+
   test("defaults apply when no settings.json exists", () => {
     const cfg = loadConfig();
     expect(cfg.model).toBe("claude-sonnet-5");

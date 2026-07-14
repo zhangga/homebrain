@@ -12,12 +12,14 @@ import {
   type DetectedProvider,
 } from "@homebrain/llm";
 import type { RuntimeLoopHealth } from "./scheduler.ts";
+import type { RuntimeServiceStatus } from "./service.ts";
 
 export interface SystemHealthSources {
   engine: KnowledgeEngine;
   connectorHealth: () => ConnectorHealth;
   dreamSchedulerHealth: () => RuntimeLoopHealth | undefined;
   taskSchedulerHealth: () => RuntimeLoopHealth | undefined;
+  serviceHealth?: () => RuntimeServiceStatus;
   detectProviders?: () => Promise<DetectedProvider[]>;
   requiredProviderIds?: () => string[];
   now?: () => number;
@@ -217,6 +219,25 @@ export function createSystemHealthReporter(
     const taskHealth = taskLoop.health;
     components.dreamScheduler = dreamLoop.component;
     components.taskScheduler = taskLoop.component;
+
+    if (sources.serviceHealth) {
+      try {
+        const service = sources.serviceHealth();
+        components.service = {
+          status: service.managed ? "ok" : "degraded",
+          summary: service.managed
+            ? `LaunchAgent 托管运行（PID ${service.pid}）`
+            : `当前为终端前台运行（PID ${service.pid}）`,
+          details: { ...service },
+        };
+      } catch (err) {
+        components.service = {
+          status: "down",
+          summary: "后台服务状态检查失败",
+          details: { error: String(err) },
+        };
+      }
+    }
 
     const ready =
       core.ok &&
