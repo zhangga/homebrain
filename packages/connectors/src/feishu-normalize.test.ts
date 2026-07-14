@@ -4,6 +4,7 @@ import {
   extractDocLinks,
   normalizeBotAdded,
   normalizeMessage,
+  parseMessageResources,
 } from "./feishu-normalize.ts";
 
 describe("normalizeMessage", () => {
@@ -28,6 +29,10 @@ describe("normalizeMessage", () => {
     expect(m!.text).toBe("谁负责后端？");
   });
 
+  test("retains the Feishu message type for attachment routing", () => {
+    expect(normalizeMessage({ ...base, message_type: "image" })?.messageType).toBe("image");
+  });
+
   test("p2p always counts as mentioning the bot", () => {
     const m = normalizeMessage({ ...base, chat_type: "p2p" });
     expect(m!.mentionsBot).toBe(true);
@@ -46,6 +51,34 @@ describe("normalizeMessage", () => {
   test("returns null when required ids missing", () => {
     expect(normalizeMessage({ content: "x" })).toBeNull();
     expect(normalizeMessage({ chat_id: "oc_1", content: "x" })).toBeNull();
+  });
+});
+
+describe("parseMessageResources", () => {
+  test("extracts image and named file resources from raw message content", () => {
+    expect(parseMessageResources("image", JSON.stringify({ image_key: "img_1" }))).toEqual([
+      { kind: "image", fileKey: "img_1", resourceType: "image" },
+    ]);
+    expect(
+      parseMessageResources(
+        "file",
+        JSON.stringify({
+          file_key: "file_1",
+          file_name: "roadmap.pdf",
+        }),
+      ),
+    ).toEqual([
+      { kind: "pdf", fileKey: "file_1", resourceType: "file", name: "roadmap.pdf" },
+    ]);
+  });
+
+  test("malformed and unsupported resource content is ignored", () => {
+    expect(parseMessageResources("text", JSON.stringify({ text: "hello" }))).toEqual([]);
+    expect(parseMessageResources("file", "not-json")).toEqual([]);
+    expect(parseMessageResources("file", "null")).toEqual([]);
+    expect(
+      parseMessageResources("file", JSON.stringify({ file_name: "missing-key.pdf" })),
+    ).toEqual([]);
   });
 });
 

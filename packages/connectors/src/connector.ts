@@ -6,6 +6,14 @@
  * on these types, never on lark-cli — so the whole feishu surface is swappable
  * (plan R6: lark-cli breaking changes are absorbed in the feishu connector).
  */
+import type { Attachment } from "@homebrain/shared";
+
+export interface DownloadedAttachment {
+  attachment: Attachment;
+  localPath: string;
+  sizeBytes: number;
+  cleanup(): void;
+}
 
 /** Where a message came from — drives the reply gateway (Q2). */
 export type ChatType = "p2p" | "group";
@@ -26,6 +34,8 @@ export interface InboundMessage {
   text: string;
   /** message_id, needed to reply in-thread */
   messageId: string;
+  /** native message type, used to route direct attachments */
+  messageType?: string;
   /** true when the bot was @-mentioned (group gating, Q2) */
   mentionsBot: boolean;
   /** doc links found in the message (docx tokens/urls), for doc sync (Q8) */
@@ -98,6 +108,8 @@ export interface Connector {
   resolveReplyTarget?(messageId: string): Promise<ReplyTarget | undefined>;
   /** whether a user may administer knowledge for the given group chat */
   isChatAdministrator?(chatId: string, userId: string): Promise<boolean>;
+  /** download direct attachments associated with a platform message */
+  downloadAttachments?(messageId: string): Promise<DownloadedAttachment[]>;
   /** current transport health for readiness probes and management UI */
   health?(): ConnectorHealth;
 }
