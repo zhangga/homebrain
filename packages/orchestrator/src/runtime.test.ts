@@ -354,6 +354,88 @@ describe("orchestrator trunk (cli connector, no feishu)", () => {
     expect(events).toEqual([]);
   });
 
+  test("shows thinking while a reply-bound attachment is still downloading", async () => {
+    const events: string[] = [];
+    let markDownloadStarted!: () => void;
+    let releaseDownload!: () => void;
+    const downloadStarted = new Promise<void>((resolve) => {
+      markDownloadStarted = resolve;
+    });
+    const downloadGate = new Promise<void>((resolve) => {
+      releaseDownload = resolve;
+    });
+
+    const reactive = connector as CliConnector & Connector;
+    const originalReply = connector.reply.bind(connector);
+    reactive.addReaction = async (messageId, emojiType) => {
+      events.push(`add:${messageId}:${emojiType}`);
+      return "reaction_attachment";
+    };
+    reactive.removeReaction = async (messageId, reactionId) => {
+      events.push(`remove:${messageId}:${reactionId}`);
+    };
+    reactive.reply = async (out) => {
+      events.push("reply");
+      await originalReply(out);
+    };
+
+    orch = new Orchestrator({
+      engine,
+      connector,
+      llm: fake,
+      attachmentDownloader: async () => {
+        events.push("download:start");
+        markDownloadStarted();
+        await downloadGate;
+        return [{
+          attachment: { kind: "file" as const, ref: "file_slow", name: "slow.txt" },
+          localPath: "/tmp/slow.txt",
+          sizeBytes: 1,
+          cleanup: () => {
+            events.push("cleanup");
+          },
+        }];
+      },
+      attachmentExtractor: async () => {
+        events.push("extract");
+        return "附件内容";
+      },
+    });
+    await orch.start();
+
+    const handling = connector.inject({
+      kind: "message",
+      eventId: "slow-reply-attachment",
+      chatType: "group",
+      chatId: "oc_team",
+      senderId: "ou_me",
+      text: "这个文件是什么？",
+      messageId: "om_slow_attachment",
+      messageType: "file",
+      mentionsBot: true,
+      createdAt: Date.now(),
+    });
+    await downloadStarted;
+    const eventsWhileDownloading = [...events];
+
+    releaseDownload();
+    await handling;
+
+    expect(eventsWhileDownloading).toEqual([
+      "add:om_slow_attachment:THINKING",
+      "download:start",
+    ]);
+    expect(events).toEqual([
+      "add:om_slow_attachment:THINKING",
+      "download:start",
+      "extract",
+      "cleanup",
+      "reply",
+      "remove:om_slow_attachment:reaction_attachment",
+    ]);
+    expect(connector.sent).toHaveLength(1);
+  });
+
   test("cold-start question appends honest nudge (Q3)", async () => {
     await orch.start();
     // no pages exist -> ask returns general; runtime appends cold-start note

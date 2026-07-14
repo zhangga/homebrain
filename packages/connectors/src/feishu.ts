@@ -39,8 +39,22 @@ const MESSAGE_KEY = "im.message.receive_v1";
 const BOT_ADDED_KEY = "im.chat.member.bot.added_v1";
 const READY_RE = /\[event\]\s+ready\b/;
 
-interface CommandOptions {
+export interface CancellableDeadline {
+  elapsed: Promise<void>;
+  cancel: () => void;
+}
+
+export type DeadlineFactory = (timeoutMs: number) => CancellableDeadline;
+
+export interface CommandOptions {
   cwd?: string;
+  timeoutMs?: number;
+  terminationGraceMs?: number;
+  /** injectable clock seam; defaults to a cancellable setTimeout */
+  deadlineFactory?: DeadlineFactory;
+  /** absolute path to a command-created file that must stay within the byte limit */
+  outputPath?: string;
+  maxOutputBytes?: number;
 }
 
 type RunCommand = (cmd: string[], opts?: CommandOptions) => Promise<string>;
@@ -115,7 +129,7 @@ export class FeishuConnector implements Connector {
     this.backoffMaxMs = opts.backoffMaxMs ?? 60_000;
     this.maxNeverReady = opts.maxNeverReady ?? 5;
     this.maxAttachmentBytes = opts.maxAttachmentBytes ?? 20 * 1024 * 1024;
-    this.runCommand = opts.runCommand ?? defaultRunCommand;
+    this.runCommand = opts.runCommand ?? runFeishuCommand;
   }
 
   async start(onEvent: (event: InboundEvent) => void | Promise<void>): Promise<void> {
@@ -431,7 +445,12 @@ export class FeishuConnector implements Connector {
             output,
             "--json",
           ],
-          { cwd: directory },
+          {
+            cwd: directory,
+            timeoutMs: 30_000,
+            outputPath: join(directory, output),
+            maxOutputBytes: this.maxAttachmentBytes,
+          },
         );
         const localPath = join(directory, output);
         const sizeBytes = statSync(localPath).size;
@@ -467,17 +486,20 @@ export class FeishuConnector implements Connector {
     // The higher-level +messages-mget shortcut intentionally formats message
     // output and currently drops parent_id/root_id. Use the raw read endpoint
     // so reply relationships survive intact.
-    const out = await this.runCommand([
-      this.larkBin,
-      "api",
-      "GET",
-      `/open-apis/im/v1/messages/${encodeURIComponent(messageId)}`,
-      "--as",
-      "bot",
-      "--params",
-      JSON.stringify({ user_id_type: "open_id" }),
-      "--json",
-    ]);
+    const out = await this.runCommand(
+      [
+        this.larkBin,
+        "api",
+        "GET",
+        `/open-apis/im/v1/messages/${encodeURIComponent(messageId)}`,
+        "--as",
+        "bot",
+        "--params",
+        JSON.stringify({ user_id_type: "open_id" }),
+        "--json",
+      ],
+      { timeoutMs: 30_000 },
+    );
     const parsed = JSON.parse(out) as Record<string, unknown>;
     const data = parsed.data as Record<string, unknown> | undefined;
     const items = data?.items;
@@ -545,18 +567,171 @@ export class FeishuConnector implements Connector {
 }
 
 /** Run a command to completion and return trimmed stdout; throws on non-zero. */
-async function defaultRunCommand(cmd: string[], opts?: CommandOptions): Promise<string> {
+export async function runFeishuCommand(
+  cmd: string[],
+  opts: CommandOptions = {},
+): Promise<string> {
   const proc = Bun.spawn(cmd, {
     cwd: opts?.cwd,
     stdout: "pipe",
     stderr: "pipe",
     stdin: "ignore",
   });
-  const [stdout, stderr, code] = await Promise.all([
-    new Response(proc.stdout).text(),
-    new Response(proc.stderr).text(),
-    proc.exited,
-  ]);
-  if (code !== 0) throw new Error(`command failed (${code}): ${stderr.slice(0, 500)}`);
-  return stdout;
+  const stdout = collectStream(proc.stdout);
+  const stderr = collectStream(proc.stderr);
+  const completion = Promise.all([stdout.result, stderr.result, proc.exited]);
+  const timeoutMs = opts.timeoutMs;
+  const deadline = timeoutMs === undefined
+    ? undefined
+    : (opts.deadlineFactory ?? createDeadline)(Math.max(1, timeoutMs));
+  const outputWatch = opts.outputPath !== undefined && opts.maxOutputBytes !== undefined
+    ? watchFileSize(opts.outputPath, opts.maxOutputBytes)
+    : undefined;
+  const outcome = await (async () => {
+    try {
+      return await Promise.race([
+        completion.then((value) => ({ kind: "completed" as const, value })),
+        ...(deadline === undefined
+          ? []
+          : [deadline.elapsed.then(() => ({ kind: "timeout" as const }))]),
+        ...(outputWatch === undefined
+          ? []
+          : [outputWatch.exceeded.then((sizeBytes) => ({
+              kind: "output-limit" as const,
+              sizeBytes,
+            }))]),
+      ]);
+    } finally {
+      deadline?.cancel();
+      outputWatch?.cancel();
+    }
+  })();
+
+  if (outcome.kind !== "completed") {
+    await terminateProcess(proc, Math.max(1, opts.terminationGraceMs ?? 250));
+    stdout.cancel();
+    stderr.cancel();
+    if (outcome.kind === "output-limit") {
+      throw new Error(
+        `command output exceeded ${opts.maxOutputBytes} bytes (observed ${outcome.sizeBytes})`,
+      );
+    }
+    throw new Error(`command timed out after ${timeoutMs}ms`);
+  }
+
+  const [stdoutText, stderrText, code] = outcome.value;
+  if (code !== 0) throw new Error(`command failed (${code}): ${stderrText.slice(0, 500)}`);
+  return stdoutText;
+}
+
+function collectStream(stream: ReadableStream<Uint8Array>): {
+  result: Promise<string>;
+  cancel: () => void;
+} {
+  const reader = stream.getReader();
+  const decoder = new TextDecoder();
+  let cancelled = false;
+  const result = (async () => {
+    let text = "";
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        text += decoder.decode(value, { stream: true });
+      }
+      return text + decoder.decode();
+    } catch (err) {
+      if (cancelled) return text;
+      throw err;
+    }
+  })();
+  return {
+    result,
+    cancel: () => {
+      cancelled = true;
+      void reader.cancel().catch(() => {
+        // A concurrently exiting process may already have closed the stream.
+      });
+    },
+  };
+}
+
+function watchFileSize(path: string, maxBytes: number): {
+  exceeded: Promise<number>;
+  cancel: () => void;
+} {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let cancelled = false;
+  let resolveExceeded!: (sizeBytes: number) => void;
+  const exceeded = new Promise<number>((resolve) => {
+    resolveExceeded = resolve;
+  });
+  const inspect = () => {
+    if (cancelled) return;
+    try {
+      const sizeBytes = statSync(path).size;
+      if (sizeBytes > maxBytes) {
+        resolveExceeded(sizeBytes);
+        return;
+      }
+    } catch {
+      // The CLI creates the output asynchronously; absence is expected initially.
+    }
+    timer = setTimeout(inspect, 25);
+  };
+  inspect();
+  return {
+    exceeded,
+    cancel: () => {
+      cancelled = true;
+      if (timer !== undefined) clearTimeout(timer);
+    },
+  };
+}
+
+async function terminateProcess(
+  proc: ReturnType<typeof Bun.spawn>,
+  graceMs: number,
+): Promise<void> {
+  try {
+    proc.kill("SIGTERM");
+  } catch {
+    // The process may have exited at the boundary.
+  }
+  if (!(await settlesWithin(proc.exited, graceMs))) {
+    try {
+      proc.kill("SIGKILL");
+    } catch {
+      // The process may have exited during the grace-period boundary.
+    }
+    await settlesWithin(proc.exited, graceMs);
+  }
+}
+
+async function settlesWithin(promise: Promise<unknown>, timeoutMs: number): Promise<boolean> {
+  const deadline = createDeadline(timeoutMs);
+  try {
+    return await Promise.race([
+      promise.then(() => true, () => true),
+      deadline.elapsed.then(() => false),
+    ]);
+  } finally {
+    deadline.cancel();
+  }
+}
+
+export function createDeadline(timeoutMs: number): CancellableDeadline {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const elapsed = new Promise<void>((resolve) => {
+    timer = setTimeout(resolve, Math.max(1, timeoutMs));
+  });
+  return {
+    elapsed,
+    cancel: () => {
+      if (timer !== undefined) {
+        clearTimeout(timer);
+        timer = undefined;
+      }
+    },
+  };
 }

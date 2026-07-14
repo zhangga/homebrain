@@ -20,6 +20,13 @@ export interface NativeResult {
   stderr: string;
 }
 
+export interface CancellableDeadline {
+  elapsed: Promise<void>;
+  cancel: () => void;
+}
+
+export type DeadlineFactory = (timeoutMs: number) => CancellableDeadline;
+
 export type NativeExtractor = (
   mode: "image" | "pdf",
   path: string,
@@ -42,7 +49,7 @@ export async function extractAttachmentText(
       : input.attachment.kind === "pdf"
         ? "pdf"
         : undefined;
-    if (!mode || process.platform !== "darwin") return null;
+    if (!mode) return null;
 
     const result = await runNative(mode, input.localPath);
     if (result.code !== 0) return null;
@@ -57,6 +64,9 @@ async function defaultNativeExtractor(
   mode: "image" | "pdf",
   path: string,
 ): Promise<NativeResult> {
+  if (process.platform !== "darwin") {
+    return { code: null, stdout: "", stderr: "native extraction requires macOS" };
+  }
   const script = join(import.meta.dir, "attachment-extract.swift");
   const directory = mkdtempSync(join(tmpdir(), "homebrain-native-extract-"));
   const binary = join(directory, "attachment-extract");
@@ -78,32 +88,120 @@ async function defaultNativeExtractor(
   }
 }
 
-async function runBoundedProcess(
+export async function runBoundedProcess(
   command: string[],
   timeoutMs: number,
+  terminationGraceMs = 250,
+  deadlineFactory: DeadlineFactory = createDeadline,
 ): Promise<NativeResult> {
   const proc = Bun.spawn(command, {
     stdout: "pipe",
     stderr: "pipe",
     stdin: "ignore",
   });
-  let timedOut = false;
-  const timer = setTimeout(() => {
-    timedOut = true;
+  const stdout = collectProcessStream(proc.stdout);
+  const stderr = collectProcessStream(proc.stderr);
+  const completion = Promise.all([stdout.result, stderr.result, proc.exited]);
+  const deadline = deadlineFactory(Math.max(1, timeoutMs));
+  const outcome = await (async () => {
     try {
-      proc.kill();
-    } catch {
-      // The process may have exited between the timeout and this callback.
+      return await Promise.race([
+        completion.then((value) => ({ kind: "completed" as const, value })),
+        deadline.elapsed.then(() => ({ kind: "timeout" as const })),
+      ]);
+    } finally {
+      deadline.cancel();
     }
-  }, timeoutMs);
-  try {
-    const [stdout, stderr, code] = await Promise.all([
-      new Response(proc.stdout).text(),
-      new Response(proc.stderr).text(),
-      proc.exited,
-    ]);
-    return { code: timedOut ? null : code, stdout, stderr };
-  } finally {
-    clearTimeout(timer);
+  })();
+
+  if (outcome.kind === "completed") {
+    const [stdoutText, stderrText, code] = outcome.value;
+    return { code, stdout: stdoutText, stderr: stderrText };
   }
+
+  const graceMs = Math.max(1, terminationGraceMs);
+  try {
+    proc.kill("SIGTERM");
+  } catch {
+    // The process may have exited at the timeout boundary.
+  }
+  if (!(await settlesWithin(proc.exited, graceMs))) {
+    try {
+      proc.kill("SIGKILL");
+    } catch {
+      // The process may have exited during the grace-period boundary.
+    }
+    await settlesWithin(proc.exited, graceMs);
+  }
+  stdout.cancel();
+  stderr.cancel();
+  const stdoutText = stdout.snapshot();
+  const stderrText = stderr.snapshot();
+  return {
+    code: null,
+    stdout: stdoutText,
+    stderr: `${stderrText}${stderrText ? "\n" : ""}native extraction timed out`,
+  };
+}
+
+function collectProcessStream(stream: ReadableStream<Uint8Array>): {
+  result: Promise<string>;
+  snapshot: () => string;
+  cancel: () => void;
+} {
+  const reader = stream.getReader();
+  const decoder = new TextDecoder();
+  let cancelled = false;
+  let text = "";
+  const result = (async () => {
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        text += decoder.decode(value, { stream: true });
+      }
+      return text + decoder.decode();
+    } catch (err) {
+      if (cancelled) return text;
+      throw err;
+    }
+  })();
+  return {
+    result,
+    snapshot: () => text,
+    cancel: () => {
+      cancelled = true;
+      void reader.cancel().catch(() => {
+        // A concurrently exiting process may already have closed the stream.
+      });
+    },
+  };
+}
+
+async function settlesWithin(promise: Promise<unknown>, timeoutMs: number): Promise<boolean> {
+  const deadline = createDeadline(timeoutMs);
+  try {
+    return await Promise.race([
+      promise.then(() => true, () => true),
+      deadline.elapsed.then(() => false),
+    ]);
+  } finally {
+    deadline.cancel();
+  }
+}
+
+function createDeadline(timeoutMs: number): CancellableDeadline {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const elapsed = new Promise<void>((resolve) => {
+    timer = setTimeout(resolve, Math.max(1, timeoutMs));
+  });
+  return {
+    elapsed,
+    cancel: () => {
+      if (timer !== undefined) {
+        clearTimeout(timer);
+        timer = undefined;
+      }
+    },
+  };
 }

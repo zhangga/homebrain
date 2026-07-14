@@ -1,9 +1,10 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { InboundEvent } from "./connector.ts";
 import type { ProcHandle, ProcSpawner } from "./process.ts";
-import { FeishuConnector } from "./feishu.ts";
+import { FeishuConnector, runFeishuCommand } from "./feishu.ts";
 
 /** A controllable fake process: push stdout/stderr lines, resolve exit at will. */
 class FakeProc implements ProcHandle {
@@ -269,13 +270,111 @@ describe("FeishuConnector daemon (fake spawn)", () => {
 });
 
 describe("FeishuConnector outbound", () => {
+  test("cancels the command deadline after a fast successful command", async () => {
+    let cancellations = 0;
+    await expect(
+      runFeishuCommand(["/usr/bin/true"], {
+        timeoutMs: 30_000,
+        deadlineFactory: () => ({
+          elapsed: new Promise<void>(() => {}),
+          cancel: () => {
+            cancellations += 1;
+          },
+        }),
+      }),
+    ).resolves.toBe("");
+
+    expect(cancellations).toBe(1);
+  });
+
+  test("terminates a command that ignores SIGTERM and returns within a fixed bound", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "hb-command-timeout-"));
+    const executable = join(directory, "hang.sh");
+    const pidFile = join(directory, "pid");
+    writeFileSync(
+      executable,
+      `#!/bin/sh\necho $$ > '${pidFile}'\ntrap '' TERM\nexec /bin/sleep 30\n`,
+    );
+    chmodSync(executable, 0o755);
+
+    const startedAt = Date.now();
+    try {
+      await expect(
+        runFeishuCommand([executable], { timeoutMs: 500, terminationGraceMs: 100 }),
+      ).rejects.toThrow("timed out");
+      expect(Date.now() - startedAt).toBeLessThan(1_000);
+
+      const pid = Number(readFileSync(pidFile, "utf8").trim());
+      expect(() => process.kill(pid, 0)).toThrow();
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  test("terminates a download while its output file grows beyond the byte limit", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "hb-command-size-"));
+    const executable = join(directory, "grow.sh");
+    const outputPath = join(directory, "resource.bin");
+    writeFileSync(
+      executable,
+      `#!/bin/sh\ntrap '' TERM\nexec /usr/bin/yes 1234567890 > '${outputPath}'\n`,
+    );
+    chmodSync(executable, 0o755);
+
+    const startedAt = Date.now();
+    try {
+      await expect(
+        runFeishuCommand([executable], {
+          timeoutMs: 300,
+          terminationGraceMs: 50,
+          outputPath,
+          maxOutputBytes: 1_024,
+        }),
+      ).rejects.toThrow("output exceeded");
+      expect(Date.now() - startedAt).toBeLessThan(1_000);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  test("bounds the message-resource metadata fetch", async () => {
+    const calls: { cmd: string[]; timeoutMs?: number }[] = [];
+    connector = new FeishuConnector({
+      spawner: new FakeSpawner(),
+      runCommand: async (cmd, opts) => {
+        calls.push({ cmd, timeoutMs: opts?.timeoutMs });
+        return JSON.stringify({ data: { items: [] } });
+      },
+    });
+
+    expect(await connector.downloadAttachments("om_empty")).toEqual([]);
+    expect(calls[0]).toEqual(
+      expect.objectContaining({
+        cmd: expect.arrayContaining(["/open-apis/im/v1/messages/om_empty"]),
+        timeoutMs: 30_000,
+      }),
+    );
+  });
+
   test("downloads a message resource with bot identity and returns a cleanup handle", async () => {
-    const calls: { cmd: string[]; cwd?: string }[] = [];
+    const calls: {
+      cmd: string[];
+      cwd?: string;
+      timeoutMs?: number;
+      outputPath?: string;
+      maxOutputBytes?: number;
+    }[] = [];
     connector = new FeishuConnector({
       spawner: new FakeSpawner(),
       identity: {},
       runCommand: async (cmd, opts) => {
-        calls.push({ cmd, cwd: opts?.cwd });
+        calls.push({
+          cmd,
+          cwd: opts?.cwd,
+          timeoutMs: opts?.timeoutMs,
+          outputPath: opts?.outputPath,
+          maxOutputBytes: opts?.maxOutputBytes,
+        });
         if (cmd.includes("/open-apis/im/v1/messages/om_file")) {
           return JSON.stringify({
             data: {
@@ -325,6 +424,13 @@ describe("FeishuConnector outbound", () => {
     );
     expect(calls[1]?.cwd).toBe(dirname(download!.localPath));
     expect(calls[1]?.cwd).not.toBe(process.cwd());
+    expect(calls[1]).toEqual(
+      expect.objectContaining({
+        timeoutMs: 30_000,
+        outputPath: download!.localPath,
+        maxOutputBytes: 20 * 1024 * 1024,
+      }),
+    );
 
     const parent = dirname(download!.localPath);
     download!.cleanup();

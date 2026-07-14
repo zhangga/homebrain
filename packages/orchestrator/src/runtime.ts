@@ -158,38 +158,42 @@ export class Orchestrator {
       return this.withThinking(msg, () => this.handleRetraction(msg, writeSpace));
     }
 
-    // Always capture (收录 != 应答).
-    if (decision.capture && msg.text.trim() !== "") {
-      await this.engine.remember({
-        space: writeSpace,
-        source: "message",
-        author: msg.senderId,
-        chatId: msg.chatId,
-        messageId: msg.messageId,
-        content: msg.text,
-      });
-    }
+    const captureInputs = async (): Promise<void> => {
+      // Always capture (收录 != 应答).
+      if (decision.capture && msg.text.trim() !== "") {
+        await this.engine.remember({
+          space: writeSpace,
+          source: "message",
+          author: msg.senderId,
+          chatId: msg.chatId,
+          messageId: msg.messageId,
+          content: msg.text,
+        });
+      }
 
-    if (
-      decision.capture
-      && msg.messageType
-      && ["image", "file", "audio", "media"].includes(msg.messageType)
-      && this.attachmentDownloader
-    ) {
-      await this.syncAttachments(msg, writeSpace);
-    }
+      if (
+        decision.capture
+        && msg.messageType
+        && ["image", "file", "audio", "media"].includes(msg.messageType)
+        && this.attachmentDownloader
+      ) {
+        await this.syncAttachments(msg, writeSpace);
+      }
 
-    // Doc sync (Q8): pull any docx/wiki links referenced in the message.
-    if (this.docFetcher && msg.docLinks && msg.docLinks.length > 0) {
-      await this.syncDocs(msg, writeSpace);
-    }
+      // Doc sync (Q8): pull any docx/wiki links referenced in the message.
+      if (this.docFetcher && msg.docLinks && msg.docLinks.length > 0) {
+        await this.syncDocs(msg, writeSpace);
+      }
+    };
 
     if (!decision.respond) {
+      await captureInputs();
       log.debug("captured without responding", { space: writeSpace, reason: decision.reason });
       return;
     }
 
     return this.withThinking(msg, async () => {
+      await captureInputs();
       const { intent } = await classifyIntent(this.llm, msg.text);
       log.debug("classified intent", { intent, chatType: msg.chatType });
 
