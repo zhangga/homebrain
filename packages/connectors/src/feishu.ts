@@ -14,9 +14,13 @@
  *   - fetches docx links via `docs +fetch --as user` for doc sync (Q8).
  */
 import { config, logger } from "@homebrain/shared";
+import { mkdtempSync, rmSync, statSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type {
   Connector,
   ConnectorHealth,
+  DownloadedAttachment,
   InboundEvent,
   OutboundReply,
   ReplyTarget,
@@ -24,6 +28,7 @@ import type {
 import {
   normalizeBotAdded,
   normalizeMessage,
+  parseMessageResources,
   type FeishuIdentity,
 } from "./feishu-normalize.ts";
 import { bunSpawner, lines, type ProcHandle, type ProcSpawner } from "./process.ts";
@@ -33,6 +38,12 @@ const log = logger.child("feishu");
 const MESSAGE_KEY = "im.message.receive_v1";
 const BOT_ADDED_KEY = "im.chat.member.bot.added_v1";
 const READY_RE = /\[event\]\s+ready\b/;
+
+interface CommandOptions {
+  cwd?: string;
+}
+
+type RunCommand = (cmd: string[], opts?: CommandOptions) => Promise<string>;
 
 export interface FeishuConnectorOptions {
   larkBin?: string;
@@ -49,8 +60,10 @@ export interface FeishuConnectorOptions {
    * always restarted regardless. Default 5.
    */
   maxNeverReady?: number;
+  /** maximum accepted downloaded attachment size; defaults to 20 MiB */
+  maxAttachmentBytes?: number;
   /** run a command and return its stdout (injected for tests) */
-  runCommand?: (cmd: string[]) => Promise<string>;
+  runCommand?: RunCommand;
 }
 
 interface Consumer {
@@ -71,6 +84,8 @@ interface FetchedMessage {
   parent_id?: string;
   root_id?: string;
   sender?: { id?: string };
+  msg_type?: string;
+  body?: { content?: string };
 }
 
 export class FeishuConnector implements Connector {
@@ -81,7 +96,8 @@ export class FeishuConnector implements Connector {
   private backoffBaseMs: number;
   private backoffMaxMs: number;
   private maxNeverReady: number;
-  private runCommand: (cmd: string[]) => Promise<string>;
+  private maxAttachmentBytes: number;
+  private runCommand: RunCommand;
   private handler?: (event: InboundEvent) => void | Promise<void>;
   private consumers: Consumer[] = [];
   private stopping = false;
@@ -98,6 +114,7 @@ export class FeishuConnector implements Connector {
     this.backoffBaseMs = opts.backoffBaseMs ?? 1000;
     this.backoffMaxMs = opts.backoffMaxMs ?? 60_000;
     this.maxNeverReady = opts.maxNeverReady ?? 5;
+    this.maxAttachmentBytes = opts.maxAttachmentBytes ?? 20 * 1024 * 1024;
     this.runCommand = opts.runCommand ?? defaultRunCommand;
   }
 
@@ -388,6 +405,64 @@ export class FeishuConnector implements Connector {
     }
   }
 
+  async downloadAttachments(messageId: string): Promise<DownloadedAttachment[]> {
+    const message = await this.fetchMessage(messageId);
+    const resources = parseMessageResources(message?.msg_type, message?.body?.content);
+    const downloads: DownloadedAttachment[] = [];
+
+    for (const resource of resources) {
+      const directory = mkdtempSync(join(tmpdir(), "homebrain-attachment-"));
+      const output = "resource.bin";
+      try {
+        await this.runCommand(
+          [
+            this.larkBin,
+            "im",
+            "+messages-resources-download",
+            "--as",
+            "bot",
+            "--message-id",
+            messageId,
+            "--file-key",
+            resource.fileKey,
+            "--type",
+            resource.resourceType,
+            "--output",
+            output,
+            "--json",
+          ],
+          { cwd: directory },
+        );
+        const localPath = join(directory, output);
+        const sizeBytes = statSync(localPath).size;
+        if (sizeBytes > this.maxAttachmentBytes) {
+          rmSync(directory, { recursive: true, force: true });
+          log.warn("attachment exceeds size limit", { messageId, sizeBytes });
+          continue;
+        }
+        downloads.push({
+          attachment: {
+            kind: resource.kind,
+            ref: resource.fileKey,
+            name: resource.name,
+          },
+          localPath,
+          sizeBytes,
+          cleanup: () => rmSync(directory, { recursive: true, force: true }),
+        });
+      } catch (err) {
+        rmSync(directory, { recursive: true, force: true });
+        log.warn("attachment download failed", {
+          messageId,
+          fileKey: resource.fileKey,
+          err: String(err),
+        });
+      }
+    }
+
+    return downloads;
+  }
+
   private async fetchMessage(messageId: string): Promise<FetchedMessage | undefined> {
     // The higher-level +messages-mget shortcut intentionally formats message
     // output and currently drops parent_id/root_id. Use the raw read endpoint
@@ -470,8 +545,13 @@ export class FeishuConnector implements Connector {
 }
 
 /** Run a command to completion and return trimmed stdout; throws on non-zero. */
-async function defaultRunCommand(cmd: string[]): Promise<string> {
-  const proc = Bun.spawn(cmd, { stdout: "pipe", stderr: "pipe", stdin: "ignore" });
+async function defaultRunCommand(cmd: string[], opts?: CommandOptions): Promise<string> {
+  const proc = Bun.spawn(cmd, {
+    cwd: opts?.cwd,
+    stdout: "pipe",
+    stderr: "pipe",
+    stdin: "ignore",
+  });
   const [stdout, stderr, code] = await Promise.all([
     new Response(proc.stdout).text(),
     new Response(proc.stderr).text(),

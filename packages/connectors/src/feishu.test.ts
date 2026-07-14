@@ -1,4 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { existsSync } from "node:fs";
+import { dirname, join } from "node:path";
 import type { InboundEvent } from "./connector.ts";
 import type { ProcHandle, ProcSpawner } from "./process.ts";
 import { FeishuConnector } from "./feishu.ts";
@@ -267,6 +269,104 @@ describe("FeishuConnector daemon (fake spawn)", () => {
 });
 
 describe("FeishuConnector outbound", () => {
+  test("downloads a message resource with bot identity and returns a cleanup handle", async () => {
+    const calls: { cmd: string[]; cwd?: string }[] = [];
+    connector = new FeishuConnector({
+      spawner: new FakeSpawner(),
+      identity: {},
+      runCommand: async (cmd, opts) => {
+        calls.push({ cmd, cwd: opts?.cwd });
+        if (cmd.includes("/open-apis/im/v1/messages/om_file")) {
+          return JSON.stringify({
+            data: {
+              items: [
+                {
+                  message_id: "om_file",
+                  msg_type: "file",
+                  body: {
+                    content: JSON.stringify({
+                      file_key: "file_1",
+                      file_name: "notes.txt",
+                    }),
+                  },
+                },
+              ],
+            },
+          });
+        }
+        await Bun.write(join(opts!.cwd!, "resource.bin"), "project codename is Polaris");
+        return JSON.stringify({ ok: true });
+      },
+    });
+
+    const [download] = await connector.downloadAttachments("om_file");
+
+    expect(download?.attachment).toEqual({
+      kind: "file",
+      ref: "file_1",
+      name: "notes.txt",
+    });
+    expect(await Bun.file(download!.localPath).text()).toBe("project codename is Polaris");
+    expect(calls[1]?.cmd).toEqual(
+      expect.arrayContaining([
+        "im",
+        "+messages-resources-download",
+        "--as",
+        "bot",
+        "--message-id",
+        "om_file",
+        "--file-key",
+        "file_1",
+        "--type",
+        "file",
+        "--output",
+        "resource.bin",
+      ]),
+    );
+    expect(calls[1]?.cwd).toBe(dirname(download!.localPath));
+    expect(calls[1]?.cwd).not.toBe(process.cwd());
+
+    const parent = dirname(download!.localPath);
+    download!.cleanup();
+    expect(existsSync(parent)).toBe(false);
+  });
+
+  test("removes an oversized attachment instead of returning it", async () => {
+    let resourceDirectory: string | undefined;
+    connector = new FeishuConnector({
+      spawner: new FakeSpawner(),
+      identity: {},
+      maxAttachmentBytes: 10,
+      runCommand: async (cmd, opts) => {
+        if (cmd.includes("/open-apis/im/v1/messages/om_large")) {
+          return JSON.stringify({
+            data: {
+              items: [
+                {
+                  message_id: "om_large",
+                  msg_type: "file",
+                  body: {
+                    content: JSON.stringify({
+                      file_key: "file_large",
+                      file_name: "large.txt",
+                    }),
+                  },
+                },
+              ],
+            },
+          });
+        }
+        resourceDirectory = opts!.cwd!;
+        await Bun.write(join(resourceDirectory, "resource.bin"), "12345678901");
+        return JSON.stringify({ ok: true });
+      },
+    });
+
+    expect(await connector.downloadAttachments("om_large")).toEqual([]);
+    expect(resourceDirectory).toBeDefined();
+    expect(existsSync(resourceDirectory!)).toBe(false);
+  });
+
   test("reply builds the correct lark-cli command", async () => {
     const spawner = new FakeSpawner();
     const commands: string[][] = [];
