@@ -8,7 +8,7 @@
 
 **Tech Stack:** Bun/TypeScript, `lark-cli im +messages-resources-download --as bot`, macOS Swift 5.9 with Vision/PDFKit, Bun test, existing SQLite/raw/dream pipeline.
 
-**Implementation status:** Tasks 1–4 and Task 5 documentation/verification are complete. Review hardening added cancellable 30-second Feishu resource commands, in-progress file-size monitoring, bounded SIGTERM→SIGKILL termination, a 40-million-pixel image limit, and thinking-reaction coverage before slow attachment work. The native helper is compiled with `swiftc` into an isolated temporary directory because Swift script mode cannot link AppKit/PDFKit reliably. Live Feishu message smoke testing remains the final operator step.
+**Implementation status:** Complete. Review hardening added cancellable 30-second Feishu resource commands, in-progress file-size monitoring, bounded SIGTERM→SIGKILL termination, a 40-million-pixel image limit, and thinking-reaction coverage before slow attachment work. The native helper is compiled with `swiftc` into an isolated temporary directory because Swift script mode cannot link AppKit/PDFKit reliably. Live Feishu acceptance verified TXT, image OCR, and PDF ingestion; a Dream cycle examined six raw entries and wrote a knowledge page; retracting the TXT source removed both raw entries sharing its original message ID while leaving the image/PDF knowledge intact.
 
 ---
 
@@ -704,7 +704,7 @@ git add README.md docs/superpowers/plans/2026-07-14-multimodal-attachments.md
 git commit -m "docs: describe multimodal attachment ingestion"
 ```
 
-- [ ] **Step 5: Restart and smoke-test production**
+- [x] **Step 5: Restart and smoke-test production**
 
 After graceful restart, verify `/healthz` and `/readyz` return 200. Send a disposable `.txt`, image, and text-layer PDF to a test Feishu space; run one dream cycle; verify each extracted fact appears in exported raw data and a generated knowledge page. Finally reply to one attachment message with `@机器人 别记这条` and verify all raw entries sharing that `messageId` are removed.
 
