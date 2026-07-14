@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { JSONOptions } from "@homebrain/llm";
-import { resetConfig } from "@homebrain/shared";
+import { resetConfig, saveSettings } from "@homebrain/shared";
 import { KnowledgeEngine, FakeLlm } from "@homebrain/core";
 import { CliConnector, type Connector } from "@homebrain/connectors";
 import { Orchestrator } from "./runtime.ts";
@@ -747,15 +747,14 @@ describe("orchestrator trunk (cli connector, no feishu)", () => {
     expect(connector.sent[0]!.markdown).toContain("Alice");
   });
 
-  test("assigned agent routes through its CLI provider, passing its instruction", async () => {
-    // No injected llm: the engine must build a CLI-backed client from the
-    // agent's provider. The injected runner returns JSON for route/synth (the
-    // CLI client asks for JSON) and records the prompt to prove the persona
-    // reached it.
+  test("CLI-only runtime classifies a question without punctuation through the space agent", async () => {
+    // No injected orchestrator llm: classification, routing, and synthesis must
+    // all use the space's CLI-backed client. This is the production topology.
     let sawInstruction = false;
+    let sawCliClassification = false;
     const cliEngine = new KnowledgeEngine({
       dataDir: dir,
-      runProvider: async (_id, input) => {
+      runProvider: async (id, input) => {
         if (/像海盗一样说话/.test(input.prompt)) sawInstruction = true;
         if (/JSON Schema/.test(input.prompt) && /relevant/.test(input.prompt)) {
           return JSON.stringify({ slugs: ["entities/alice"], relevant: true });
@@ -770,6 +769,7 @@ describe("orchestrator trunk (cli connector, no feishu)", () => {
         }
         // intent classification (also JSON) -> a question
         if (/JSON Schema/.test(input.prompt) && /intent/.test(input.prompt)) {
+          sawCliClassification = id === "codex" && input.model === "gpt-5.4-mini";
           return JSON.stringify({ intent: "question" });
         }
         return "ok";
@@ -788,15 +788,92 @@ describe("orchestrator trunk (cli connector, no feishu)", () => {
       updatedAt: Date.now(),
       contentHash: "h",
     });
-    const agent = cliEngine.agents.create({ name: "海盗", instruction: "像海盗一样说话，Arrr。", model: "", provider: "claude" });
+    const agent = cliEngine.agents.create({
+      name: "海盗",
+      instruction: "像海盗一样说话，Arrr。",
+      model: "gpt-5.4-mini",
+      provider: "codex",
+    });
     cliEngine.registry.updateMeta("team/oc_team", { agentId: agent.id });
     const cliConnector = new CliConnector({ groupChatId: "oc_team", p2pChatId: "oc_dm", userId: "ou_me" });
-    // The orchestrator's intent classifier uses its own llm; give it the fake.
-    const cliOrch = new Orchestrator({ engine: cliEngine, connector: cliConnector, llm: fake });
+    const cliOrch = new Orchestrator({ engine: cliEngine, connector: cliConnector });
     await cliOrch.start();
-    await cliConnector.sendGroup("谁负责后端服务？", true);
+    await cliConnector.sendGroup("谁负责后端服务", true);
     expect(cliConnector.sent[0]!.markdown).toContain("Alice");
+    expect(sawCliClassification).toBe(true);
     expect(sawInstruction).toBe(true);
+    await cliOrch.stop();
+    cliEngine.close();
+  });
+
+  test("CLI-only runtime classifies a natural-language distillation command through the space agent", async () => {
+    let sawCliClassification = false;
+    const cliEngine = new KnowledgeEngine({
+      dataDir: dir,
+      runProvider: async (id, input) => {
+        if (/JSON Schema/.test(input.prompt) && /intent/.test(input.prompt)) {
+          sawCliClassification = id === "codex";
+          return JSON.stringify({ intent: "command" });
+        }
+        if (/JSON Schema/.test(input.prompt) && /operations/.test(input.prompt)) {
+          return JSON.stringify({ operations: [], skippedRawIds: [] });
+        }
+        return "ok";
+      },
+    });
+    cliEngine.ensureSpace("personal/ou_me");
+    const agent = cliEngine.agents.create({ name: "本机助手", provider: "codex" });
+    cliEngine.registry.updateMeta("personal/ou_me", { agentId: agent.id });
+    const cliConnector = new CliConnector({ groupChatId: "oc_team", p2pChatId: "oc_dm", userId: "ou_me" });
+    const cliOrch = new Orchestrator({ engine: cliEngine, connector: cliConnector });
+
+    await cliOrch.start();
+    await cliConnector.sendP2P("帮我重新提炼一下知识");
+
+    expect(cliConnector.sent[0]!.markdown).toContain("开始重新提炼");
+    expect(sawCliClassification).toBe(true);
+    await cliOrch.stop();
+    cliEngine.close();
+  });
+
+  test("CLI-only runtime classifies an ordinary statement as memory through the space agent", async () => {
+    let sawCliClassification = false;
+    const cliEngine = new KnowledgeEngine({
+      dataDir: dir,
+      runProvider: async (id, input) => {
+        if (/JSON Schema/.test(input.prompt) && /intent/.test(input.prompt)) {
+          sawCliClassification = id === "codex";
+          return JSON.stringify({ intent: "remember" });
+        }
+        return "ok";
+      },
+    });
+    cliEngine.ensureSpace("personal/ou_me");
+    const agent = cliEngine.agents.create({ name: "本机助手", provider: "codex" });
+    cliEngine.registry.updateMeta("personal/ou_me", { agentId: agent.id });
+    const cliConnector = new CliConnector({ groupChatId: "oc_team", p2pChatId: "oc_dm", userId: "ou_me" });
+    const cliOrch = new Orchestrator({ engine: cliEngine, connector: cliConnector });
+
+    await cliOrch.start();
+    await cliConnector.sendP2P("发布流程先灰度再全量");
+
+    expect(cliConnector.sent[0]!.markdown).toContain("记下");
+    expect(sawCliClassification).toBe(true);
+    await cliOrch.stop();
+    cliEngine.close();
+  });
+
+  test("CLI-only runtime gives configuration guidance when no local provider can be resolved", async () => {
+    saveSettings({ defaultProvider: "gateway" }, dir);
+    resetConfig();
+    const cliEngine = new KnowledgeEngine({ dataDir: dir });
+    const cliConnector = new CliConnector({ groupChatId: "oc_team", p2pChatId: "oc_dm", userId: "ou_me" });
+    const cliOrch = new Orchestrator({ engine: cliEngine, connector: cliConnector });
+
+    await cliOrch.start();
+    await cliConnector.sendP2P("1+1等于几？");
+
+    expect(cliConnector.sent[0]!.markdown).toContain("回答 Agent 暂时不可用");
     await cliOrch.stop();
     cliEngine.close();
   });

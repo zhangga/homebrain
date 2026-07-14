@@ -46,7 +46,7 @@ import { TaskStore, type Task } from "./tasks.ts";
 import { runDreamCycle } from "./dream.ts";
 import { refreshDigest } from "./digest.ts";
 import { ask as askImpl } from "./ask.ts";
-import { gatewayClient, type LlmClient } from "./llm.ts";
+import type { LlmClient } from "./llm.ts";
 import { makeCliClient, type RunProviderFn } from "./cli-client.ts";
 
 const log = logger.child("core");
@@ -207,6 +207,15 @@ export class KnowledgeEngine implements Knowledge {
     const model = agent?.model || cfg.defaultModel || undefined;
     if (!isCliProvider(provider)) throw new NoProviderError(space);
     return makeCliClient(provider as ProviderId, model, this.runProvider, timeoutMs);
+  }
+
+  /**
+   * Resolve the same space-scoped LLM client used by ask, dream, and tasks.
+   * Orchestration-level judgments such as intent classification use this seam so
+   * the production runtime never falls back to the legacy network gateway.
+   */
+  llmClientForSpace(space: SpaceId, timeoutMs?: number): LlmClient {
+    return this.clientForSpace(space, timeoutMs);
   }
 
   async remember(entry: RawEntry): Promise<string> {

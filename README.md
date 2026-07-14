@@ -144,7 +144,7 @@ bun run packages/app/src/repl.ts       # 启动横幅列出全部命令
 
 - **空间 / 知识**：空间列表、知识页、原始条目、问答测试、手动触发提炼。
 - **Agents**（中列列表 + 右侧编辑器）：新建 / 编辑 / 删除智能体，配置 **名称、Provider、Instruction（人格，会注入到回答）、Model、Visibility**。
-  - **Provider = 本机已安装的 agent CLI**（`claude` / `codex` / `trae-cli`）。**所有 LLM 工作（问答 ask + 提炼 dream + 任务）都通过本机 CLI 子进程执行，homebrain 不直连任何网络 API**。后台**探测本机** CLI，只让可用的可选（装了但跑不了的灰显并标注原因，如 WSL 下无 Linux node 的 codex）。
+  - **Provider = 本机已安装的 agent CLI**（`claude` / `codex` / `trae-cli`）。**所有 LLM 工作（意图分类 + 问答 ask + 提炼 dream + 任务）都通过当前空间配置的本机 CLI 子进程执行，homebrain 不直连任何网络 API**。后台**探测本机** CLI，只让可用的可选（装了但跑不了的灰显并标注原因，如 WSL 下无 Linux node 的 codex）。
   - **Model 随 Provider 变化**（对齐 mew）：切 Provider 时 Model 下拉自动换成该 provider 的模型清单（CLI 无「列模型」接口，为维护清单；codex 对齐 mew：`gpt-5.5 / gpt-5.4 / gpt-5.4-mini / gpt-5.3-codex-spark`）。
 - **任务**（研究任务执行）：新建定期任务，让某空间的 Agent CLI 定期研究一个主题；产出**存为该空间的原始材料**（`source=task`），**运行结束立即触发一次本空间提炼**（当场变成 wiki 知识页，而非等夜间），并可**推送摘要到该空间绑定的飞书群/私聊**。
   - 字段：名称、目标空间、研究主题、周期（每天几点 / 每小时）、启用开关、推送开关。
@@ -256,5 +256,5 @@ bun run service uninstall            # 保留 data 与日志
 ## 实施状态
 
 MVP = Slice 0–6，均已完成并通过测试；Slice 7（调度器 + 端到端联调）亦已完成。
-后续已完成：学习任务、真实飞书 E2E、思考表情、精确消息撤回、健康检查与可观测性（`/healthz`、`/readyz`、运行状态页与异常提示）、空间导出/恢复/删除、原始消息保留策略、非本机后台鉴权、P2 首版附件提炼、P3.1 飞书配置向导，以及 P3.2 macOS LaunchAgent 后台常驻与服务管理。
+后续已完成：学习任务、真实飞书 E2E、思考表情、精确消息撤回、健康检查与可观测性（`/healthz`、`/readyz`、运行状态页与异常提示）、空间导出/恢复/删除、原始消息保留策略、非本机后台鉴权、P2 首版附件提炼、P3.1 飞书配置向导、P3.2 macOS LaunchAgent 后台常驻与服务管理，以及 P4.1 CLI-only 意图路由。
 未纳入 MVP（已预留）：每日反馈，以及音频、Office、视频和 `post` 内嵌资源的进一步多模态提炼。

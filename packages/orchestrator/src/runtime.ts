@@ -20,7 +20,7 @@
  */
 import type { SpaceId } from "@homebrain/shared";
 import { Serializer, logger } from "@homebrain/shared";
-import { gatewayClient, type KnowledgeEngine, type LlmClient } from "@homebrain/core";
+import type { KnowledgeEngine, LlmClient } from "@homebrain/core";
 import type {
   Connector,
   DownloadedAttachment,
@@ -68,7 +68,7 @@ export interface RuntimeOptions {
 export class Orchestrator {
   private engine: KnowledgeEngine;
   private connector: Connector;
-  private llm: LlmClient;
+  private llm?: LlmClient;
   private serializer = new Serializer();
   private seen = new Set<string>();
   private seenOrder: string[] = [];
@@ -80,7 +80,7 @@ export class Orchestrator {
   constructor(opts: RuntimeOptions) {
     this.engine = opts.engine;
     this.connector = opts.connector;
-    this.llm = opts.llm ?? gatewayClient;
+    this.llm = opts.llm;
     this.dedupSize = opts.dedupSize ?? 5000;
     this.docFetcher = opts.docFetcher;
     this.attachmentDownloader = opts.attachmentDownloader
@@ -194,7 +194,8 @@ export class Orchestrator {
 
     return this.withThinking(msg, async () => {
       await captureInputs();
-      const { intent } = await classifyIntent(this.llm, msg.text);
+      const intentClient = this.llm ?? (() => this.engine.llmClientForSpace(writeSpace));
+      const { intent } = await classifyIntent(intentClient, msg.text);
       log.debug("classified intent", { intent, chatType: msg.chatType });
 
       switch (intent) {

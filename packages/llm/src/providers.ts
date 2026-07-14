@@ -204,7 +204,7 @@ export function curatedProviderModels(): Record<string, string[]> {
 
 /**
  * Run a one-shot completion via a local CLI provider. Returns trimmed stdout.
- * Throws on non-zero exit / timeout so callers can fall back to the gateway.
+ * Throws on non-zero exit / timeout so callers can surface a bounded failure.
  * These CLIs are full coding agents: slower and heavier than the gateway, and
  * they manage their own auth — so this is best-effort "hand the question to the
  * local agent", not a lightweight completion.

@@ -21,6 +21,8 @@ export interface Classification {
   prefiltered: boolean;
 }
 
+export type IntentClient = LlmClient | (() => LlmClient);
+
 /** Short pure-greeting / acknowledgement phrases that never need a model call. */
 const GREETINGS = new Set([
   "在吗", "在么", "你好", "您好", "hello", "hi", "hey", "在不在",
@@ -60,10 +62,11 @@ function validate(raw: unknown): { intent: Intent } {
   return { intent };
 }
 
-export async function classifyIntent(client: LlmClient, text: string): Promise<Classification> {
+export async function classifyIntent(client: IntentClient, text: string): Promise<Classification> {
   if (prefilterChitchat(text)) return { intent: "chitchat", prefiltered: true };
   try {
-    const { value } = await client.completeJSON<{ intent: Intent }>({
+    const resolvedClient = typeof client === "function" ? client() : client;
+    const { value } = await resolvedClient.completeJSON<{ intent: Intent }>({
       model: config().modelFast,
       system: "你是意图分类器，严格按 schema 返回单一 intent。",
       prompt: `将下面这条消息分类：\n"""\n${text}\n"""`,
