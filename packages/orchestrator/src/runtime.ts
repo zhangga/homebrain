@@ -21,7 +21,13 @@
 import type { SpaceId } from "@homebrain/shared";
 import { Serializer, logger } from "@homebrain/shared";
 import { gatewayClient, type KnowledgeEngine, type LlmClient } from "@homebrain/core";
-import type { Connector, InboundEvent, InboundMessage } from "@homebrain/connectors";
+import type {
+  Connector,
+  DownloadedAttachment,
+  InboundEvent,
+  InboundMessage,
+} from "@homebrain/connectors";
+import { extractAttachmentText } from "./attachment-extractor.ts";
 import { attribute } from "./attribution.ts";
 import { gate } from "./gateway.ts";
 import { classifyIntent } from "./intent.ts";
@@ -53,6 +59,10 @@ export interface RuntimeOptions {
    * The feishu connector supplies this; the cli connector does not.
    */
   docFetcher?: (urlOrToken: string) => Promise<string | null>;
+  /** Optional direct-message attachment boundary; defaults to the connector capability. */
+  attachmentDownloader?: (messageId: string) => Promise<DownloadedAttachment[]>;
+  /** Optional local extraction boundary; defaults to the built-in extractor. */
+  attachmentExtractor?: (attachment: DownloadedAttachment) => Promise<string | null>;
 }
 
 export class Orchestrator {
@@ -64,6 +74,8 @@ export class Orchestrator {
   private seenOrder: string[] = [];
   private dedupSize: number;
   private docFetcher?: (urlOrToken: string) => Promise<string | null>;
+  private attachmentDownloader?: (messageId: string) => Promise<DownloadedAttachment[]>;
+  private attachmentExtractor: (attachment: DownloadedAttachment) => Promise<string | null>;
 
   constructor(opts: RuntimeOptions) {
     this.engine = opts.engine;
@@ -71,6 +83,9 @@ export class Orchestrator {
     this.llm = opts.llm ?? gatewayClient;
     this.dedupSize = opts.dedupSize ?? 5000;
     this.docFetcher = opts.docFetcher;
+    this.attachmentDownloader = opts.attachmentDownloader
+      ?? this.connector.downloadAttachments?.bind(this.connector);
+    this.attachmentExtractor = opts.attachmentExtractor ?? extractAttachmentText;
   }
 
   async start(): Promise<void> {
@@ -153,6 +168,15 @@ export class Orchestrator {
         messageId: msg.messageId,
         content: msg.text,
       });
+    }
+
+    if (
+      decision.capture
+      && msg.messageType
+      && ["image", "file", "audio", "media"].includes(msg.messageType)
+      && this.attachmentDownloader
+    ) {
+      await this.syncAttachments(msg, writeSpace);
     }
 
     // Doc sync (Q8): pull any docx/wiki links referenced in the message.
@@ -318,6 +342,45 @@ export class Orchestrator {
         log.info("synced doc into space", { space: writeSpace, link });
       } catch (err) {
         log.warn("doc sync failed", { link, err: String(err) });
+      }
+    }
+  }
+
+  private async syncAttachments(msg: InboundMessage, writeSpace: SpaceId): Promise<void> {
+    let downloads: DownloadedAttachment[];
+    try {
+      downloads = await this.attachmentDownloader!(msg.messageId);
+    } catch (err) {
+      log.warn("attachment download failed", { messageId: msg.messageId, err: String(err) });
+      return;
+    }
+
+    for (const download of downloads) {
+      try {
+        const extracted = await this.attachmentExtractor(download);
+        if (!extracted?.trim()) continue;
+        const name = download.attachment.name ?? download.attachment.ref;
+        await this.engine.remember({
+          space: writeSpace,
+          source: "message",
+          author: msg.senderId,
+          chatId: msg.chatId,
+          messageId: msg.messageId,
+          content: `# 附件：${name}\n\n${extracted.trim()}`,
+          attachments: [download.attachment],
+          createdAt: msg.createdAt,
+        });
+      } catch (err) {
+        log.warn("attachment extraction failed", { messageId: msg.messageId, err: String(err) });
+      } finally {
+        try {
+          download.cleanup();
+        } catch (cleanupErr) {
+          log.warn("attachment cleanup failed", {
+            messageId: msg.messageId,
+            err: String(cleanupErr),
+          });
+        }
       }
     }
   }

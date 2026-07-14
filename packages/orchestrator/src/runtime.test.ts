@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { JSONOptions } from "@homebrain/llm";
@@ -420,6 +420,226 @@ describe("orchestrator trunk (cli connector, no feishu)", () => {
     const raws = engine.registry.store("team/oc_team").index().listRaw({});
     expect(raws.some((r) => r.source === "doc")).toBe(true);
     await orch2.stop();
+  });
+
+  test("attachment text follows message provenance and retraction lifecycle", async () => {
+    const attachmentDir = mkdtempSync(join(tmpdir(), "hb-runtime-attachment-"));
+    const localPath = join(attachmentDir, "resource.bin");
+    writeFileSync(localPath, "项目代号是北极星", "utf8");
+    let cleaned = false;
+    const attachmentDownloader = async () => [{
+      attachment: { kind: "file" as const, ref: "file_1", name: "notes.txt" },
+      localPath,
+      sizeBytes: 27,
+      cleanup: () => {
+        cleaned = true;
+        rmSync(attachmentDir, { recursive: true, force: true });
+      },
+    }];
+
+    orch = new Orchestrator({
+      engine,
+      connector,
+      llm: fake,
+      attachmentDownloader,
+      attachmentExtractor: async () => "项目代号是北极星",
+    });
+    const reactive = connector as CliConnector & Connector;
+    reactive.resolveReplyTarget = async () => ({
+      messageId: "om_attachment",
+      senderId: "ou_me",
+    });
+    await orch.start();
+    await connector.inject({
+      kind: "message",
+      eventId: "attachment-1",
+      chatType: "group",
+      chatId: "oc_team",
+      senderId: "ou_me",
+      text: "[文件] notes.txt",
+      messageId: "om_attachment",
+      messageType: "file",
+      mentionsBot: false,
+      createdAt: 1_700_000_000_000,
+    });
+
+    const archive = await engine.exportSpace("team/oc_team");
+    expect(archive.raw).toHaveLength(2);
+    expect(archive.raw).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        source: "message",
+        author: "ou_me",
+        chatId: "oc_team",
+        messageId: "om_attachment",
+        content: "[文件] notes.txt",
+      }),
+      expect.objectContaining({
+        source: "message",
+        author: "ou_me",
+        chatId: "oc_team",
+        messageId: "om_attachment",
+        content: "# 附件：notes.txt\n\n项目代号是北极星",
+        attachments: [{ kind: "file", ref: "file_1", name: "notes.txt" }],
+      }),
+    ]));
+    expect(cleaned).toBe(true);
+    expect(existsSync(attachmentDir)).toBe(false);
+
+    await connector.sendGroup("@小强Bot 别记这条", true);
+    const retracted = await engine.exportSpace("team/oc_team");
+    expect(retracted.raw.filter((raw) => raw.messageId === "om_attachment")).toEqual([]);
+  });
+
+  test("attachment download failure leaves the original message captured", async () => {
+    orch = new Orchestrator({
+      engine,
+      connector,
+      llm: fake,
+      attachmentDownloader: async () => {
+        throw new Error("download unavailable");
+      },
+    });
+    await orch.start();
+
+    await connector.inject({
+      kind: "message",
+      eventId: "attachment-download-failure",
+      chatType: "group",
+      chatId: "oc_team",
+      senderId: "ou_me",
+      text: "[文件] unavailable.txt",
+      messageId: "om_download_failure",
+      messageType: "file",
+      mentionsBot: false,
+      createdAt: Date.now(),
+    });
+
+    const archive = await engine.exportSpace("team/oc_team");
+    expect(archive.raw).toEqual([
+      expect.objectContaining({
+        source: "message",
+        messageId: "om_download_failure",
+        content: "[文件] unavailable.txt",
+      }),
+    ]);
+  });
+
+  test("attachment extraction failure cleans up and leaves the original message captured", async () => {
+    let cleaned = false;
+    orch = new Orchestrator({
+      engine,
+      connector,
+      llm: fake,
+      attachmentDownloader: async () => [{
+        attachment: { kind: "file", ref: "file_broken", name: "broken.txt" },
+        localPath: "/tmp/broken.txt",
+        sizeBytes: 1,
+        cleanup: () => {
+          cleaned = true;
+        },
+      }],
+      attachmentExtractor: async () => {
+        throw new Error("extract unavailable");
+      },
+    });
+    await orch.start();
+
+    await connector.inject({
+      kind: "message",
+      eventId: "attachment-extraction-failure",
+      chatType: "group",
+      chatId: "oc_team",
+      senderId: "ou_me",
+      text: "[文件] broken.txt",
+      messageId: "om_extraction_failure",
+      messageType: "file",
+      mentionsBot: false,
+      createdAt: Date.now(),
+    });
+
+    const archive = await engine.exportSpace("team/oc_team");
+    expect(archive.raw).toEqual([
+      expect.objectContaining({
+        source: "message",
+        messageId: "om_extraction_failure",
+        content: "[文件] broken.txt",
+      }),
+    ]);
+    expect(cleaned).toBe(true);
+  });
+
+  test("attachment cleanup failure does not mask successful ingestion", async () => {
+    orch = new Orchestrator({
+      engine,
+      connector,
+      llm: fake,
+      attachmentDownloader: async () => [{
+        attachment: { kind: "file", ref: "file_cleanup", name: "cleanup.txt" },
+        localPath: "/tmp/cleanup.txt",
+        sizeBytes: 1,
+        cleanup: () => {
+          throw new Error("cleanup unavailable");
+        },
+      }],
+      attachmentExtractor: async () => "cleanup failures are isolated",
+    });
+    await orch.start();
+
+    await connector.inject({
+      kind: "message",
+      eventId: "attachment-cleanup-failure",
+      chatType: "group",
+      chatId: "oc_team",
+      senderId: "ou_me",
+      text: "[文件] cleanup.txt",
+      messageId: "om_cleanup_failure",
+      messageType: "file",
+      mentionsBot: false,
+      createdAt: Date.now(),
+    });
+
+    const archive = await engine.exportSpace("team/oc_team");
+    expect(archive.raw).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        messageId: "om_cleanup_failure",
+        content: "# 附件：cleanup.txt\n\ncleanup failures are isolated",
+      }),
+    ]));
+  });
+
+  test("ordinary text messages do not invoke the attachment downloader", async () => {
+    let downloadCalls = 0;
+    orch = new Orchestrator({
+      engine,
+      connector,
+      llm: fake,
+      attachmentDownloader: async () => {
+        downloadCalls += 1;
+        return [];
+      },
+    });
+    await orch.start();
+
+    await connector.inject({
+      kind: "message",
+      eventId: "ordinary-text",
+      chatType: "group",
+      chatId: "oc_team",
+      senderId: "ou_me",
+      text: "这是一条普通文本消息",
+      messageId: "om_ordinary_text",
+      messageType: "text",
+      mentionsBot: false,
+      createdAt: Date.now(),
+    });
+
+    expect(downloadCalls).toBe(0);
+    expect((await engine.exportSpace("team/oc_team")).raw).toEqual([
+      expect.objectContaining({
+        messageId: "om_ordinary_text",
+        content: "这是一条普通文本消息",
+      }),
+    ]);
   });
 
   test("group with mentionsOnly=false answers an unaddressed question", async () => {
