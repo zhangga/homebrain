@@ -17,12 +17,13 @@ describe("buildSetupSnapshot", () => {
       lark: { state: "unconfigured", verified: false, message: "missing" },
       runtime: { ready: false, consumers: [] },
       restartRequired: false,
+      externalSharing: "not_started",
       groups: 0,
       completedAt: undefined,
     }).current).toBe("ai");
   });
 
-  test("advances through Feishu, activation and invite", () => {
+  test("publishes before activation, then verifies sharing after restart", () => {
     const base = {
       defaultProvider: "codex",
       providers: [provider],
@@ -34,6 +35,7 @@ describe("buildSetupSnapshot", () => {
       lark: { state: "unconfigured", verified: false, message: "missing" },
       runtime: { ready: false, consumers: [] },
       restartRequired: false,
+      externalSharing: "not_started",
     }).current).toBe("feishu");
     expect(buildSetupSnapshot({
       ...base,
@@ -46,6 +48,20 @@ describe("buildSetupSnapshot", () => {
       },
       runtime: { ready: false, consumers: [] },
       restartRequired: true,
+      externalSharing: "not_started",
+    }).current).toBe("external_share");
+    expect(buildSetupSnapshot({
+      ...base,
+      lark: {
+        state: "ready",
+        verified: true,
+        botName: "Homebrain",
+        botOpenId: "ou_bot",
+        message: "ready",
+      },
+      runtime: { ready: false, consumers: [] },
+      restartRequired: true,
+      externalSharing: "awaiting_external_message",
     }).current).toBe("activate");
     expect(buildSetupSnapshot({
       ...base,
@@ -58,6 +74,20 @@ describe("buildSetupSnapshot", () => {
       },
       runtime: { ready: true, consumers: [] },
       restartRequired: false,
+      externalSharing: "awaiting_external_message",
+    }).current).toBe("external_share");
+    expect(buildSetupSnapshot({
+      ...base,
+      lark: {
+        state: "ready",
+        verified: true,
+        botName: "Homebrain",
+        botOpenId: "ou_bot",
+        message: "ready",
+      },
+      runtime: { ready: true, consumers: [] },
+      restartRequired: false,
+      externalSharing: "verified",
     }).current).toBe("invite");
   });
 
@@ -76,6 +106,7 @@ describe("buildSetupSnapshot", () => {
       restartRequired: false,
       groups: 0,
       completedAt: 1,
+      externalSharing: "skipped" as const,
     };
     expect(buildSetupSnapshot(ready).current).toBe("done");
     expect(buildSetupSnapshot({

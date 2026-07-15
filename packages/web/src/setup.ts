@@ -1,8 +1,9 @@
 import type { DetectedProvider } from "@homebrain/llm";
 import type { LarkSetupStatus } from "@homebrain/shared";
 import type { FeishuRuntimeStatus } from "./integrations.ts";
+import type { FeishuExternalSharingState } from "./external-sharing.ts";
 
-export type SetupStep = "ai" | "feishu" | "activate" | "invite" | "done";
+export type SetupStep = "ai" | "feishu" | "external_share" | "activate" | "invite" | "done";
 
 export interface SetupSnapshot {
   current: SetupStep;
@@ -21,6 +22,7 @@ export interface SetupSnapshotInput {
   restartRequired: boolean;
   groups: number;
   completedAt?: number;
+  externalSharing: FeishuExternalSharingState;
 }
 
 export function buildSetupSnapshot(input: SetupSnapshotInput): SetupSnapshot {
@@ -34,12 +36,16 @@ export function buildSetupSnapshot(input: SetupSnapshotInput): SetupSnapshot {
     ? "ai"
     : !larkReady
       ? "feishu"
-      : !runtimeReady
-        ? "activate"
-        : !groupReady && !input.completedAt
-          ? "invite"
-          : "done";
-  const order: SetupStep[] = ["ai", "feishu", "activate", "invite", "done"];
+      : input.externalSharing === "not_started"
+        ? "external_share"
+        : !runtimeReady
+          ? "activate"
+          : input.externalSharing === "awaiting_external_message"
+            ? "external_share"
+            : !groupReady && !input.completedAt
+              ? "invite"
+              : "done";
+  const order: SetupStep[] = ["ai", "feishu", "external_share", "activate", "invite", "done"];
 
   return {
     current,
