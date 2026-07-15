@@ -25,7 +25,7 @@ import type {
   LearningSession,
   LearningSource,
 } from "@homeagent/core";
-import { AGENT_PERMISSIONS, TASK_CADENCES } from "@homeagent/core";
+import { AGENT_PERMISSIONS, TASK_CADENCES, learningProgress } from "@homeagent/core";
 import { codexReasoningEffortsForModel, type DetectedProvider } from "@homeagent/llm";
 import type { FeishuRuntimeStatus } from "./integrations.ts";
 import type { FeishuExternalSharingStatus } from "./external-sharing.ts";
@@ -311,7 +311,7 @@ export function governanceView(
     </div>
     <div class="card">
       <h2 style="margin-top:0">恢复空间</h2>
-      <p class="muted">接受 homeagent.space v1/v2 归档；v2 包含学习计划，已有同名空间不会被覆盖。</p>
+      <p class="muted">接受 homeagent.space v1/v2/v3 归档；v2 包含阅读计划，v3 包含主题路线与多来源材料，已有同名空间不会被覆盖。</p>
       <form method="post" action="/governance/restore" enctype="multipart/form-data" class="actions">
         <input type="file" name="archive" accept="application/json,.json" required />
         <button type="submit">上传并恢复</button>
@@ -729,11 +729,14 @@ export function learningView(
   flashMsg?: string,
 ): HtmlEscapedString | Promise<HtmlEscapedString> {
   const listItems = plans.map((plan) => {
-    const progress = Math.min(100, Math.floor((plan.cursor / plan.sourceLength) * 100));
-    const sourceTitle = sources[plan.id]?.title ?? "来源已不可用";
+    const progress = learningProgress(plan);
+    const planSource = sources[plan.id];
+    const sourceTitle = plan.mode === "topic"
+      ? `${planSource?.materials.length ?? 0} 份材料`
+      : planSource?.title ?? "来源已不可用";
     return html`<a class="item ${selected?.id === plan.id ? "active" : ""}" href="/learning/${encodeURIComponent(plan.id)}">
       <div class="name"><span class="dot" style="${plan.status === "active" ? "" : "background:#cbd5e1"}"></span>${plan.name}</div>
-      <div class="sub">${sourceTitle} · ${LEARNING_STATUS_LABELS[plan.status]} · ${progress}% · 每天 ${plan.hour}:00</div>
+      <div class="sub">${plan.mode === "topic" ? "主题学习" : "材料阅读"} · ${sourceTitle} · ${LEARNING_STATUS_LABELS[plan.status]} · ${progress}% · 每天 ${plan.hour}:00</div>
     </a>`;
   });
   const source = selected ? sources[selected.id] : undefined;
@@ -751,7 +754,11 @@ export function learningView(
           <h2 style="margin-top:0">${selected.name}</h2>
           <div class="grid2">
             <div class="field"><label>来源</label><div>${source?.title ?? "来源已不可用"}</div></div>
+            <div class="field"><label>类型</label><div>${selected.mode === "topic" ? "主题学习" : "材料阅读"}</div></div>
             <div class="field"><label>状态</label><div>${LEARNING_STATUS_LABELS[selected.status]}</div></div>
+            ${selected.mode === "topic"
+              ? html`<div class="field"><label>主题</label><div>${selected.topic}</div></div>`
+              : ""}
             <div class="field"><label>空间</label><div>${selected.space}</div></div>
             <div class="field"><label>创建者</label><div>${selected.creatorId}</div></div>
             <div class="field"><label>投递聊天</label><div>${selected.chatId}</div></div>
@@ -760,12 +767,16 @@ export function learningView(
               <label>每天几点 <span class="hint">北京时间，0–23</span></label>
               <input type="number" min="0" max="23" name="hour" value="${selected.hour}" required />
             </div>
-            <div class="field">
-              <label>每课字数 <span class="hint">500–8000 字</span></label>
-              <input type="number" min="500" max="8000" name="dailyCharacters" value="${selected.dailyCharacters}" required />
-            </div>
+            ${selected.mode === "reading"
+              ? html`<div class="field">
+                  <label>每课字数 <span class="hint">500–8000 字</span></label>
+                  <input type="number" min="500" max="8000" name="dailyCharacters" value="${selected.dailyCharacters}" required />
+                </div>`
+              : ""}
           </div>
-          <div class="muted">阅读进度：${selected.cursor} / ${selected.sourceLength} 字</div>
+          <div class="muted">${selected.mode === "topic"
+            ? `路线进度：${selected.routeIndex} / ${selected.route.length} 个步骤`
+            : `阅读进度：${selected.cursor} / ${selected.sourceLength} 字`}</div>
           <div class="actions" style="margin-top:14px">
             <button type="submit">保存设置</button>
             ${selected.status === "active"
@@ -776,13 +787,41 @@ export function learningView(
             <button type="submit" class="danger" formaction="/learning/${encodeURIComponent(selected.id)}/delete" onclick="return confirm('删除该学习计划？')">删除</button>
           </div>
         </form>
+        ${selected.mode === "topic"
+          ? html`<h2>学习路线</h2>
+              ${selected.adaptiveFocus
+                ? html`<div class="flash">当前补强重点：${selected.adaptiveFocus}</div>`
+                : ""}
+              <table>
+                <tr><th>状态</th><th>步骤</th><th>目标</th><th>学习次数</th></tr>
+                ${selected.route.map((step) => html`<tr>
+                  <td>${step.status === "active" ? "进行中" : step.status === "completed" ? "已掌握" : step.status === "skipped" ? "已跳过" : "待学习"}</td>
+                  <td>${step.title}</td>
+                  <td>${step.objective}</td>
+                  <td>${step.attempts}</td>
+                </tr>`)}
+              </table>
+              <h2>学习材料</h2>
+              ${source && source.materials.length > 0
+                ? html`<table>
+                    <tr><th>材料</th><th>消息</th><th>加入时间</th></tr>
+                    ${source.materials.map((material) => html`<tr>
+                      <td>${material.title}</td>
+                      <td>${material.messageId}</td>
+                      <td>${fmtTime(material.createdAt)}</td>
+                    </tr>`)}
+                  </table>`
+                : html`<div class="empty">还没有用户材料；课程中的扩展知识会明确标记为模型一般知识。</div>`}`
+          : ""}
         <h2>课程记录</h2>
         ${sessionHistory.length > 0
           ? html`<table>
               <tr><th>课次</th><th>阅读范围</th><th>状态</th><th>时间</th></tr>
               ${sessionHistory.map((session) => html`<tr>
                 <td>第 ${session.sequence} 课</td>
-                <td>${session.sectionTitle}<div class="muted">${session.startOffset}–${session.endOffset} 字</div></td>
+                <td>${session.sectionTitle}${selected.mode === "reading"
+                  ? html`<div class="muted">${session.startOffset}–${session.endOffset} 字</div>`
+                  : ""}</td>
                 <td>${LEARNING_SESSION_LABELS[session.status]}</td>
                 <td>${fmtTime(session.completedAt ?? session.deliveredAt ?? session.preparedAt)}</td>
               </tr>`)}
@@ -792,14 +831,14 @@ export function learningView(
     : html`<div class="card">
         ${flash(flashMsg)}
         <h2 style="margin-top:0">在飞书里创建学习计划</h2>
-        <p class="muted">回复包含书籍附件或飞书文档的原消息，发送 <code>/learn new &lt;书名&gt;</code>。创建后可在这里查看进度和调整推送时间。</p>
+        <p class="muted">发送 <code>/learn topic &lt;主题&gt;</code> 创建主题路线；也可回复附件或飞书文档，发送 <code>/learn new &lt;名称&gt;</code> 创建材料阅读计划。</p>
       </div>`;
 
   return html`<h1>学习计划</h1>
-    <p class="subtitle">Agent 每天按固定进度带读原文、提出思考题，并根据你的回答给出反馈。</p>
+    <p class="subtitle">Agent 可以按材料带读，也可以围绕主题生成路线、整合多份材料，并根据回答调整下一课重点。</p>
     ${plans.length > 0
       ? html`<div class="split"><div class="listcol">${listItems}</div>${detail}</div>`
-      : html`${flash(flashMsg)}<div class="empty">在飞书中回复一本已导入的书，发送 /learn new &lt;书名&gt; 创建计划。</div>`}`;
+      : html`${flash(flashMsg)}<div class="empty">在飞书中发送 /learn topic &lt;主题&gt;，或回复一份材料后发送 /learn new &lt;名称&gt; 创建计划。</div>`}`;
 }
 
 // ---- Integrations (mew: Lark bot + Lark groups) ----------------------------

@@ -1,10 +1,11 @@
 /** Explicit chat controls for durable guided-learning plans. */
-import type { KnowledgeEngine, LearningPlan } from "@homeagent/core";
+import { learningProgress, type KnowledgeEngine, type LearningPlan } from "@homeagent/core";
 import type { SpaceId } from "@homeagent/shared";
 import { LEARNING_HELP } from "./messages.ts";
 
 export interface LearningCommand {
-  verb: "list" | "new" | "pause" | "resume" | "skip" | "delete" | "help";
+  verb: "list" | "new" | "topic" | "add" | "route"
+    | "pause" | "resume" | "skip" | "delete" | "help";
   arg: string;
 }
 
@@ -33,6 +34,13 @@ export function parseLearningCommand(text: string): LearningCommand | null {
     new: "new",
     新建: "new",
     创建: "new",
+    topic: "topic",
+    主题: "topic",
+    add: "add",
+    source: "add",
+    材料: "add",
+    route: "route",
+    路线: "route",
     pause: "pause",
     暂停: "pause",
     resume: "resume",
@@ -74,7 +82,14 @@ function statusLabel(plan: LearningPlan): string {
 }
 
 function engineProgress(plan: LearningPlan): number {
-  return Math.min(100, Math.floor((plan.cursor / plan.sourceLength) * 100));
+  return learningProgress(plan);
+}
+
+function routeStatusIcon(status: LearningPlan["route"][number]["status"]): string {
+  if (status === "active") return "▶️";
+  if (status === "completed") return "✅";
+  if (status === "skipped") return "⏭️";
+  return "○";
 }
 
 export async function handleLearningCommand(
@@ -86,14 +101,30 @@ export async function handleLearningCommand(
   const plans = ownedPlans(engine, context);
   if (command.verb === "list") {
     if (plans.length === 0) {
-      return "还没有学习计划。请回复包含书籍附件或飞书文档的原消息，再发送 `/learn new <书名>`。";
+      return "还没有学习计划。可发送 `/learn topic <主题>` 创建主题路线，或回复材料后发送 `/learn new <名称>`。";
     }
     return [
       "我的学习计划：",
       ...plans.map((plan, index) =>
-        `${index + 1}. ${plan.name} · ${statusLabel(plan)} · ${engineProgress(plan)}% · 每天 ${plan.hour}:00`
+        `${index + 1}. ${plan.name} · ${plan.mode === "topic" ? "主题" : "材料"}学习 · ${statusLabel(plan)} · ${engineProgress(plan)}% · 每天 ${plan.hour}:00`
       ),
     ].join("\n");
+  }
+
+  if (command.verb === "topic") {
+    const topic = command.arg.trim();
+    if (!topic) return "请指定学习主题：`/learn topic <主题>`。";
+    try {
+      const plan = await engine.createTopicLearningPlan({
+        space: context.space,
+        chatId: context.chatId,
+        creatorId: context.actorId,
+        topic,
+      });
+      return `✅ 已创建主题学习计划「${plan.name}」，共 ${plan.route.length} 个步骤，默认每天 8:00 推送一课。发送 \`/learn route ${plan.name}\` 查看路线。`;
+    } catch (error) {
+      return `创建主题学习计划失败：${String(error).replace(/^Error:\s*/u, "")}`;
+    }
   }
 
   if (command.verb === "new") {
@@ -120,6 +151,34 @@ export async function handleLearningCommand(
   if (!query) return `请指定计划名称或序号。\n\n${LEARNING_HELP}`;
   const target = findPlan(plans, query);
   if (!target) return `没找到你的学习计划「${query}」。发送 \`/learn\` 查看列表。`;
+
+  if (command.verb === "route") {
+    if (target.mode !== "topic") return `学习计划「${target.name}」是材料阅读计划，没有主题路线。`;
+    return [
+      `学习路线「${target.name}」：`,
+      ...target.route.map((step) =>
+        `${routeStatusIcon(step.status)} ${step.title} — ${step.objective}${step.attempts > 0 ? `（已学习 ${step.attempts} 次）` : ""}`
+      ),
+      target.adaptiveFocus ? `\n当前补强重点：${target.adaptiveFocus}` : "",
+    ].filter(Boolean).join("\n");
+  }
+  if (command.verb === "add") {
+    if (!context.sourceMessageId) {
+      return `请回复要添加的附件、文章或飞书文档，再发送 /learn add ${target.name}。`;
+    }
+    try {
+      engine.addLearningMaterialFromMessage(
+        target.id,
+        context.actorId,
+        context.sourceMessageId,
+      );
+      const source = engine.learning.source(target.id);
+      const material = source?.materials.at(-1);
+      return `✅ 已添加材料「${material?.title ?? "学习材料"}」到「${target.name}」，目前共 ${source?.materials.length ?? 0} 份。`;
+    } catch (error) {
+      return `添加学习材料失败：${String(error).replace(/^Error:\s*/u, "")}`;
+    }
+  }
 
   if (command.verb === "pause") {
     return engine.learning.pause(target.id, context.actorId)
@@ -154,6 +213,12 @@ export async function handleLearningAnswer(
   }
   const target = awaiting[0]!;
   const result = await engine.answerLearningSession(target.id, context.actorId, answer);
-  const completion = result.plan.status === "completed" ? "\n\n🎉 这本书的计划已完成。" : "";
+  const completion = result.plan.status === "completed"
+    ? result.plan.mode === "topic"
+      ? "\n\n🎉 这个主题的学习路线已完成。"
+      : "\n\n🎉 这本书的计划已完成。"
+    : result.session.mastery === "review"
+      ? `\n\n🔁 下一课将继续当前步骤，重点补强：${result.session.nextFocus}`
+      : "";
   return `✅ 已记录「${target.name}」第 ${result.session.sequence} 课。\n\n${result.feedback}${completion}`;
 }

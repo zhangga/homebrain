@@ -37,12 +37,12 @@ export function learningNotification(
   plan: LearningPlan,
   session: LearningSession,
 ): string {
+  const lessonContext = plan.mode === "topic"
+    ? [`当前步骤：${session.sectionTitle}`, "", "## 参考材料", session.excerpt]
+    : [`今日范围：${session.sectionTitle}`, "", "## 今日原文", session.excerpt];
   return [
     `📖 ${plan.name} · 第 ${session.sequence} 课`,
-    `今日范围：${session.sectionTitle}`,
-    "",
-    "## 今日原文",
-    session.excerpt,
+    ...lessonContext,
     "",
     session.guide,
     "",

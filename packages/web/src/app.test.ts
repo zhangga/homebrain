@@ -725,7 +725,7 @@ describe("management backend (read-write)", () => {
     const governanceBody = await governance.text();
     expect(governanceBody).toContain("数据治理");
     expect(governanceBody).toContain("原始消息保留");
-    expect(governanceBody).toContain("homeagent.space v1/v2");
+    expect(governanceBody).toContain("homeagent.space v1/v2/v3");
 
     const exported = await app.request(`/spaces/${encodeURIComponent(SPACE)}/export`);
     expect(exported.status).toBe(200);
@@ -734,7 +734,7 @@ describe("management backend (read-write)", () => {
     expect(JSON.parse(archiveText)).toEqual(
       expect.objectContaining({
         format: "homeagent.space",
-        version: 2,
+        version: 3,
         learning: { plans: [], sources: [], sessions: [] },
       }),
     );
@@ -1405,7 +1405,7 @@ describe("management backend (read-write)", () => {
 
   test("learning: nav, list, detail, and administrative controls reflect durable state", async () => {
     const empty = await (await app.request("/learning")).text();
-    expect(empty).toContain("在飞书中回复一本已导入的书，发送 /learn new &lt;书名&gt; 创建计划。");
+    expect(empty).toContain("发送 /learn topic &lt;主题&gt;");
     const plan = engine.learning.create({
       name: "读《原则》",
       space: SPACE,
@@ -1471,6 +1471,59 @@ describe("management backend (read-write)", () => {
     });
     expect([302, 303]).toContain(removed.status);
     expect(engine.learning.has(plan.id)).toBe(false);
+  });
+
+  test("learning: topic detail shows its route, materials, and adaptive focus", async () => {
+    const plan = engine.learning.createTopic({
+      name: "Rust 异步",
+      topic: "Rust 异步编程",
+      space: SPACE,
+      creatorId: "ou_reader",
+      chatId: "oc_web",
+      route: [
+        { title: "Future", objective: "理解 Future" },
+        { title: "运行时", objective: "理解运行时" },
+      ],
+    }, 1);
+    engine.learning.addMaterial(plan.id, "ou_reader", {
+      title: "async-book.md",
+      content: "Future 只有在 poll 时推进。",
+      rawIds: ["raw_async"],
+      messageId: "om_async",
+    }, 2);
+    const session = engine.learning.prepareSession(plan.id, {
+      startOffset: 0,
+      endOffset: 1,
+      routeStepId: plan.route[0]!.id,
+      sectionTitle: "Future",
+      excerpt: "[材料1：async-book.md]",
+      guide: "## 思考题\nFuture 如何推进？",
+      preparedAt: 3,
+    })!;
+    engine.learning.markDelivered(session.id, 4);
+    engine.learning.completeSession(session.id, {
+      learnerReply: "Future 是线程",
+      feedback: "需要补强",
+      mastery: "review",
+      nextFocus: "区分 Future 与线程",
+      completedAt: 5,
+    });
+
+    const body = await (await app.request(`/learning/${encodeURIComponent(plan.id)}`)).text();
+    expect(body).toContain("主题学习");
+    expect(body).toContain("Rust 异步编程");
+    expect(body).toContain("async-book.md");
+    expect(body).toContain("Future");
+    expect(body).toContain("理解运行时");
+    expect(body).toContain("当前补强重点：区分 Future 与线程");
+
+    const updated = await app.request(`/learning/${encodeURIComponent(plan.id)}`, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ hour: "11" }).toString(),
+    });
+    expect([302, 303]).toContain(updated.status);
+    expect(engine.learning.get(plan.id)?.hour).toBe(11);
   });
 
   test("reminders: list and administrative controls reflect durable reminder state", async () => {

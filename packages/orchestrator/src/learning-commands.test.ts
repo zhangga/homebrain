@@ -14,6 +14,11 @@ describe("learning command parsing", () => {
   test("recognizes explicit plan controls and answers only", () => {
     expect(parseLearningCommand("/learn")).toEqual({ verb: "list", arg: "" });
     expect(parseLearningCommand("/learn new 原则")).toEqual({ verb: "new", arg: "原则" });
+    expect(parseLearningCommand("/learn topic Rust 异步编程"))
+      .toEqual({ verb: "topic", arg: "Rust 异步编程" });
+    expect(parseLearningCommand("/learn add 1")).toEqual({ verb: "add", arg: "1" });
+    expect(parseLearningCommand("/learn route Rust 异步"))
+      .toEqual({ verb: "route", arg: "Rust 异步" });
     expect(parseLearningCommand("/learn 暂停 1")).toEqual({ verb: "pause", arg: "1" });
     expect(parseLearningCommand("/learn resume 原则")).toEqual({ verb: "resume", arg: "原则" });
     expect(parseLearningCommand("/learn skip 1")).toEqual({ verb: "skip", arg: "1" });
@@ -67,6 +72,47 @@ describe("learning command handling", () => {
     expect(created).toContain("已创建学习计划「原则」");
     expect(await handleLearningCommand(engine, { verb: "list", arg: "" }, context))
       .toContain("1. 原则");
+  });
+
+  test("creates a topic route, adds replied material, and displays adaptive progress", async () => {
+    const context = {
+      space: "personal/ou_me" as const,
+      chatId: "oc_p2p",
+      actorId: "ou_me",
+    };
+    llm.queueJSON({
+      name: "Rust 异步",
+      steps: [
+        { title: "Future", objective: "理解 Future" },
+        { title: "运行时", objective: "理解运行时" },
+      ],
+    });
+
+    const created = await handleLearningCommand(
+      engine,
+      { verb: "topic", arg: "Rust 异步编程" },
+      context,
+    );
+    expect(created).toContain("已创建主题学习计划「Rust 异步」");
+    expect(await handleLearningCommand(engine, { verb: "route", arg: "1" }, context))
+      .toContain("▶️ Future — 理解 Future");
+
+    await engine.remember({
+      space: context.space,
+      source: "message",
+      author: "ou_me",
+      chatId: context.chatId,
+      messageId: "om_async",
+      content: "# 附件：async.md\n\nFuture 只有在 poll 时推进。",
+      attachments: [{ kind: "file", ref: "file_async", name: "async.md" }],
+    });
+    const added = await handleLearningCommand(
+      engine,
+      { verb: "add", arg: "1" },
+      { ...context, sourceMessageId: "om_async" },
+    );
+    expect(added).toContain("已添加材料「async.md」");
+    expect(engine.learning.source(engine.learning.list()[0]!.id)?.materials).toHaveLength(1);
   });
 
   test("scopes pause, resume, skip, and delete to the creator", async () => {

@@ -23,6 +23,9 @@ function plan(overrides: Partial<LearningPlan> = {}): LearningPlan {
     space: "personal/ou_me",
     creatorId: "ou_me",
     chatId: "oc_p2p",
+    mode: "reading",
+    route: [],
+    routeIndex: 0,
     sourceId: "source_1",
     sourceLength: 1000,
     hour: 8,
@@ -146,6 +149,32 @@ describe("LearningScheduler", () => {
     expect(message).toContain("📖 读原则 · 第 1 课");
     expect(message).toContain("## 今日原文\n今日原文");
     expect(message).toContain("学习回答：");
+  });
+
+  test("labels a topic step and its supplied references without calling them book text", () => {
+    const message = learningNotification(
+      plan({
+        mode: "topic",
+        topic: "Rust 异步编程",
+        route: [{
+          id: "step_1",
+          title: "Future",
+          objective: "理解 Future",
+          status: "active",
+          attempts: 0,
+        }],
+        routeIndex: 0,
+      }),
+      session({
+        routeStepId: "step_1",
+        sectionTitle: "Future",
+        excerpt: "[材料1：Async Book]\nFuture 需要 poll。",
+      }),
+    );
+
+    expect(message).toContain("当前步骤：Future");
+    expect(message).toContain("## 参考材料\n[材料1：Async Book]");
+    expect(message).not.toContain("## 今日原文");
   });
 });
 

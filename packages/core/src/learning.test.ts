@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { LearningPlanStore } from "./learning.ts";
+import { LearningPlanStore, learningProgress } from "./learning.ts";
 
 const NOW = new Date("2026-07-15T08:00:00+08:00").getTime();
 
@@ -51,6 +51,199 @@ describe("LearningPlanStore", () => {
     expect(existsSync(join(dir, "config", "learning.json"))).toBe(true);
     expect(JSON.parse(readFileSync(join(dir, "config", "learning.json"), "utf8")).plans[plan.id].name)
       .toBe("读原则");
+  });
+
+  test("persists a topic plan with an explicit learning route", () => {
+    const store = new LearningPlanStore(dir);
+
+    const plan = store.createTopic({
+      name: "学习 Rust 异步编程",
+      topic: "Rust 异步编程",
+      space: "personal/ou_me",
+      creatorId: "ou_me",
+      chatId: "oc_p2p",
+      route: [
+        { title: "Future 基础", objective: "理解惰性求值与轮询模型" },
+        { title: "异步运行时", objective: "理解 executor、reactor 与任务调度" },
+        { title: "并发实践", objective: "能选择 join、select 与 spawn" },
+      ],
+    }, NOW);
+
+    expect(plan).toEqual(expect.objectContaining({
+      mode: "topic",
+      topic: "Rust 异步编程",
+      routeIndex: 0,
+    }));
+    expect(plan.adaptiveFocus).toBeUndefined();
+    expect(plan.route.map((step) => [step.title, step.status, step.attempts])).toEqual([
+      ["Future 基础", "active", 0],
+      ["异步运行时", "pending", 0],
+      ["并发实践", "pending", 0],
+    ]);
+    expect(store.source(plan.id)).toEqual(expect.objectContaining({
+      title: "主题：Rust 异步编程",
+      materials: [],
+      rawIds: [],
+    }));
+    expect(new LearningPlanStore(dir).get(plan.id)).toEqual(plan);
+  });
+
+  test("migrates pre-topic reading state on load", () => {
+    const store = new LearningPlanStore(dir);
+    const plan = createPlan(store);
+    const path = join(dir, "config", "learning.json");
+    const file = JSON.parse(readFileSync(path, "utf8")) as Record<string, any>;
+    delete file.plans[plan.id].mode;
+    delete file.plans[plan.id].route;
+    delete file.plans[plan.id].routeIndex;
+    delete file.sources[plan.sourceId].materials;
+    writeFileSync(path, JSON.stringify(file));
+
+    const migrated = new LearningPlanStore(dir);
+
+    expect(migrated.get(plan.id)).toEqual(expect.objectContaining({
+      mode: "reading",
+      route: [],
+      routeIndex: 0,
+    }));
+    expect(migrated.source(plan.id)?.materials).toEqual([
+      expect.objectContaining({ title: "书", rawIds: ["raw_1"] }),
+    ]);
+  });
+
+  test("appends distinct source materials to a topic plan without changing its route progress", () => {
+    const store = new LearningPlanStore(dir);
+    const plan = store.createTopic({
+      name: "学习 Rust",
+      topic: "Rust 异步编程",
+      space: "personal/ou_me",
+      creatorId: "ou_me",
+      chatId: "oc_p2p",
+      route: [
+        { title: "Future", objective: "理解 Future" },
+        { title: "运行时", objective: "理解运行时" },
+      ],
+    }, NOW);
+
+    expect(store.addMaterial(plan.id, "ou_other", {
+      title: "错误权限",
+      content: "不应写入",
+      rawIds: ["raw_wrong"],
+      messageId: "om_wrong",
+    }, NOW + 1)).toBeUndefined();
+    const updated = store.addMaterial(plan.id, "ou_me", {
+      title: "Rust Async Book",
+      content: "Future 是一种惰性计算。",
+      rawIds: ["raw_async"],
+      messageId: "om_async",
+    }, NOW + 2)!;
+
+    expect(updated).toEqual(expect.objectContaining({ routeIndex: 0, cursor: 0 }));
+    expect(store.source(plan.id)).toEqual(expect.objectContaining({
+      rawIds: ["raw_async"],
+      content: expect.stringContaining("# 来源材料：Rust Async Book"),
+      materials: [expect.objectContaining({
+        title: "Rust Async Book",
+        rawIds: ["raw_async"],
+        messageId: "om_async",
+      })],
+    }));
+    expect(() => store.addMaterial(plan.id, "ou_me", {
+      title: "重复材料",
+      content: "重复",
+      rawIds: ["raw_async_2"],
+      messageId: "om_async",
+    }, NOW + 3)).toThrow("已经添加");
+    expect(new LearningPlanStore(dir).source(plan.id)?.materials).toHaveLength(1);
+  });
+
+  test("keeps a weak topic step active and advances it only after mastery", () => {
+    const store = new LearningPlanStore(dir);
+    const plan = store.createTopic({
+      name: "学习 Rust",
+      topic: "Rust 异步编程",
+      space: "personal/ou_me",
+      creatorId: "ou_me",
+      chatId: "oc_p2p",
+      route: [
+        { title: "Future", objective: "理解 Future" },
+        { title: "运行时", objective: "理解运行时" },
+      ],
+    }, NOW);
+    const firstStep = plan.route[0]!;
+    const first = store.prepareSession(plan.id, {
+      startOffset: 0,
+      endOffset: 1,
+      routeStepId: firstStep.id,
+      sectionTitle: firstStep.title,
+      excerpt: "暂无用户材料",
+      guide: "## 今日目标\n理解 Future",
+      preparedAt: NOW + 1,
+    })!;
+    store.markDelivered(first.id, NOW + 2);
+
+    store.completeSession(first.id, {
+      learnerReply: "Future 是线程",
+      feedback: "还需要区分 Future 与线程",
+      mastery: "review",
+      nextFocus: "Future 的惰性轮询",
+      completedAt: NOW + 3,
+    });
+    expect(store.get(plan.id)).toEqual(expect.objectContaining({
+      routeIndex: 0,
+      adaptiveFocus: "Future 的惰性轮询",
+      status: "active",
+    }));
+    expect(store.get(plan.id)?.route[0]).toEqual(expect.objectContaining({
+      status: "active",
+      attempts: 1,
+    }));
+
+    const retry = store.prepareSession(plan.id, {
+      startOffset: 0,
+      endOffset: 1,
+      routeStepId: firstStep.id,
+      sectionTitle: firstStep.title,
+      excerpt: "暂无用户材料",
+      guide: "## 今日目标\n补强 Future",
+      preparedAt: NOW + 4,
+    })!;
+    store.markDelivered(retry.id, NOW + 5);
+    store.completeSession(retry.id, {
+      learnerReply: "Future 被 poll 才推进",
+      feedback: "已经掌握",
+      mastery: "ready",
+      nextFocus: "executor 如何调度 Future",
+      completedAt: NOW + 6,
+    });
+
+    expect(store.get(plan.id)).toEqual(expect.objectContaining({
+      routeIndex: 1,
+      adaptiveFocus: "executor 如何调度 Future",
+      status: "active",
+    }));
+    expect(store.get(plan.id)?.route.map((step) => [step.status, step.attempts])).toEqual([
+      ["completed", 2],
+      ["active", 0],
+    ]);
+
+    const secondStep = store.get(plan.id)!.route[1]!;
+    const second = store.prepareSession(plan.id, {
+      startOffset: 1,
+      endOffset: 2,
+      routeStepId: secondStep.id,
+      sectionTitle: secondStep.title,
+      excerpt: "暂无用户材料",
+      guide: "## 今日目标\n理解运行时",
+      preparedAt: NOW + 7,
+    })!;
+    store.markDelivered(second.id, NOW + 8);
+    store.skipCurrent(plan.id, "ou_me", NOW + 9);
+    expect(store.get(plan.id)).toEqual(expect.objectContaining({
+      routeIndex: 2,
+      status: "completed",
+    }));
+    expect(learningProgress(store.get(plan.id)!)).toBe(100);
   });
 
   test("keeps a prepared lesson retryable until delivery succeeds", () => {

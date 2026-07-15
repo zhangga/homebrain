@@ -47,6 +47,7 @@ import { TaskStore, type Task } from "./tasks.ts";
 import { ReminderStore, type Reminder } from "./reminders.ts";
 import {
   LearningPlanStore,
+  type LearningMastery,
   type LearningPlan,
   type LearningSession,
   type LearningSource,
@@ -109,6 +110,19 @@ export interface CreateLearningPlanFromMessageInput {
   dailyCharacters?: number;
 }
 
+export interface CreateTopicLearningPlanInput {
+  space: SpaceId;
+  chatId: string;
+  creatorId: string;
+  topic: string;
+  hour?: number;
+}
+
+interface TopicRouteResult {
+  name: string;
+  steps: { title: string; objective: string }[];
+}
+
 export interface LearningAnswerResult {
   plan: LearningPlan;
   session: LearningSession;
@@ -125,6 +139,63 @@ export type LearningDelivery = (
 /** How long a research task may run before the CLI is killed (much longer than Q&A). */
 const TASK_TIMEOUT_MS = 300_000;
 const LEARNING_TIMEOUT_MS = 300_000;
+
+const TOPIC_ROUTE_SCHEMA = {
+  type: "object",
+  properties: {
+    name: { type: "string", description: "简洁的中文学习计划名称" },
+    steps: {
+      type: "array",
+      minItems: 2,
+      maxItems: 12,
+      items: {
+        type: "object",
+        properties: {
+          title: { type: "string" },
+          objective: { type: "string" },
+        },
+        required: ["title", "objective"],
+      },
+    },
+  },
+  required: ["name", "steps"],
+} as const;
+
+function validateTopicRoute(raw: unknown): TopicRouteResult {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new Error("主题学习路线格式无效");
+  }
+  const item = raw as Record<string, unknown>;
+  const name = typeof item.name === "string" ? item.name.trim() : "";
+  const steps = Array.isArray(item.steps)
+    ? item.steps.map((value) => {
+        if (!value || typeof value !== "object" || Array.isArray(value)) {
+          throw new Error("主题学习路线步骤格式无效");
+        }
+        const step = value as Record<string, unknown>;
+        return {
+          title: typeof step.title === "string" ? step.title.trim() : "",
+          objective: typeof step.objective === "string" ? step.objective.trim() : "",
+        };
+      })
+    : [];
+  if (
+    !name || name.length > 100 || steps.length < 2 || steps.length > 12
+    || steps.some((step) => !step.title || !step.objective)
+  ) throw new Error("主题学习路线格式无效");
+  return { name, steps };
+}
+
+function topicRoutePrompt(topic: string): string {
+  return [
+    "你是一位中文课程设计师。请把主题拆成由浅入深、每天可完成一步的学习路线。",
+    `学习主题：${topic}`,
+    "要求：",
+    "- 规划 3—8 个步骤，每一步只包含一个明确知识目标。",
+    "- 路线只负责组织学习，不要声称已经检索或验证了外部资料。",
+    "- 名称简洁，步骤避免重复。",
+  ].join("\n");
+}
 
 /** Build the research prompt handed to the agent CLI for a task. */
 function researchPrompt(topic: string): string {
@@ -159,6 +230,54 @@ function learningGuidePrompt(plan: LearningPlan, segment: LearningSegment): stri
   ].join("\n");
 }
 
+function topicMaterialPacket(source: LearningSource): string {
+  if (source.materials.length === 0) {
+    return "暂无用户提供的来源材料。本课扩展内容来自模型一般知识，未经外部检索验证。";
+  }
+  const sections: string[] = [];
+  let remaining = 12_000;
+  for (const [index, material] of source.materials.entries()) {
+    if (remaining <= 0) break;
+    const text = source.content
+      .slice(material.startOffset, material.endOffset)
+      .trim()
+      .slice(0, Math.min(4_000, remaining));
+    if (!text) continue;
+    sections.push(`[材料${index + 1}：${material.title}]\n${text}`);
+    remaining -= text.length;
+  }
+  return sections.length > 0
+    ? sections.join("\n\n")
+    : "暂无可读取的用户来源材料。本课扩展内容来自模型一般知识，未经外部检索验证。";
+}
+
+function topicLearningGuidePrompt(
+  plan: LearningPlan,
+  step: LearningPlan["route"][number],
+  materials: string,
+): string {
+  return [
+    "你是一位严谨的中文学习教练。本课允许讲解一般知识，但必须把用户材料与模型扩展清楚分开。",
+    `学习主题：${plan.topic}`,
+    `当前步骤：${step.title}`,
+    `学习目标：${step.objective}`,
+    plan.adaptiveFocus ? `上次反馈后的补强重点：${plan.adaptiveFocus}` : "",
+    "",
+    "## 可用材料",
+    materials,
+    "",
+    "请输出 Markdown，并严格包含：",
+    "## 今日目标",
+    "## 来源材料",
+    "## 扩展知识",
+    "## 实践任务",
+    "## 思考题",
+    "要求：引用材料时使用 [材料1] 这样的标记；没有材料时明确写“暂无用户材料”。",
+    "扩展知识必须明确说明来自模型一般知识、未经外部检索验证；不要编造来源或链接。",
+    "思考题给出 2—3 个。",
+  ].filter(Boolean).join("\n");
+}
+
 function learningFeedbackPrompt(session: LearningSession, reply: string): string {
   return [
     "你是一位阅读教练。依据今日原文、导读和学习者回答给出具体反馈；不知道的内容不要猜。",
@@ -174,6 +293,55 @@ function learningFeedbackPrompt(session: LearningSession, reply: string): string
     "## 需要澄清",
     "## 今日总结",
     "## 下一步",
+  ].join("\n");
+}
+
+interface TopicFeedbackResult {
+  feedback: string;
+  mastery: LearningMastery;
+  nextFocus: string;
+}
+
+const TOPIC_FEEDBACK_SCHEMA = {
+  type: "object",
+  properties: {
+    feedback: { type: "string", description: "给学习者的 Markdown 反馈" },
+    mastery: { type: "string", enum: ["review", "ready"] },
+    nextFocus: { type: "string", description: "下一课应重点补强或衔接的具体知识点" },
+  },
+  required: ["feedback", "mastery", "nextFocus"],
+} as const;
+
+function validateTopicFeedback(raw: unknown): TopicFeedbackResult {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new Error("主题学习反馈格式无效");
+  }
+  const item = raw as Record<string, unknown>;
+  const feedback = typeof item.feedback === "string" ? item.feedback.trim() : "";
+  const mastery = item.mastery;
+  const nextFocus = typeof item.nextFocus === "string" ? item.nextFocus.trim() : "";
+  if (
+    !feedback || !nextFocus || !["review", "ready"].includes(String(mastery))
+  ) throw new Error("主题学习反馈格式无效");
+  return { feedback, mastery: mastery as LearningMastery, nextFocus };
+}
+
+function topicLearningFeedbackPrompt(session: LearningSession, reply: string): string {
+  return [
+    "你是一位严谨的中文学习教练。请依据本课目标、材料、课程内容和学习者回答判断掌握度。",
+    `当前步骤：${session.sectionTitle}`,
+    "## 本课材料",
+    session.excerpt,
+    "## 本课内容",
+    session.guide,
+    "## 学习者回答",
+    reply,
+    "",
+    "判定规则：",
+    "- review：存在关键误解、无法解释核心概念，下一课继续当前步骤并换一种方式补强。",
+    "- ready：已经达到本课目标，下一课进入路线中的下一个步骤。",
+    "feedback 使用 Markdown，至少包含“## 回应点评”和“## 今日总结”。",
+    "nextFocus 必须是一条具体、可用于生成下一课的学习重点。",
   ].join("\n");
 }
 
@@ -324,36 +492,102 @@ export class KnowledgeEngine implements Knowledge {
   }
 
   createLearningPlanFromMessage(input: CreateLearningPlanFromMessageInput): LearningPlan {
-    if (!this.registry.has(input.space)) {
-      throw new Error("没有找到可阅读的书籍内容");
-    }
-    const candidates = this.registry
-      .store(input.space)
-      .index()
-      .findRawsByMessageId(input.messageId, input.chatId)
-      .map((raw) => ({ raw, content: cleanLearningSource(raw.content) }))
-      .filter(({ content }) => content.length > 0)
-      .sort((a, b) => b.content.length - a.content.length);
-    const selected = candidates[0];
-    if (!selected) throw new Error("没有找到可阅读的书籍内容");
-
-    const attachmentTitle = selected.raw.attachments
-      ?.map((attachment) => attachment.name?.trim())
-      .find(Boolean);
-    const headingTitle = selected.content.match(/^#{1,3}\s+([^\n]+)/mu)?.[1]?.trim();
-    const sourceTitle = attachmentTitle || headingTitle || input.name.trim();
+    const selected = this.learningSourceFromMessage(
+      input.space,
+      input.chatId,
+      input.messageId,
+      input.name,
+    );
     return this.learning.create({
       name: input.name,
       space: input.space,
       creatorId: input.creatorId,
       chatId: input.chatId,
-      sourceTitle,
+      sourceTitle: selected.title,
       sourceContent: selected.content,
       sourceRawIds: [selected.raw.id],
       sourceMessageId: input.messageId,
       hour: input.hour,
       dailyCharacters: input.dailyCharacters,
     });
+  }
+
+  private learningSourceFromMessage(
+    space: SpaceId,
+    chatId: string,
+    messageId: string,
+    fallbackTitle: string,
+  ) {
+    if (!this.registry.has(space)) throw new Error("没有找到可阅读的书籍内容");
+    const candidates = this.registry
+      .store(space)
+      .index()
+      .findRawsByMessageId(messageId, chatId)
+      .map((raw) => ({ raw, content: cleanLearningSource(raw.content) }))
+      .filter(({ content }) => content.length > 0)
+      .sort((a, b) => b.content.length - a.content.length);
+    const selected = candidates[0];
+    if (!selected) throw new Error("没有找到可阅读的书籍内容");
+    const attachmentTitle = selected.raw.attachments
+      ?.map((attachment) => attachment.name?.trim())
+      .find(Boolean);
+    const headingTitle = selected.content.match(/^#{1,3}\s+([^\n]+)/mu)?.[1]?.trim();
+    return {
+      ...selected,
+      title: attachmentTitle || headingTitle || fallbackTitle.trim() || "学习材料",
+    };
+  }
+
+  async createTopicLearningPlan(input: CreateTopicLearningPlanInput): Promise<LearningPlan> {
+    const topic = input.topic.trim();
+    if (!this.registry.has(input.space)) throw new Error("没有找到学习空间");
+    if (!topic || topic.length > 200) throw new Error("请提供 1—200 字的学习主题");
+    const agent = this.agentForSpace(input.space);
+    const { value } = await this.llmClientForSpace(input.space, LEARNING_TIMEOUT_MS)
+      .completeJSON<TopicRouteResult>({
+        system: agent?.instruction || "你严格按 schema 输出结构化结果。",
+        prompt: topicRoutePrompt(topic),
+        schema: TOPIC_ROUTE_SCHEMA as unknown as Record<string, unknown>,
+        validate: validateTopicRoute,
+        model: agent?.model || undefined,
+        maxTokens: 1500,
+        purpose: "distill",
+        space: input.space,
+      });
+    return this.learning.createTopic({
+      name: value.name,
+      topic,
+      space: input.space,
+      creatorId: input.creatorId,
+      chatId: input.chatId,
+      route: value.steps,
+      hour: input.hour,
+    });
+  }
+
+  addLearningMaterialFromMessage(
+    planId: string,
+    actorId: string,
+    messageId: string,
+    now = Date.now(),
+  ): LearningPlan {
+    const plan = this.learning.get(planId);
+    if (!plan) throw new Error(`unknown learning plan: ${planId}`);
+    if (plan.creatorId !== actorId) throw new Error("只有学习计划创建者可以添加材料");
+    const selected = this.learningSourceFromMessage(
+      plan.space,
+      plan.chatId,
+      messageId,
+      plan.name,
+    );
+    const updated = this.learning.addMaterial(planId, actorId, {
+      title: selected.title,
+      content: selected.content,
+      rawIds: [selected.raw.id],
+      messageId,
+    }, now);
+    if (!updated) throw new Error("学习计划已经发生变化，请重试");
+    return updated;
   }
 
   async prepareLearningSession(planId: string, now = Date.now()): Promise<LearningSession> {
@@ -364,10 +598,35 @@ export class KnowledgeEngine implements Knowledge {
     if (plan.status !== "active") throw new Error(`learning plan is not active: ${planId}`);
     const source = this.learning.source(planId);
     if (!source) throw new Error(`learning source is missing: ${planId}`);
+    const agent = this.agentForSpace(plan.space);
+    if (plan.mode === "topic") {
+      const step = plan.route[plan.routeIndex];
+      if (!step) throw new Error(`learning topic route is complete: ${planId}`);
+      const excerpt = topicMaterialPacket(source);
+      const response = await this.llmClientForSpace(plan.space, LEARNING_TIMEOUT_MS).complete({
+        system: agent?.instruction || undefined,
+        prompt: topicLearningGuidePrompt(plan, step, excerpt),
+        model: agent?.model || undefined,
+        purpose: "distill",
+        space: plan.space,
+      });
+      const guide = response.text.trim();
+      if (!guide) throw new Error("learning lesson produced empty output");
+      const prepared = this.learning.prepareSession(planId, {
+        startOffset: plan.routeIndex,
+        endOffset: plan.routeIndex + 1,
+        routeStepId: step.id,
+        sectionTitle: step.title,
+        excerpt,
+        guide,
+        preparedAt: now,
+      });
+      if (!prepared) throw new Error(`learning plan changed while preparing: ${planId}`);
+      return prepared;
+    }
     const segment = nextLearningSegment(source.content, plan.cursor, plan.dailyCharacters);
     if (!segment) throw new Error(`learning source is complete: ${planId}`);
 
-    const agent = this.agentForSpace(plan.space);
     const response = await this.llmClientForSpace(plan.space, LEARNING_TIMEOUT_MS).complete({
       system: agent?.instruction || undefined,
       prompt: learningGuidePrompt(plan, segment),
@@ -439,15 +698,34 @@ export class KnowledgeEngine implements Knowledge {
     }
 
     const agent = this.agentForSpace(plan.space);
-    const response = await this.llmClientForSpace(plan.space, LEARNING_TIMEOUT_MS).complete({
-      system: agent?.instruction || undefined,
-      prompt: learningFeedbackPrompt(session, learnerReply),
-      model: agent?.model || undefined,
-      purpose: "distill",
-      space: plan.space,
-    });
-    const feedback = response.text.trim();
-    if (!feedback) throw new Error("learning feedback produced empty output");
+    let feedback: string;
+    let mastery: LearningMastery | undefined;
+    let nextFocus: string | undefined;
+    if (plan.mode === "topic") {
+      const result = await this.llmClientForSpace(plan.space, LEARNING_TIMEOUT_MS)
+        .completeJSON<TopicFeedbackResult>({
+          system: agent?.instruction || "你严格按 schema 输出结构化结果。",
+          prompt: topicLearningFeedbackPrompt(session, learnerReply),
+          schema: TOPIC_FEEDBACK_SCHEMA as unknown as Record<string, unknown>,
+          validate: validateTopicFeedback,
+          model: agent?.model || undefined,
+          purpose: "distill",
+          space: plan.space,
+        });
+      feedback = result.value.feedback;
+      mastery = result.value.mastery;
+      nextFocus = result.value.nextFocus;
+    } else {
+      const response = await this.llmClientForSpace(plan.space, LEARNING_TIMEOUT_MS).complete({
+        system: agent?.instruction || undefined,
+        prompt: learningFeedbackPrompt(session, learnerReply),
+        model: agent?.model || undefined,
+        purpose: "distill",
+        space: plan.space,
+      });
+      feedback = response.text.trim();
+      if (!feedback) throw new Error("learning feedback produced empty output");
+    }
     const rawId = await this.remember({
       space: plan.space,
       source: "learning",
@@ -468,6 +746,8 @@ export class KnowledgeEngine implements Knowledge {
       completed = this.learning.completeSession(session.id, {
         learnerReply,
         feedback,
+        mastery,
+        nextFocus,
         completedAt: now,
       });
     } catch (error) {
@@ -1000,6 +1280,15 @@ export class KnowledgeEngine implements Knowledge {
         learning: {
           total: learningPlans.length,
           ...learningCounts,
+          reading: learningPlans.filter((plan) => plan.mode === "reading").length,
+          topic: learningPlans.filter((plan) => plan.mode === "topic").length,
+          materials: learningPlans.reduce(
+            (count, plan) => count + (this.learning.source(plan.id)?.materials.length ?? 0),
+            0,
+          ),
+          reviewing: learningPlans.filter(
+            (plan) => plan.mode === "topic" && Boolean(plan.adaptiveFocus),
+          ).length,
           delivering: learningPlans.filter(
             (plan) => (this.deliveringLearningCounts.get(plan.id) ?? 0) > 0,
           ).length,

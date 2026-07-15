@@ -48,6 +48,22 @@ function makeFake(): FakeLlm {
       }
       return { resolved: false, title: "", triggerAt: "", untilConfirmed: false };
     }
+    if ("steps" in props) {
+      return {
+        name: "Rust 异步",
+        steps: [
+          { title: "Future", objective: "理解 Future" },
+          { title: "运行时", objective: "理解运行时" },
+        ],
+      };
+    }
+    if ("mastery" in props) {
+      return {
+        feedback: "## 回应点评\n理解正确\n\n## 今日总结\n掌握重点",
+        mastery: "ready",
+        nextFocus: "进入下一个知识点",
+      };
+    }
     if ("relevant" in props) {
       // route: pick the alice page when the question mentions 后端
       const prompt = String(call.prompt ?? "");
@@ -1206,6 +1222,17 @@ describe("orchestrator trunk (cli connector, no feishu)", () => {
 
     expect(connector.sent.at(-1)?.markdown).toContain("请回复包含书籍附件或飞书文档的原消息");
     expect(engine.learning.list()).toEqual([]);
+    expect(engine.registry.store("personal/ou_me").index().countRaw()).toBe(0);
+  });
+
+  test("/learn topic creates an adaptive route without capturing the control message", async () => {
+    await orch.start();
+    await connector.sendP2P("/learn topic Rust 异步编程");
+
+    expect(connector.sent.at(-1)?.markdown).toContain("已创建主题学习计划「Rust 异步」");
+    expect(engine.learning.listBySpace("personal/ou_me")).toEqual([
+      expect.objectContaining({ mode: "topic", topic: "Rust 异步编程", routeIndex: 0 }),
+    ]);
     expect(engine.registry.store("personal/ou_me").index().countRaw()).toBe(0);
   });
 

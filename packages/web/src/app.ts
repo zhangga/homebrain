@@ -1039,15 +1039,18 @@ export function createWebApp(opts: WebOptions): Hono {
 
   app.post("/learning/:id", async (c) => {
     const id = decodeURIComponent(c.req.param("id"));
-    if (!engine.learning.has(id)) return c.notFound();
+    const plan = engine.learning.get(id);
+    if (!plan) return c.notFound();
     const body = await c.req.parseBody();
     const hourText = str(body, "hour").trim();
     const dailyCharactersText = str(body, "dailyCharacters").trim();
     const hour = Number(hourText);
     const dailyCharacters = Number(dailyCharactersText);
     if (
-      !hourText || !dailyCharactersText
-      || !Number.isFinite(hour) || !Number.isFinite(dailyCharacters)
+      !hourText || !Number.isFinite(hour)
+      || (plan.mode === "reading" && (
+        !dailyCharactersText || !Number.isFinite(dailyCharacters)
+      ))
     ) {
       return c.redirect(
         `/learning/${encodeURIComponent(id)}?ok=${encodeURIComponent("保存失败：请输入有效数字")}`,
@@ -1055,7 +1058,7 @@ export function createWebApp(opts: WebOptions): Hono {
     }
     engine.learning.update(id, undefined, {
       hour,
-      dailyCharacters,
+      dailyCharacters: plan.mode === "reading" ? dailyCharacters : undefined,
     });
     return c.redirect(`/learning/${encodeURIComponent(id)}?ok=${encodeURIComponent("已保存")}`);
   });

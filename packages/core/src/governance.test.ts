@@ -99,7 +99,7 @@ describe("space data governance", () => {
     expect(archive).toEqual(
       expect.objectContaining({
         format: "homeagent.space",
-        version: 2,
+        version: 3,
         space: expect.objectContaining({ id: SPACE, name: "治理群", agentId: agent.id }),
         agent: expect.objectContaining({ id: agent.id, name: "治理助手" }),
         pages: [expect.objectContaining({ slug: page.slug, title: page.title })],
@@ -155,8 +155,83 @@ describe("space data governance", () => {
     const { learning: _learning, ...withoutLearning } = archive;
     const parsed = parseSpaceArchive({ ...withoutLearning, version: 1 });
 
-    expect(parsed.version).toBe(2);
+    expect(parsed.version).toBe(3);
     expect(parsed.learning).toEqual({ plans: [], sources: [], sessions: [] });
+  });
+
+  test("accepts version 2 reading archives and normalizes their learning fields", async () => {
+    const engine = new KnowledgeEngine({ dataDir: tempDir("ha-v2-archive-") });
+    engine.ensureSpace(SPACE);
+    const plan = engine.learning.create({
+      name: "读原则",
+      space: SPACE,
+      creatorId: "ou_owner",
+      chatId: "oc_governance",
+      sourceTitle: "principles.md",
+      sourceContent: "原则正文",
+      sourceRawIds: ["raw_book"],
+      sourceMessageId: "om_book",
+    }, 10);
+    const archive = JSON.parse(JSON.stringify(await engine.exportSpace(SPACE))) as Record<string, any>;
+    engine.close();
+    archive.version = 2;
+    delete archive.learning.plans[0].mode;
+    delete archive.learning.plans[0].topic;
+    delete archive.learning.plans[0].route;
+    delete archive.learning.plans[0].routeIndex;
+    delete archive.learning.plans[0].adaptiveFocus;
+    delete archive.learning.sources[0].materials;
+
+    const parsed = parseSpaceArchive(archive);
+
+    expect(parsed.version).toBe(3);
+    expect(parsed.learning.plans[0]).toEqual(expect.objectContaining({
+      id: plan.id,
+      mode: "reading",
+      route: [],
+      routeIndex: 0,
+    }));
+    expect(parsed.learning.sources[0]?.materials).toEqual([
+      expect.objectContaining({ title: "principles.md", rawIds: ["raw_book"] }),
+    ]);
+  });
+
+  test("version 3 archives preserve topic routes and material provenance", async () => {
+    const source = new KnowledgeEngine({ dataDir: tempDir("ha-v3-topic-source-") });
+    source.ensureSpace(SPACE, { chatId: "oc_governance" });
+    const plan = source.learning.createTopic({
+      name: "学习 Rust",
+      topic: "Rust 异步编程",
+      space: SPACE,
+      creatorId: "ou_owner",
+      chatId: "oc_governance",
+      route: [
+        { title: "Future", objective: "理解 Future" },
+        { title: "运行时", objective: "理解运行时" },
+      ],
+    }, 100);
+    source.learning.addMaterial(plan.id, "ou_owner", {
+      title: "Async Book",
+      content: "Future 只有在 poll 时推进。",
+      rawIds: ["raw_async"],
+      messageId: "om_async",
+    }, 101);
+
+    const archive = await source.exportSpace(SPACE);
+    expect(archive.version).toBe(3);
+    source.close();
+
+    const target = new KnowledgeEngine({ dataDir: tempDir("ha-v3-topic-target-") });
+    await target.restoreSpace(archive);
+    expect(target.learning.get(plan.id)).toEqual(expect.objectContaining({
+      mode: "topic",
+      topic: "Rust 异步编程",
+      route: expect.arrayContaining([expect.objectContaining({ title: "Future" })]),
+    }));
+    expect(target.learning.source(plan.id)?.materials).toEqual([
+      expect.objectContaining({ title: "Async Book", rawIds: ["raw_async"] }),
+    ]);
+    target.close();
   });
 
   test("deleting a space removes its knowledge and tasks but keeps shared agents", async () => {

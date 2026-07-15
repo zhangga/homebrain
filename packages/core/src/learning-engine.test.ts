@@ -77,6 +77,80 @@ describe("guided learning engine", () => {
     })).toThrow("没有找到可阅读的书籍内容");
   });
 
+  test("creates a topic plan from a model-generated route", async () => {
+    llm.queueJSON({
+      name: "Rust 异步编程入门",
+      steps: [
+        { title: "Future 基础", objective: "理解 Future 的惰性轮询" },
+        { title: "运行时", objective: "理解 executor 与 reactor" },
+        { title: "并发实践", objective: "能选择 join、select 和 spawn" },
+      ],
+    });
+
+    const plan = await engine.createTopicLearningPlan({
+      space: SPACE,
+      chatId: "oc_p2p",
+      creatorId: "ou_me",
+      topic: "Rust 异步编程",
+      hour: 9,
+    });
+
+    expect(plan).toEqual(expect.objectContaining({
+      name: "Rust 异步编程入门",
+      topic: "Rust 异步编程",
+      mode: "topic",
+      hour: 9,
+    }));
+    expect(plan.route.map((step) => step.title)).toEqual([
+      "Future 基础",
+      "运行时",
+      "并发实践",
+    ]);
+    expect(llm.calls.at(-1)).toEqual(expect.objectContaining({ kind: "json" }));
+    expect(llm.calls.at(-1)?.opts.prompt).toContain("Rust 异步编程");
+  });
+
+  test("adds a replied source to an owned topic plan", async () => {
+    llm.queueJSON({
+      name: "Rust 异步",
+      steps: [
+        { title: "Future", objective: "理解 Future" },
+        { title: "运行时", objective: "理解运行时" },
+      ],
+    });
+    const plan = await engine.createTopicLearningPlan({
+      space: SPACE,
+      chatId: "oc_p2p",
+      creatorId: "ou_me",
+      topic: "Rust 异步编程",
+    });
+    const rawId = await engine.remember({
+      space: SPACE,
+      source: "message",
+      author: "ou_me",
+      chatId: "oc_p2p",
+      messageId: "om_async_book",
+      content: "# 附件：async-book.md\n\n# Future\n\nFuture 是一种惰性计算。",
+      attachments: [{ kind: "file", ref: "file_async", name: "async-book.md" }],
+    });
+
+    expect(() => engine.addLearningMaterialFromMessage(
+      plan.id,
+      "ou_other",
+      "om_async_book",
+    )).toThrow("只有学习计划创建者");
+    const updated = engine.addLearningMaterialFromMessage(
+      plan.id,
+      "ou_me",
+      "om_async_book",
+    );
+
+    expect(updated.mode).toBe("topic");
+    expect(engine.learning.source(plan.id)?.materials).toEqual([
+      expect.objectContaining({ title: "async-book.md", rawIds: [rawId] }),
+    ]);
+  });
+
   test("prepares one grounded lesson without advancing reading progress", async () => {
     const content = `# 第一章\n\n${"正文".repeat(300)}`;
     const plan = engine.learning.create({
@@ -104,6 +178,50 @@ describe("guided learning engine", () => {
     expect(session.excerpt).toContain("# 第一章");
     expect(engine.learning.get(plan.id)?.cursor).toBe(0);
     expect(llm.calls.at(-1)?.opts.prompt).toContain(session.excerpt);
+  });
+
+  test("prepares a topic lesson that separates supplied material from model expansion", async () => {
+    llm.queueJSON({
+      name: "Rust 异步",
+      steps: [
+        { title: "Future 基础", objective: "理解 Future 的惰性轮询" },
+        { title: "运行时", objective: "理解运行时" },
+      ],
+    });
+    const plan = await engine.createTopicLearningPlan({
+      space: SPACE,
+      chatId: "oc_p2p",
+      creatorId: "ou_me",
+      topic: "Rust 异步编程",
+    });
+    engine.learning.addMaterial(plan.id, "ou_me", {
+      title: "Async Book",
+      content: "Future 只有在被 poll 时才会推进。",
+      rawIds: ["raw_async"],
+      messageId: "om_async",
+    }, NOW + 1);
+    llm.queueText([
+      "## 今日目标\n理解 Future",
+      "## 来源材料\n[材料1] Future 需要 poll",
+      "## 扩展知识\n以下来自模型一般知识",
+      "## 实践任务\n解释 poll",
+      "## 思考题\n为什么 Future 是惰性的？",
+    ].join("\n\n"));
+
+    const session = await engine.prepareLearningSession(plan.id, NOW + 2);
+
+    expect(session).toEqual(expect.objectContaining({
+      routeStepId: plan.route[0]?.id,
+      sectionTitle: "Future 基础",
+      startOffset: 0,
+      endOffset: 1,
+      excerpt: expect.stringContaining("[材料1：Async Book]"),
+    }));
+    const prompt = llm.calls.at(-1)?.opts.prompt ?? "";
+    expect(prompt).toContain("Future 只有在被 poll 时才会推进");
+    expect(prompt).toContain("## 来源材料");
+    expect(prompt).toContain("## 扩展知识");
+    expect(engine.learning.get(plan.id)?.routeIndex).toBe(0);
   });
 
   test("retries the same prepared lesson and marks it delivered only after transport succeeds", async () => {
@@ -167,6 +285,54 @@ describe("guided learning engine", () => {
       source: "learning",
       author: "ou_me",
       content: expect.stringContaining("## 我的回答\n作者强调原则"),
+    }));
+  });
+
+  test("uses structured mastery feedback to adapt the next topic lesson", async () => {
+    llm.queueJSON({
+      name: "Rust 异步",
+      steps: [
+        { title: "Future", objective: "理解 Future 的惰性轮询" },
+        { title: "运行时", objective: "理解 executor" },
+      ],
+    });
+    const plan = await engine.createTopicLearningPlan({
+      space: SPACE,
+      chatId: "oc_p2p",
+      creatorId: "ou_me",
+      topic: "Rust 异步编程",
+    });
+    llm.queueText("## 今日目标\n理解 Future\n\n## 思考题\nFuture 如何推进？");
+    await engine.deliverLearningSession(plan.id, NOW + 1, async () => {});
+    llm.queueJSON({
+      feedback: "## 回应点评\n把 Future 和线程混淆了\n\n## 今日总结\n需要补强轮询模型",
+      mastery: "review",
+      nextFocus: "用状态机解释 Future 的 poll 过程",
+    });
+
+    const result = await engine.answerLearningSession(
+      plan.id,
+      "ou_me",
+      "Future 就是一个后台线程",
+      NOW + 2,
+    );
+
+    expect(result.session).toEqual(expect.objectContaining({
+      mastery: "review",
+      nextFocus: "用状态机解释 Future 的 poll 过程",
+    }));
+    expect(result.plan).toEqual(expect.objectContaining({
+      routeIndex: 0,
+      adaptiveFocus: "用状态机解释 Future 的 poll 过程",
+    }));
+    llm.queueText("## 今日目标\n补强 poll 模型");
+    await engine.prepareLearningSession(plan.id, NOW + 3);
+    expect(llm.calls.at(-1)?.opts.prompt).toContain("用状态机解释 Future 的 poll 过程");
+    expect((await engine.health()).details?.learning).toEqual(expect.objectContaining({
+      topic: 1,
+      reading: 0,
+      materials: 0,
+      reviewing: 1,
     }));
   });
 
