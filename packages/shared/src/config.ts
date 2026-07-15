@@ -125,13 +125,31 @@ function settingsPath(dataDir: string): string {
   return join(dataDir, "config", "settings.json");
 }
 
+/** Prefer explicit model IDs over historical routing aliases in persisted config. */
+export function canonicalModelId(model: string): string {
+  const value = model.trim();
+  return value === "gpt-5.6" ? "gpt-5.6-sol" : value;
+}
+
 /** Read the persisted editable settings, tolerating a missing/corrupt file. */
 export function readSettings(dataDir: string): PersistedSettings {
   const path = settingsPath(dataDir);
   if (!existsSync(path)) return {};
   try {
     const parsed = JSON.parse(readFileSync(path, "utf8")) as PersistedSettings;
-    return parsed && typeof parsed === "object" ? parsed : {};
+    if (!parsed || typeof parsed !== "object") return {};
+    if (parsed.defaultModel !== undefined) {
+      const model = canonicalModelId(parsed.defaultModel);
+      if (model !== parsed.defaultModel) {
+        parsed.defaultModel = model;
+        try {
+          writeFileSync(path, JSON.stringify(parsed, null, 2), "utf8");
+        } catch {
+          // A read-only deployment can still use the canonical in-memory value.
+        }
+      }
+    }
+    return parsed;
   } catch {
     return {};
   }
@@ -235,6 +253,7 @@ export function saveSettings(patch: PersistedSettings, dataDir = config().dataDi
       (next as Record<string, unknown>)[key] = patch[key];
     }
   }
+  if (next.defaultModel !== undefined) next.defaultModel = canonicalModelId(next.defaultModel);
   mkdirSync(join(dataDir, "config"), { recursive: true });
   writeFileSync(settingsPath(dataDir), JSON.stringify(next, null, 2), "utf8");
   resetConfig();

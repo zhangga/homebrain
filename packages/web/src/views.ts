@@ -18,7 +18,7 @@ import type {
 } from "@homebrain/shared";
 import type { SpaceMeta, Agent, Task } from "@homebrain/core";
 import { AGENT_PERMISSIONS, TASK_CADENCES } from "@homebrain/core";
-import { CODEX_REASONING_EFFORTS, type DetectedProvider } from "@homebrain/llm";
+import { codexReasoningEffortsForModel, type DetectedProvider } from "@homebrain/llm";
 import type { FeishuRuntimeStatus } from "./integrations.ts";
 import type { FeishuExternalSharingStatus } from "./external-sharing.ts";
 import {
@@ -374,17 +374,44 @@ export function agentsView(
   if (modelVal && !initialModels.includes(modelVal)) {
     modelOpts.push(html`<option value="${modelVal}" selected>${modelVal}（自定义）</option>`);
   }
+  const reasoningModels = [...new Set(["", ...(models.codex ?? [])])];
+  const reasoningCatalog = Object.fromEntries(
+    reasoningModels.map((model) => [model, codexReasoningEffortsForModel(model || undefined)]),
+  );
+  const initialReasoningEfforts = providerVal === "codex"
+    ? codexReasoningEffortsForModel(modelVal || undefined)
+    : [];
 
   // A tiny client script: on provider change, rebuild the Model <select> from
   // the embedded catalog. No framework — plain DOM.
   const catalogJson = JSON.stringify(models);
+  const reasoningCatalogJson = JSON.stringify(reasoningCatalog);
+  const reasoningLabelsJson = JSON.stringify(reasoningEffortLabels);
   const modelScript = raw(`<script>
 (function(){
   var CATALOG = ${catalogJson};
+  var REASONING = ${reasoningCatalogJson};
+  var REASONING_LABELS = ${reasoningLabelsJson};
   var prov = document.getElementById('agent-provider');
   var model = document.getElementById('agent-model');
   var reasoning = document.getElementById('agent-reasoning-effort');
   if (!prov || !model || !reasoning) return;
+  function syncReasoning(){
+    var current = reasoning.value;
+    reasoning.disabled = prov.value !== 'codex';
+    reasoning.innerHTML = '';
+    var inherited = document.createElement('option');
+    inherited.value = ''; inherited.textContent = '默认（继承 Codex 配置）';
+    reasoning.appendChild(inherited);
+    if (reasoning.disabled) return;
+    var list = REASONING[model.value] || REASONING[''] || [];
+    list.forEach(function(effort){
+      var option = document.createElement('option');
+      option.value = effort; option.textContent = REASONING_LABELS[effort] || effort;
+      if (effort === current) option.selected = true;
+      reasoning.appendChild(option);
+    });
+  }
   prov.addEventListener('change', function(){
     var list = CATALOG[prov.value] || [];
     var cur = model.value;
@@ -398,9 +425,10 @@ export function agentsView(
       if (m === cur) o.selected = true;
       model.appendChild(o);
     });
-    reasoning.disabled = prov.value !== 'codex';
+    syncReasoning();
   });
-  reasoning.disabled = prov.value !== 'codex';
+  model.addEventListener('change', syncReasoning);
+  syncReasoning();
 })();
 </script>`);
 
@@ -444,10 +472,10 @@ export function agentsView(
               </select>
             </div>
             <div class="field">
-              <label>推理强度 <span class="hint">仅 Codex；级别越高通常越慢</span></label>
+              <label>推理强度 <span class="hint">仅 Codex；档位随模型变化，级别越高通常越慢</span></label>
               <select name="reasoningEffort" id="agent-reasoning-effort" ${providerVal === "codex" ? "" : "disabled"}>
                 <option value="" ${reasoningEffortVal === "" ? "selected" : ""}>默认（继承 Codex 配置）</option>
-                ${CODEX_REASONING_EFFORTS.map(
+                ${initialReasoningEfforts.map(
                   (effort) => html`<option value="${effort}" ${effort === reasoningEffortVal ? "selected" : ""}>${reasoningEffortLabels[effort] ?? effort}</option>`,
                 )}
               </select>

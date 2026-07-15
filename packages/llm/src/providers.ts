@@ -28,6 +28,38 @@ export type ProviderId = "gateway" | "claude" | "codex" | "trae-cli";
 export const CODEX_REASONING_EFFORTS = ["none", "low", "medium", "high", "xhigh", "max"] as const;
 export type CodexReasoningEffort = (typeof CODEX_REASONING_EFFORTS)[number];
 
+const STANDARD_REASONING_EFFORTS: readonly CodexReasoningEffort[] = [
+  "none",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+];
+const LEGACY_CODEX_REASONING_EFFORTS: readonly CodexReasoningEffort[] = [
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+];
+
+/** Reasoning choices verified for the selected Codex model. */
+export function codexReasoningEffortsForModel(
+  model?: string,
+): readonly CodexReasoningEffort[] {
+  if (model?.startsWith("gpt-5.6")) return CODEX_REASONING_EFFORTS;
+  if (model === "gpt-5.5" || model === "gpt-5.4" || model === "gpt-5.4-mini") {
+    return STANDARD_REASONING_EFFORTS;
+  }
+  return LEGACY_CODEX_REASONING_EFFORTS;
+}
+
+export function isCodexReasoningEffortSupported(
+  model: string | undefined,
+  effort: string,
+): effort is CodexReasoningEffort {
+  return codexReasoningEffortsForModel(model).includes(effort as CodexReasoningEffort);
+}
+
 /**
  * The default local CLI used when an agent doesn't specify one. "gateway" is no
  * longer a user-selectable provider (the internal API is only used by the claude

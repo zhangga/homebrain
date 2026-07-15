@@ -7,7 +7,7 @@ import {
   type RawSource,
   type SpaceId,
 } from "@homebrain/shared";
-import { CODEX_REASONING_EFFORTS, isCliProvider } from "@homebrain/llm";
+import { isCliProvider, isCodexReasoningEffortSupported } from "@homebrain/llm";
 import type { Agent } from "./agents.ts";
 import { AGENT_PERMISSIONS } from "./agents.ts";
 import { TASK_CADENCES, type Task } from "./tasks.ts";
@@ -119,10 +119,10 @@ function optionalText(value: unknown, label: string): string | undefined {
   return value === undefined ? undefined : text(value, label);
 }
 
-function reasoningEffort(value: unknown): Agent["reasoningEffort"] {
+function reasoningEffort(value: unknown, model: string): Agent["reasoningEffort"] {
   if (value === undefined || value === "") return "";
   const effort = text(value, "agent.reasoningEffort") as Agent["reasoningEffort"];
-  if (!CODEX_REASONING_EFFORTS.includes(effort as (typeof CODEX_REASONING_EFFORTS)[number])) {
+  if (!isCodexReasoningEffortSupported(model || undefined, effort)) {
     throw new Error("agent.reasoningEffort is invalid");
   }
   return effort;
@@ -199,12 +199,13 @@ function parseAgent(value: unknown): Agent {
   if (!isCliProvider(provider)) throw new Error("agent.provider is invalid");
   const permission = text(item.permission, "agent.permission") as Agent["permission"];
   if (!AGENT_PERMISSIONS.includes(permission)) throw new Error("agent.permission is invalid");
+  const model = text(item.model, "agent.model");
   return {
     id: nonemptyText(item.id, "agent.id"),
     name: text(item.name, "agent.name"),
     instruction: text(item.instruction, "agent.instruction"),
-    model: text(item.model, "agent.model"),
-    reasoningEffort: reasoningEffort(item.reasoningEffort),
+    model,
+    reasoningEffort: reasoningEffort(item.reasoningEffort, model),
     provider,
     visibility: optionalText(item.visibility, "agent.visibility"),
     workdir: optionalText(item.workdir, "agent.workdir"),

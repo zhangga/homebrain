@@ -18,9 +18,10 @@ import type {
   RawEntry,
   SpaceId,
 } from "@homebrain/shared";
-import { Serializer, config, logger } from "@homebrain/shared";
+import { Serializer, canonicalModelId, config, logger } from "@homebrain/shared";
 import {
   isCliProvider,
+  isCodexReasoningEffortSupported,
   runProvider as runLocalProvider,
   type ProviderId,
 } from "@homebrain/llm";
@@ -204,8 +205,16 @@ export class KnowledgeEngine implements Knowledge {
     const agent = this.agentForSpace(space);
     const cfg = config();
     const provider = agent?.provider || cfg.defaultProvider;
-    const model = agent?.model || cfg.defaultModel || undefined;
-    const reasoningEffort = provider === "codex" ? agent?.reasoningEffort || undefined : undefined;
+    const selectedModel = agent?.model || cfg.defaultModel || undefined;
+    const model = provider === "codex" && selectedModel
+      ? canonicalModelId(selectedModel)
+      : selectedModel;
+    const reasoningEffort =
+      provider === "codex" &&
+      agent?.reasoningEffort &&
+      isCodexReasoningEffortSupported(model, agent.reasoningEffort)
+        ? agent.reasoningEffort
+        : undefined;
     if (!isCliProvider(provider)) throw new NoProviderError(space);
     return makeCliClient(provider as ProviderId, model, this.runProvider, timeoutMs, reasoningEffort);
   }

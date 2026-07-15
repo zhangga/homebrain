@@ -1,5 +1,12 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, existsSync, readFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig, readSettings, saveSettings, resetConfig } from "./config.ts";
@@ -59,6 +66,16 @@ describe("editable settings overlay", () => {
     const cfg = loadConfig();
     expect(cfg.defaultProvider).toBe("trae-cli");
     expect(cfg.defaultModel).toBe("openrouter-3o");
+  });
+
+  test("canonicalizes the GPT-5.6 alias to the explicit Sol model id", () => {
+    const path = join(dir, "config", "settings.json");
+    mkdirSync(join(dir, "config"), { recursive: true });
+    writeFileSync(path, JSON.stringify({ defaultProvider: "codex", defaultModel: "gpt-5.6" }));
+
+    expect(loadConfig().defaultModel).toBe("gpt-5.6-sol");
+    expect(readSettings(dir).defaultModel).toBe("gpt-5.6-sol");
+    expect(JSON.parse(readFileSync(path, "utf8")).defaultModel).toBe("gpt-5.6-sol");
   });
 
   test("saveSettings writes config/settings.json and overlays it", () => {

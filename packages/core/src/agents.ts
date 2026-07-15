@@ -17,7 +17,12 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { CodexReasoningEffort, ProviderId } from "@homebrain/llm";
-import { CODEX_REASONING_EFFORTS, isCliProvider, DEFAULT_CLI_PROVIDER } from "@homebrain/llm";
+import {
+  DEFAULT_CLI_PROVIDER,
+  isCliProvider,
+  isCodexReasoningEffortSupported,
+} from "@homebrain/llm";
+import { canonicalModelId } from "@homebrain/shared";
 
 /** Task-execution permission tier (reserved; not enforced yet). */
 export type AgentPermission = "read-only" | "write" | "full";
@@ -79,15 +84,14 @@ function normalizePermission(raw?: string): AgentPermission {
 }
 
 /** Normalize a Codex reasoning level; unknown/empty => inherit the CLI default. */
-function normalizeReasoningEffort(raw?: string): CodexReasoningEffort | "" {
+function normalizeReasoningEffort(raw: string | undefined, model: string): CodexReasoningEffort | "" {
   const value = raw?.trim() as CodexReasoningEffort | undefined;
-  return value && CODEX_REASONING_EFFORTS.includes(value) ? value : "";
+  return value && isCodexReasoningEffortSupported(model || undefined, value) ? value : "";
 }
 
 /** Store the explicit GPT-5.6 Sol id instead of its shorter routing alias. */
 function normalizeModel(raw?: string): string {
-  const value = raw?.trim() ?? "";
-  return value === "gpt-5.6" ? "gpt-5.6-sol" : value;
+  return canonicalModelId(raw ?? "");
 }
 
 /** Parse skills from a string (comma/newline) or array into a clean string[]. */
@@ -124,7 +128,7 @@ export class AgentStore {
             // Backfill reserved task-execution fields for older records.
             if (a.permission === undefined) { a.permission = "read-only"; migrated = true; }
             if (!Array.isArray(a.skills)) { a.skills = normalizeSkills(a.skills as unknown as string); migrated = true; }
-            const reasoningEffort = normalizeReasoningEffort(a.reasoningEffort);
+            const reasoningEffort = normalizeReasoningEffort(a.reasoningEffort, a.model);
             if (reasoningEffort !== a.reasoningEffort) migrated = true;
             a.reasoningEffort = reasoningEffort;
             map.set(id, a);
@@ -160,12 +164,13 @@ export class AgentStore {
 
   create(input: AgentInput): Agent {
     const now = Date.now();
+    const model = normalizeModel(input.model);
     const agent: Agent = {
       id: `agent_${randomUUID()}`,
       name: input.name?.trim() || "未命名 Agent",
       instruction: input.instruction ?? "",
-      model: normalizeModel(input.model),
-      reasoningEffort: normalizeReasoningEffort(input.reasoningEffort),
+      model,
+      reasoningEffort: normalizeReasoningEffort(input.reasoningEffort, model),
       provider: normalizeProvider(input.provider),
       visibility: input.visibility?.trim() || "Team",
       workdir: input.workdir?.trim() || undefined,
@@ -186,7 +191,11 @@ export class AgentStore {
     if (input.name !== undefined) agent.name = input.name.trim() || agent.name;
     if (input.instruction !== undefined) agent.instruction = input.instruction;
     if (input.model !== undefined) agent.model = normalizeModel(input.model);
-    if (input.reasoningEffort !== undefined) agent.reasoningEffort = normalizeReasoningEffort(input.reasoningEffort);
+    if (input.reasoningEffort !== undefined) {
+      agent.reasoningEffort = normalizeReasoningEffort(input.reasoningEffort, agent.model);
+    } else if (input.model !== undefined) {
+      agent.reasoningEffort = normalizeReasoningEffort(agent.reasoningEffort, agent.model);
+    }
     if (input.provider !== undefined) agent.provider = normalizeProvider(input.provider);
     if (input.visibility !== undefined) agent.visibility = input.visibility.trim() || agent.visibility;
     if (input.workdir !== undefined) agent.workdir = input.workdir.trim() || undefined;

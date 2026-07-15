@@ -48,6 +48,13 @@ describe("AgentStore", () => {
     expect(agent.reasoningEffort).toBe("high");
     expect(new AgentStore(dir).get(agent.id)?.reasoningEffort).toBe("high");
     expect(store.create({ name: "无效配置", reasoningEffort: "extreme" }).reasoningEffort).toBe("");
+    expect(
+      store.create({ name: "旧模型", model: "gpt-5.5", reasoningEffort: "max" }).reasoningEffort,
+    ).toBe("");
+
+    expect(store.update(agent.id, { reasoningEffort: "max" })?.reasoningEffort).toBe("max");
+    const changed = store.update(agent.id, { model: "gpt-5.5" });
+    expect(changed?.reasoningEffort).toBe("");
   });
 
   test("reserved task-execution fields: defaults, parsing, and update", () => {

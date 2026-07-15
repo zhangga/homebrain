@@ -828,6 +828,23 @@ describe("management backend (read-write)", () => {
     expect(view).toContain("仅 Codex");
   });
 
+  test("rejects a reasoning effort unsupported by the selected Codex model", async () => {
+    const form = new URLSearchParams({
+      name: "旧模型助手",
+      provider: "codex",
+      model: "gpt-5.5",
+      reasoningEffort: "max",
+    });
+    const response = await app.request("/agents", {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: form.toString(),
+    });
+
+    expect([302, 303]).toContain(response.status);
+    expect(engine.agents.list().find((item) => item.name === "旧模型助手")?.reasoningEffort).toBe("");
+  });
+
   test("agents page shows detected providers; unavailable ones are disabled", async () => {
     const body = await (await app.request("/agents")).text();
     expect(body).toContain("Claude Code");

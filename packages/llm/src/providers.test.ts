@@ -1,11 +1,38 @@
 import { describe, expect, test } from "bun:test";
 import {
+  codexReasoningEffortsForModel,
   curatedProviderModels,
   detectProviders,
   isCliProvider,
   providerFailureDetail,
   runProvider,
 } from "./providers.ts";
+
+describe("Codex model capabilities", () => {
+  test("reasoning effort choices follow the selected model", () => {
+    expect(codexReasoningEffortsForModel("gpt-5.6-sol")).toEqual([
+      "none",
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max",
+    ]);
+    expect(codexReasoningEffortsForModel("gpt-5.5")).toEqual([
+      "none",
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+    ]);
+    expect(codexReasoningEffortsForModel("gpt-5.3-codex-spark")).toEqual([
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+    ]);
+  });
+});
 
 describe("provider detection", () => {
   test("honors managed binary overrides for detection and execution", async () => {
