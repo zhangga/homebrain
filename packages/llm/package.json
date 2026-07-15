@@ -1,5 +1,5 @@
 {
-  "name": "@homebrain/llm",
+  "name": "@homeagent/llm",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -8,6 +8,6 @@
     ".": "./src/index.ts"
   },
   "dependencies": {
-    "@homebrain/shared": "workspace:*"
+    "@homeagent/shared": "workspace:*"
   }
 }

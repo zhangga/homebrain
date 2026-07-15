@@ -4,7 +4,7 @@
  * fallback answers are already self-flagged by the ask pipeline. We keep the
  * formatting minimal and feishu-friendly (markdown reply).
  */
-import type { AskResult } from "@homebrain/shared";
+import type { AskResult } from "@homeagent/shared";
 
 export function formatAnswer(res: AskResult): string {
   const parts: string[] = [res.answer.trim()];

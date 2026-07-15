@@ -6,10 +6,10 @@
  * The markdown/DB on disk is authoritative for knowledge; this registry only
  * tracks lightweight operational metadata and space existence.
  */
-import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import type { SpaceId } from "@homebrain/shared";
-import { isSpaceId, spaceToDir } from "@homebrain/shared";
+import type { SpaceId } from "@homeagent/shared";
+import { isSpaceId, spaceToDir } from "@homeagent/shared";
 import type { SpaceMeta } from "./types.ts";
 import { SpaceStore } from "./space.ts";
 
@@ -83,6 +83,17 @@ export class SpaceRegistry {
     return this.meta.has(space);
   }
 
+  /** Return the logical owner of a colliding workspace path, if any. */
+  storageConflict(space: SpaceId): string | undefined {
+    const directory = spaceToDir(space);
+    const owner = this.list().find(
+      (meta) => meta.id !== space && spaceToDir(meta.id) === directory,
+    );
+    if (owner) return owner.id;
+    if (!this.meta.has(space) && this.store(space).exists()) return "unregistered workspace";
+    return undefined;
+  }
+
   /** Ensure a space exists on disk and is registered. Idempotent. */
   ensure(space: SpaceId, opts: { chatId?: string } = {}): SpaceStore {
     const store = this.store(space);
@@ -134,6 +145,40 @@ export class SpaceRegistry {
     if (patch.chatId !== undefined) m.chatId = patch.chatId;
     this.persist();
     return m;
+  }
+
+  /** Restore an authoritative metadata snapshot after the space is on disk. */
+  restoreMeta(meta: SpaceMeta): SpaceMeta {
+    this.ensure(meta.id, { chatId: meta.chatId });
+    const restored = { ...meta };
+    this.meta.set(meta.id, restored);
+    this.persist();
+    return restored;
+  }
+
+  /** Remove a registered space and its entire on-disk workspace. */
+  remove(space: SpaceId): boolean {
+    const original = this.meta.get(space);
+    if (!original) return false;
+    const store = this.stores.get(space) ?? new SpaceStore(space, this.dataDir);
+    store.close();
+    this.stores.delete(space);
+    this.meta.delete(space);
+    try {
+      // Persist the logical deletion first. If the process exits before the
+      // physical delete, startup discovery recovers the workspace via .spaceid.
+      this.persist();
+      rmSync(store.root, { recursive: true, force: true });
+    } catch (err) {
+      this.meta.set(space, original);
+      try {
+        this.persist();
+      } catch {
+        // Preserve the original failure; filesystem discovery is the fallback.
+      }
+      throw err;
+    }
+    return true;
   }
 
   closeAll(): void {

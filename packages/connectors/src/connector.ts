@@ -6,6 +6,14 @@
  * on these types, never on lark-cli — so the whole feishu surface is swappable
  * (plan R6: lark-cli breaking changes are absorbed in the feishu connector).
  */
+import type { Attachment } from "@homeagent/shared";
+
+export interface DownloadedAttachment {
+  attachment: Attachment;
+  localPath: string;
+  sizeBytes: number;
+  cleanup(): void;
+}
 
 /** Where a message came from — drives the reply gateway (Q2). */
 export type ChatType = "p2p" | "group";
@@ -26,6 +34,8 @@ export interface InboundMessage {
   text: string;
   /** message_id, needed to reply in-thread */
   messageId: string;
+  /** native message type, used to route direct attachments */
+  messageType?: string;
   /** true when the bot was @-mentioned (group gating, Q2) */
   mentionsBot: boolean;
   /** doc links found in the message (docx tokens/urls), for doc sync (Q8) */
@@ -55,6 +65,30 @@ export interface OutboundReply {
   inThread?: boolean;
 }
 
+/** The source message a user replied to when issuing a control command. */
+export interface ReplyTarget {
+  messageId: string;
+  senderId?: string;
+}
+
+export type ConsumerState = "starting" | "ready" | "backoff" | "failed" | "stopped";
+
+export interface ConsumerHealth {
+  key: string;
+  state: ConsumerState;
+  attempts: number;
+  lastReadyAt?: number;
+  lastEventAt?: number;
+  lastError?: string;
+}
+
+export interface ConnectorHealth {
+  name: string;
+  ready: boolean;
+  lastEventAt?: number;
+  consumers: ConsumerHealth[];
+}
+
 /**
  * The connector surface the orchestrator consumes. `start` streams normalized
  * events to `onEvent` until `stop` is called. `reply`/`notice` send outbound.
@@ -66,4 +100,16 @@ export interface Connector {
   reply(out: OutboundReply): Promise<void>;
   /** send a standalone message to a chat (e.g. group-added notice) */
   notice(chatId: string, markdown: string): Promise<void>;
+  /** add a platform-native reaction while a response is being prepared */
+  addReaction?(messageId: string, emojiType: string): Promise<string | undefined>;
+  /** remove a previously-added platform-native reaction */
+  removeReaction?(messageId: string, reactionId: string): Promise<void>;
+  /** resolve the original message targeted by a reply/thread command */
+  resolveReplyTarget?(messageId: string): Promise<ReplyTarget | undefined>;
+  /** whether a user may administer knowledge for the given group chat */
+  isChatAdministrator?(chatId: string, userId: string): Promise<boolean>;
+  /** download direct attachments associated with a platform message */
+  downloadAttachments?(messageId: string): Promise<DownloadedAttachment[]>;
+  /** current transport health for readiness probes and management UI */
+  health?(): ConnectorHealth;
 }

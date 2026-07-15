@@ -15,14 +15,14 @@
  */
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync, readdirSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
-import type { Page, SpaceId } from "@homebrain/shared";
-import { spaceToDir } from "@homebrain/shared";
+import type { Page, SpaceId } from "@homeagent/shared";
+import { spaceToDir } from "@homeagent/shared";
 import { SpaceIndex } from "./sqlite.ts";
 import { markdownToPage, pageToMarkdown } from "./markdown.ts";
 
 const DEFAULT_PURPOSE = `# 空间意图 (purpose)
 
-这是一个 homebrain 知识空间。此文件描述本空间收集与提炼知识的目标。
+这是一个 homeagent 知识空间。此文件描述本空间收集与提炼知识的目标。
 团队成员可编辑本文件，让 agent 更了解本空间关注什么。
 `;
 
@@ -86,6 +86,14 @@ export class SpaceStore {
     return existsSync(p) ? readFileSync(p, "utf8") : DEFAULT_SCHEMA;
   }
 
+  setPurpose(content: string): void {
+    writeFileSync(join(this.root, "purpose.md"), content, "utf8");
+  }
+
+  setSchema(content: string): void {
+    writeFileSync(join(this.root, "schema.md"), content, "utf8");
+  }
+
   private pagePath(slug: string): string {
     return join(this.wikiDir, `${slug}.md`);
   }
@@ -128,6 +136,15 @@ export class SpaceStore {
     };
     walk(this.wikiDir, "");
     return slugs;
+  }
+
+  /** Read every authoritative Markdown page, failing rather than exporting a partial backup. */
+  listPagesFromDisk(): Page[] {
+    return this.listPageFiles().sort().map((slug) => {
+      const page = this.readPageFile(slug);
+      if (!page) throw new Error(`knowledge page disappeared during export: ${slug}`);
+      return page;
+    });
   }
 
   /**

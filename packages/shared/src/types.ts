@@ -1,5 +1,5 @@
 /**
- * Core domain vocabulary shared across all homebrain packages.
+ * Core domain vocabulary shared across all homeagent packages.
  * Pure data shapes only — no behavior, no dependencies.
  */
 
@@ -130,6 +130,8 @@ export interface DreamReport {
   space: SpaceId;
   /** raw entries examined this run */
   examined: number;
+  /** raw ids successfully handled (distilled, skipped, cached, or quarantined) */
+  processedRawIds: string[];
   /** raw entries judged worth distilling */
   distilled: number;
   /** raw entries skipped as noise */
@@ -148,4 +150,21 @@ export interface HealthReport {
   ok: boolean;
   spaces: number;
   details?: Record<string, unknown>;
+}
+
+export type ComponentHealthStatus = "ok" | "degraded" | "down";
+
+export interface ComponentHealth {
+  status: ComponentHealthStatus;
+  summary: string;
+  details?: Record<string, unknown>;
+}
+
+/** Process-level health snapshot consumed by probes and the management UI. */
+export interface SystemHealthSnapshot {
+  status: ComponentHealthStatus;
+  /** whether the process can safely receive and handle new work */
+  ready: boolean;
+  checkedAt: number;
+  components: Record<string, ComponentHealth>;
 }

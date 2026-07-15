@@ -1,7 +1,7 @@
 /**
  * Serializer runs async tasks one-at-a-time per key, in FIFO order.
  *
- * homebrain writes knowledge from concurrent sources (feishu events, the
+ * homeagent writes knowledge from concurrent sources (feishu events, the
  * scheduler's dream cycle, manual web triggers). Interleaving writes to the
  * same space would corrupt the markdown/SQLite pair. Every mutating path funnels
  * through here keyed by SpaceId, so reads stay lock-free while writes to one

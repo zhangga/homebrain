@@ -9,9 +9,9 @@
  * of the current chat (when in a group). We keep this a pure function so the
  * policy is obvious and testable; the orchestrator applies it.
  */
-import type { SpaceId } from "@homebrain/shared";
-import { personalSpace, teamSpace } from "@homebrain/shared";
-import type { InboundMessage } from "@homebrain/connectors";
+import type { SpaceId } from "@homeagent/shared";
+import { personalSpace, teamSpace } from "@homeagent/shared";
+import type { InboundMessage } from "@homeagent/connectors";
 
 export interface Attribution {
   /** where this message's content is remembered */

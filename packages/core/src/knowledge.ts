@@ -13,12 +13,21 @@ import type {
   PageRef,
   RawEntry,
   SpaceId,
-} from "@homebrain/shared";
-import type { AskOptions, DreamOptions, SearchOptions } from "./types.ts";
+} from "@homeagent/shared";
+import type {
+  AskOptions,
+  DreamOptions,
+  RetractionRequest,
+  RetractionResult,
+  SearchOptions,
+} from "./types.ts";
 
 export interface Knowledge {
   /** Cheap capture — persists a raw entry, no LLM call. */
   remember(entry: RawEntry): Promise<string>;
+
+  /** Remove one captured message, enforcing source ownership. */
+  retractMessage(space: SpaceId, request: RetractionRequest): Promise<RetractionResult>;
 
   /** Nightly distillation: turn pending raw entries into wiki pages. */
   runDreamCycle(space: SpaceId, opts?: DreamOptions): Promise<DreamReport>;

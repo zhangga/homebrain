@@ -1,11 +1,11 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { JSONOptions } from "@homebrain/llm";
-import { resetConfig } from "@homebrain/shared";
-import { KnowledgeEngine, FakeLlm } from "@homebrain/core";
-import { CliConnector } from "@homebrain/connectors";
+import type { JSONOptions } from "@homeagent/llm";
+import { resetConfig, saveSettings, type SpaceId } from "@homeagent/shared";
+import { KnowledgeEngine, FakeLlm, type AgentInput } from "@homeagent/core";
+import { CliConnector, type Connector } from "@homeagent/connectors";
 import { Orchestrator } from "./runtime.ts";
 
 let dir: string;
@@ -13,6 +13,11 @@ let engine: KnowledgeEngine;
 let connector: CliConnector;
 let orch: Orchestrator;
 let fake: FakeLlm;
+const cliOnlyRuntimes: Array<{
+  engine: KnowledgeEngine;
+  connector: CliConnector;
+  orchestrator: Orchestrator;
+}> = [];
 
 /**
  * One fake serves classification, routing, and synthesis by inspecting each
@@ -30,6 +35,18 @@ function makeFake(): FakeLlm {
       if (/[?？]/.test(prompt)) return { intent: "question" };
       if (/记住|记下/.test(prompt)) return { intent: "remember" };
       return { intent: "chitchat" };
+    }
+    if ("triggerAt" in props) {
+      const prompt = String(call.prompt ?? "");
+      if (/@agent 7\.22日上午七点半/u.test(prompt)) {
+        return {
+          resolved: true,
+          title: "购买8.5日北京去苏州的火车票",
+          triggerAt: "2026-07-22T07:30:00+08:00",
+          untilConfirmed: false,
+        };
+      }
+      return { resolved: false, title: "", triggerAt: "", untilConfirmed: false };
     }
     if ("relevant" in props) {
       // route: pick the alice page when the question mentions 后端
@@ -51,9 +68,30 @@ function makeFake(): FakeLlm {
   return f;
 }
 
+function makeCliOnlyRuntime(
+  cliEngine: KnowledgeEngine,
+  space: SpaceId,
+  agentInput?: AgentInput,
+) {
+  cliEngine.ensureSpace(space);
+  if (agentInput) {
+    const agent = cliEngine.agents.create(agentInput);
+    cliEngine.registry.updateMeta(space, { agentId: agent.id });
+  }
+  const cliConnector = new CliConnector({
+    groupChatId: "oc_team",
+    p2pChatId: "oc_dm",
+    userId: "ou_me",
+  });
+  const cliOrch = new Orchestrator({ engine: cliEngine, connector: cliConnector });
+  const runtime = { engine: cliEngine, connector: cliConnector, orchestrator: cliOrch };
+  cliOnlyRuntimes.push(runtime);
+  return runtime;
+}
+
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "hb-orch-"));
-  process.env.HOMEBRAIN_DATA_DIR = dir;
+  process.env.HOMEAGENT_DATA_DIR = dir;
   resetConfig();
   fake = makeFake();
   engine = new KnowledgeEngine({ dataDir: dir, llm: fake });
@@ -62,10 +100,14 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
+  for (const runtime of cliOnlyRuntimes.splice(0)) {
+    await runtime.orchestrator.stop();
+    runtime.engine.close();
+  }
   await orch.stop();
   engine.close();
   rmSync(dir, { recursive: true, force: true });
-  delete process.env.HOMEBRAIN_DATA_DIR;
+  delete process.env.HOMEAGENT_DATA_DIR;
   resetConfig();
 });
 
@@ -117,6 +159,519 @@ describe("orchestrator trunk (cli connector, no feishu)", () => {
     expect(connector.sent[0]!.markdown).toContain("记下");
     expect(engine.registry.has("personal/ou_me")).toBe(true);
     expect(engine.registry.store("personal/ou_me").index().countRaw(true)).toBe(1);
+  });
+
+  test("an addressed natural-language reminder creates a durable reminder", async () => {
+    const before = Date.now();
+    await orch.start();
+    await connector.sendGroup("@agent 1小时后提醒我喝水", true);
+
+    const reminders = engine.reminders.list();
+    expect(reminders).toHaveLength(1);
+    expect(reminders[0]).toEqual(expect.objectContaining({
+      title: "喝水",
+      space: "team/oc_team",
+      chatId: "oc_team",
+      creatorId: "ou_me",
+      status: "scheduled",
+    }));
+    expect(reminders[0]!.triggerAt).toBeGreaterThanOrEqual(before + 3600_000);
+    expect(reminders[0]!.triggerAt).toBeLessThanOrEqual(Date.now() + 3600_000);
+    expect(connector.sent.at(-1)?.markdown).toContain("已创建提醒");
+    expect(connector.sent.at(-1)?.markdown).toContain("喝水");
+    expect(engine.registry.store("team/oc_team").index().countRaw()).toBe(0);
+  });
+
+  test("asking for the coming week lists scheduled reminders instead of searching the wiki", async () => {
+    const now = Date.now();
+    engine.reminders.create({
+      title: "去茶饼斋",
+      space: "team/oc_team",
+      chatId: "oc_team",
+      creatorId: "ou_me",
+      triggerAt: now + 2 * 3600_000,
+    }, now);
+    engine.reminders.create({
+      title: "他人的私密安排",
+      space: "team/oc_team",
+      chatId: "oc_team",
+      creatorId: "ou_other",
+      triggerAt: now + 3 * 3600_000,
+    }, now);
+    await orch.start();
+    await connector.sendGroup("@agent 我最近一周有什么安排吗", true);
+
+    expect(connector.sent.at(-1)?.markdown).toContain("未来 7 天的安排");
+    expect(connector.sent.at(-1)?.markdown).toContain("去茶饼斋");
+    expect(connector.sent.at(-1)?.markdown).not.toContain("他人的私密安排");
+    expect(engine.registry.store("team/oc_team").index().countRaw()).toBe(0);
+  });
+
+  test("the creator can confirm a repeating reminder in natural language", async () => {
+    const now = Date.now();
+    const reminder = engine.reminders.create({
+      title: "确认去大同",
+      space: "team/oc_team",
+      chatId: "oc_team",
+      creatorId: "ou_me",
+      triggerAt: now + 3600_000,
+      repeatEveryMs: 3 * 3600_000,
+      untilConfirmed: true,
+    }, now)!;
+    await orch.start();
+    await connector.sendGroup("@agent 确认去大同", true);
+
+    expect(engine.reminders.get(reminder.id)?.status).toBe("completed");
+    expect(connector.sent.at(-1)?.markdown).toContain("已完成提醒");
+    expect(connector.sent.at(-1)?.markdown).toContain("确认去大同");
+  });
+
+  test("confirmation prefers the exact reminder title over an ambiguous partial match", async () => {
+    const now = Date.now();
+    const shorter = engine.reminders.create({
+      title: "去大同",
+      space: "team/oc_team",
+      chatId: "oc_team",
+      creatorId: "ou_me",
+      triggerAt: now + 1800_000,
+    }, now)!;
+    const exact = engine.reminders.create({
+      title: "确认去大同",
+      space: "team/oc_team",
+      chatId: "oc_team",
+      creatorId: "ou_me",
+      triggerAt: now + 3600_000,
+      repeatEveryMs: 3 * 3600_000,
+      untilConfirmed: true,
+    }, now)!;
+    await orch.start();
+    await connector.sendGroup("@agent 确认去大同", true);
+
+    expect(engine.reminders.get(shorter.id)?.status).toBe("scheduled");
+    expect(engine.reminders.get(exact.id)?.status).toBe("completed");
+  });
+
+  test("the creator can cancel a scheduled reminder in natural language", async () => {
+    const now = Date.now();
+    const reminder = engine.reminders.create({
+      title: "去茶饼斋",
+      space: "team/oc_team",
+      chatId: "oc_team",
+      creatorId: "ou_me",
+      triggerAt: now + 3600_000,
+    }, now)!;
+    await orch.start();
+    await connector.sendGroup("@agent 取消去茶饼斋的提醒", true);
+
+    expect(engine.reminders.get(reminder.id)?.status).toBe("cancelled");
+    expect(connector.sent.at(-1)?.markdown).toContain("已取消提醒：去茶饼斋");
+  });
+
+  test("the creator can snooze a scheduled reminder by a duration", async () => {
+    const before = Date.now();
+    const reminder = engine.reminders.create({
+      title: "去茶饼斋",
+      space: "team/oc_team",
+      chatId: "oc_team",
+      creatorId: "ou_me",
+      triggerAt: before + 3600_000,
+    }, before)!;
+    await orch.start();
+    await connector.sendGroup("@agent 把去茶饼斋的提醒延后2小时", true);
+
+    const updated = engine.reminders.get(reminder.id)!;
+    expect(updated.nextTriggerAt).toBeGreaterThanOrEqual(before + 2 * 3600_000);
+    expect(updated.nextTriggerAt).toBeLessThanOrEqual(Date.now() + 2 * 3600_000);
+    expect(connector.sent.at(-1)?.markdown).toContain("已延后提醒：去茶饼斋");
+  });
+
+  test("a reminder without a time asks for one instead of pretending it was saved", async () => {
+    await orch.start();
+    await connector.sendGroup("@agent 提醒我喝水", true);
+
+    expect(engine.reminders.list()).toEqual([]);
+    expect(connector.sent.at(-1)?.markdown).toContain("没有识别到具体时间");
+    expect(connector.sent.at(-1)?.markdown).toContain("明天上午 9 点");
+  });
+
+  test("asks for confirmation before creating an LLM-inferred reminder", async () => {
+    await orch.start();
+    await connector.sendGroup(
+      "@agent 7.22日上午七点半提醒我购买8.5日北京去苏州的火车票",
+      true,
+    );
+
+    expect(engine.reminders.list()).toEqual([]);
+    expect(connector.sent.at(-1)?.markdown).toContain("请确认");
+    expect(connector.sent.at(-1)?.markdown).toContain("2026");
+    expect(connector.sent.at(-1)?.markdown).toContain("购买8.5日北京去苏州的火车票");
+
+    await connector.inject({
+      kind: "message",
+      eventId: "other-user-confirmation",
+      chatType: "group",
+      chatId: "oc_team",
+      senderId: "ou_other",
+      text: "确认",
+      messageId: "om_other-confirmation",
+      mentionsBot: false,
+      createdAt: Date.now(),
+    });
+    expect(engine.reminders.list()).toEqual([]);
+
+    await connector.sendGroup("确认", false);
+
+    expect(engine.reminders.list()).toEqual([
+      expect.objectContaining({
+        title: "购买8.5日北京去苏州的火车票",
+        triggerAt: new Date("2026-07-22T07:30:00+08:00").getTime(),
+        sourceMessageId: "om_cli-1",
+        status: "scheduled",
+      }),
+    ]);
+    expect(connector.sent.at(-1)?.markdown).toContain("已创建提醒");
+  });
+
+  test("cancels an inferred reminder candidate without creating it", async () => {
+    await orch.start();
+    await connector.sendGroup(
+      "@agent 7.22日上午七点半提醒我购买8.5日北京去苏州的火车票",
+      true,
+    );
+    await connector.sendGroup("取消", false);
+
+    expect(engine.reminders.list()).toEqual([]);
+    expect(connector.sent.at(-1)?.markdown).toContain("已取消创建提醒");
+  });
+
+  test("a new unresolved reminder request supersedes an older inferred candidate", async () => {
+    await orch.start();
+    await connector.sendGroup(
+      "@agent 7.22日上午七点半提醒我购买8.5日北京去苏州的火车票",
+      true,
+    );
+    await connector.sendGroup("@agent 提醒我喝水", true);
+    expect(connector.sent.at(-1)?.markdown).toContain("没有识别到具体时间");
+
+    await connector.sendGroup("确认", false);
+    expect(engine.reminders.list()).toEqual([]);
+  });
+
+  test("replying 别记这条 retracts the source and does not capture the command", async () => {
+    const reactive = connector as CliConnector & Connector;
+    reactive.resolveReplyTarget = async () => ({
+      messageId: "om_cli-1",
+      senderId: "ou_me",
+    });
+
+    await orch.start();
+    await connector.sendGroup("本群测试代号是北极星", false);
+    await connector.sendGroup("@小强Bot 别记这条", true);
+
+    expect(connector.sent.at(-1)?.markdown).toContain("已撤回");
+    await connector.sendGroup("@小强Bot 别记这条", true);
+    expect(connector.sent.at(-1)?.markdown).toContain("已经撤回过了");
+    expect(
+      await engine.retractMessage("team/oc_team", {
+        chatId: "oc_team",
+        messageId: "om_cli-1",
+        requestedBy: "ou_me",
+      }),
+    ).toEqual({ status: "already_retracted", affectedPages: [], requeuedSourceIds: [] });
+    expect((await engine.runDreamCycle("team/oc_team")).examined).toBe(0);
+  });
+
+  test("retraction without a reply target gives actionable guidance", async () => {
+    const reactive = connector as CliConnector & Connector;
+    reactive.resolveReplyTarget = async () => undefined;
+
+    await orch.start();
+    await connector.sendGroup("别记这条", true);
+
+    expect(connector.sent.at(-1)?.markdown).toContain("请回复要撤回的那条原消息");
+    expect((await engine.runDreamCycle("team/oc_team")).examined).toBe(0);
+  });
+
+  test("group retraction requires an explicit bot mention even when mentions-only is disabled", async () => {
+    const reactive = connector as CliConnector & Connector;
+    let resolvedTarget = false;
+    reactive.resolveReplyTarget = async () => {
+      resolvedTarget = true;
+      return { messageId: "om_target", senderId: "ou_me" };
+    };
+    engine.ensureSpace("team/oc_team", { chatId: "oc_team" });
+    engine.registry.updateMeta("team/oc_team", { mentionsOnly: false });
+
+    await orch.start();
+    await connector.sendGroup("别记这条", false);
+
+    expect(connector.sent.at(-1)?.markdown).toContain("@我");
+    expect(resolvedTarget).toBe(false);
+    expect(engine.registry.store("team/oc_team").index().countRaw()).toBe(0);
+  });
+
+  test("a question containing 撤回 is not mistaken for a retraction command", async () => {
+    const reactive = connector as CliConnector & Connector;
+    reactive.resolveReplyTarget = async () => {
+      throw new Error("should not resolve a reply target for a normal question");
+    };
+
+    await orch.start();
+    await connector.sendGroup("怎么撤回知识？", true);
+
+    expect(connector.sent.at(-1)?.markdown).not.toContain("请回复要撤回的那条原消息");
+    expect((await engine.runDreamCycle("team/oc_team")).examined).toBe(1);
+  });
+
+  test("retraction refuses to remove another user's message", async () => {
+    const reactive = connector as CliConnector & Connector;
+    reactive.resolveReplyTarget = async () => ({ messageId: "om_other", senderId: "ou_other" });
+
+    await orch.start();
+    await connector.inject({
+      kind: "message",
+      eventId: "evt_other",
+      chatType: "group",
+      chatId: "oc_team",
+      senderId: "ou_other",
+      text: "别人的知识",
+      messageId: "om_other",
+      mentionsBot: false,
+      createdAt: Date.now(),
+    });
+    await connector.sendGroup("别记这条", true);
+
+    expect(connector.sent.at(-1)?.markdown).toContain("只有原作者、群主或群管理员可以撤回");
+    expect(
+      await engine.retractMessage("team/oc_team", {
+        chatId: "oc_team",
+        messageId: "om_other",
+        requestedBy: "ou_other",
+      }),
+    ).toEqual({ status: "retracted", affectedPages: [], requeuedSourceIds: [] });
+    expect((await engine.runDreamCycle("team/oc_team")).examined).toBe(0);
+  });
+
+  test("group administrator can retract another user's message", async () => {
+    const reactive = connector as CliConnector & Connector;
+    reactive.resolveReplyTarget = async () => ({ messageId: "om_other", senderId: "ou_other" });
+    reactive.isChatAdministrator = async () => true;
+
+    await orch.start();
+    await connector.inject({
+      kind: "message",
+      eventId: "evt_other",
+      chatType: "group",
+      chatId: "oc_team",
+      senderId: "ou_other",
+      text: "群管理员可以治理的知识",
+      messageId: "om_other",
+      mentionsBot: false,
+      createdAt: Date.now(),
+    });
+    await connector.sendGroup("别记这条", true);
+
+    expect(connector.sent.at(-1)?.markdown).toContain("已撤回");
+    expect(
+      await engine.retractMessage("team/oc_team", {
+        chatId: "oc_team",
+        messageId: "om_other",
+        requestedBy: "ou_other",
+      }),
+    ).toEqual({ status: "already_retracted", affectedPages: [], requeuedSourceIds: [] });
+  });
+
+  test("retraction finishes rebuilding affected knowledge before confirming", async () => {
+    const removedId = await engine.remember({
+      space: "team/oc_team",
+      source: "message",
+      author: "ou_me",
+      chatId: "oc_team",
+      messageId: "om_remove",
+      content: "项目代号是北极星",
+    });
+    const survivingId = await engine.remember({
+      space: "team/oc_team",
+      source: "message",
+      author: "ou_me",
+      chatId: "oc_team",
+      messageId: "om_keep",
+      content: "项目负责人是 Alice",
+    });
+    engine.registry.store("team/oc_team").index().markIngested([removedId, survivingId]);
+    await engine.upsertPage("team/oc_team", {
+      slug: "concepts/project-facts",
+      type: "concept",
+      title: "项目信息",
+      summary: "项目代号与负责人",
+      aliases: [],
+      tags: [],
+      sources: [removedId, survivingId],
+      links: [],
+      content: "# 项目信息\n项目代号是北极星，负责人是 Alice。\n",
+      updatedAt: Date.now(),
+      contentHash: "before-retraction",
+    });
+    // Older unrelated pending entries fill the normal 40-entry dream batch.
+    // Retraction rebuild must target the surviving source instead of claiming
+    // success after processing this unrelated backlog.
+    for (let i = 0; i < 40; i += 1) {
+      await engine.remember({
+        space: "team/oc_team",
+        source: "message",
+        author: "ou_me",
+        chatId: "oc_team",
+        messageId: `om_backlog_${i}`,
+        content: `待整理历史消息 ${i}`,
+        createdAt: i + 1,
+      });
+    }
+    fake.onJSON((call) => {
+      const props = (call.schema as { properties?: Record<string, unknown> }).properties ?? {};
+      if ("operations" in props) {
+        return {
+          operations: [
+            {
+              type: "concept",
+              name: "project-facts",
+              title: "项目信息",
+              rawIds: [survivingId],
+            },
+          ],
+          skippedRawIds: [],
+        };
+      }
+      return {
+        title: "项目信息",
+        summary: "项目负责人",
+        aliases: [],
+        tags: [],
+        links: [],
+        content: "# 项目信息\n项目负责人是 Alice。",
+      };
+    });
+    const reactive = connector as CliConnector & Connector;
+    reactive.resolveReplyTarget = async () => ({ messageId: "om_remove", senderId: "ou_me" });
+
+    await orch.start();
+    await connector.sendGroup("别记这条", true);
+
+    expect(connector.sent.at(-1)?.markdown).toContain("已重新提炼");
+    const rebuilt = await engine.getPage("team/oc_team", "concepts/project-facts");
+    expect(rebuilt?.content).toContain("Alice");
+    expect(rebuilt?.content).not.toContain("北极星");
+    expect(engine.registry.store("team/oc_team").index().getRaw(survivingId)?.ingested).toBe(true);
+  });
+
+  test("shows a transient thinking reaction only for messages that get a reply", async () => {
+    const events: string[] = [];
+    const reactive = connector as CliConnector & Connector;
+    const originalReply = connector.reply.bind(connector);
+    reactive.addReaction = async (messageId, emojiType) => {
+      events.push(`add:${messageId}:${emojiType}`);
+      return "reaction_1";
+    };
+    reactive.removeReaction = async (messageId, reactionId) => {
+      events.push(`remove:${messageId}:${reactionId}`);
+    };
+    reactive.reply = async (out) => {
+      events.push("reply");
+      await originalReply(out);
+    };
+
+    await orch.start();
+    await connector.sendP2P("在吗");
+    expect(events).toEqual([
+      "add:om_cli-1:THINKING",
+      "reply",
+      "remove:om_cli-1:reaction_1",
+    ]);
+
+    events.length = 0;
+    await connector.sendGroup("这条只需要收录", false);
+    expect(events).toEqual([]);
+  });
+
+  test("shows thinking while a reply-bound attachment is still downloading", async () => {
+    const events: string[] = [];
+    let markDownloadStarted!: () => void;
+    let releaseDownload!: () => void;
+    const downloadStarted = new Promise<void>((resolve) => {
+      markDownloadStarted = resolve;
+    });
+    const downloadGate = new Promise<void>((resolve) => {
+      releaseDownload = resolve;
+    });
+
+    const reactive = connector as CliConnector & Connector;
+    const originalReply = connector.reply.bind(connector);
+    reactive.addReaction = async (messageId, emojiType) => {
+      events.push(`add:${messageId}:${emojiType}`);
+      return "reaction_attachment";
+    };
+    reactive.removeReaction = async (messageId, reactionId) => {
+      events.push(`remove:${messageId}:${reactionId}`);
+    };
+    reactive.reply = async (out) => {
+      events.push("reply");
+      await originalReply(out);
+    };
+
+    orch = new Orchestrator({
+      engine,
+      connector,
+      llm: fake,
+      attachmentDownloader: async () => {
+        events.push("download:start");
+        markDownloadStarted();
+        await downloadGate;
+        return [{
+          attachment: { kind: "file" as const, ref: "file_slow", name: "slow.txt" },
+          localPath: "/tmp/slow.txt",
+          sizeBytes: 1,
+          cleanup: () => {
+            events.push("cleanup");
+          },
+        }];
+      },
+      attachmentExtractor: async () => {
+        events.push("extract");
+        return "附件内容";
+      },
+    });
+    await orch.start();
+
+    const handling = connector.inject({
+      kind: "message",
+      eventId: "slow-reply-attachment",
+      chatType: "group",
+      chatId: "oc_team",
+      senderId: "ou_me",
+      text: "这个文件是什么？",
+      messageId: "om_slow_attachment",
+      messageType: "file",
+      mentionsBot: true,
+      createdAt: Date.now(),
+    });
+    await downloadStarted;
+    const eventsWhileDownloading = [...events];
+
+    releaseDownload();
+    await handling;
+
+    expect(eventsWhileDownloading).toEqual([
+      "add:om_slow_attachment:THINKING",
+      "download:start",
+    ]);
+    expect(events).toEqual([
+      "add:om_slow_attachment:THINKING",
+      "download:start",
+      "extract",
+      "cleanup",
+      "reply",
+      "remove:om_slow_attachment:reaction_attachment",
+    ]);
+    expect(connector.sent).toHaveLength(1);
   });
 
   test("cold-start question appends honest nudge (Q3)", async () => {
@@ -187,6 +742,226 @@ describe("orchestrator trunk (cli connector, no feishu)", () => {
     await orch2.stop();
   });
 
+  test("attachment text follows message provenance and retraction lifecycle", async () => {
+    const attachmentDir = mkdtempSync(join(tmpdir(), "hb-runtime-attachment-"));
+    const localPath = join(attachmentDir, "resource.bin");
+    writeFileSync(localPath, "项目代号是北极星", "utf8");
+    let cleaned = false;
+    const attachmentDownloader = async () => [{
+      attachment: { kind: "file" as const, ref: "file_1", name: "notes.txt" },
+      localPath,
+      sizeBytes: 27,
+      cleanup: () => {
+        cleaned = true;
+        rmSync(attachmentDir, { recursive: true, force: true });
+      },
+    }];
+
+    orch = new Orchestrator({
+      engine,
+      connector,
+      llm: fake,
+      attachmentDownloader,
+      attachmentExtractor: async () => "项目代号是北极星",
+    });
+    const reactive = connector as CliConnector & Connector;
+    reactive.resolveReplyTarget = async () => ({
+      messageId: "om_attachment",
+      senderId: "ou_me",
+    });
+    await orch.start();
+    await connector.inject({
+      kind: "message",
+      eventId: "attachment-1",
+      chatType: "group",
+      chatId: "oc_team",
+      senderId: "ou_me",
+      text: "[文件] notes.txt",
+      messageId: "om_attachment",
+      messageType: "file",
+      mentionsBot: false,
+      createdAt: 1_700_000_000_000,
+    });
+
+    const archive = await engine.exportSpace("team/oc_team");
+    expect(archive.raw).toHaveLength(2);
+    expect(archive.raw).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        source: "message",
+        author: "ou_me",
+        chatId: "oc_team",
+        messageId: "om_attachment",
+        content: "[文件] notes.txt",
+      }),
+      expect.objectContaining({
+        source: "message",
+        author: "ou_me",
+        chatId: "oc_team",
+        messageId: "om_attachment",
+        content: "# 附件：notes.txt\n\n项目代号是北极星",
+        attachments: [{ kind: "file", ref: "file_1", name: "notes.txt" }],
+      }),
+    ]));
+    expect(cleaned).toBe(true);
+    expect(existsSync(attachmentDir)).toBe(false);
+
+    await connector.sendGroup("@小强Bot 别记这条", true);
+    const retracted = await engine.exportSpace("team/oc_team");
+    expect(retracted.raw.filter((raw) => raw.messageId === "om_attachment")).toEqual([]);
+  });
+
+  test("attachment download failure leaves the original message captured", async () => {
+    orch = new Orchestrator({
+      engine,
+      connector,
+      llm: fake,
+      attachmentDownloader: async () => {
+        throw new Error("download unavailable");
+      },
+    });
+    await orch.start();
+
+    await connector.inject({
+      kind: "message",
+      eventId: "attachment-download-failure",
+      chatType: "group",
+      chatId: "oc_team",
+      senderId: "ou_me",
+      text: "[文件] unavailable.txt",
+      messageId: "om_download_failure",
+      messageType: "file",
+      mentionsBot: false,
+      createdAt: Date.now(),
+    });
+
+    const archive = await engine.exportSpace("team/oc_team");
+    expect(archive.raw).toEqual([
+      expect.objectContaining({
+        source: "message",
+        messageId: "om_download_failure",
+        content: "[文件] unavailable.txt",
+      }),
+    ]);
+  });
+
+  test("attachment extraction failure cleans up and leaves the original message captured", async () => {
+    let cleaned = false;
+    orch = new Orchestrator({
+      engine,
+      connector,
+      llm: fake,
+      attachmentDownloader: async () => [{
+        attachment: { kind: "file", ref: "file_broken", name: "broken.txt" },
+        localPath: "/tmp/broken.txt",
+        sizeBytes: 1,
+        cleanup: () => {
+          cleaned = true;
+        },
+      }],
+      attachmentExtractor: async () => {
+        throw new Error("extract unavailable");
+      },
+    });
+    await orch.start();
+
+    await connector.inject({
+      kind: "message",
+      eventId: "attachment-extraction-failure",
+      chatType: "group",
+      chatId: "oc_team",
+      senderId: "ou_me",
+      text: "[文件] broken.txt",
+      messageId: "om_extraction_failure",
+      messageType: "file",
+      mentionsBot: false,
+      createdAt: Date.now(),
+    });
+
+    const archive = await engine.exportSpace("team/oc_team");
+    expect(archive.raw).toEqual([
+      expect.objectContaining({
+        source: "message",
+        messageId: "om_extraction_failure",
+        content: "[文件] broken.txt",
+      }),
+    ]);
+    expect(cleaned).toBe(true);
+  });
+
+  test("attachment cleanup failure does not mask successful ingestion", async () => {
+    orch = new Orchestrator({
+      engine,
+      connector,
+      llm: fake,
+      attachmentDownloader: async () => [{
+        attachment: { kind: "file", ref: "file_cleanup", name: "cleanup.txt" },
+        localPath: "/tmp/cleanup.txt",
+        sizeBytes: 1,
+        cleanup: () => {
+          throw new Error("cleanup unavailable");
+        },
+      }],
+      attachmentExtractor: async () => "cleanup failures are isolated",
+    });
+    await orch.start();
+
+    await connector.inject({
+      kind: "message",
+      eventId: "attachment-cleanup-failure",
+      chatType: "group",
+      chatId: "oc_team",
+      senderId: "ou_me",
+      text: "[文件] cleanup.txt",
+      messageId: "om_cleanup_failure",
+      messageType: "file",
+      mentionsBot: false,
+      createdAt: Date.now(),
+    });
+
+    const archive = await engine.exportSpace("team/oc_team");
+    expect(archive.raw).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        messageId: "om_cleanup_failure",
+        content: "# 附件：cleanup.txt\n\ncleanup failures are isolated",
+      }),
+    ]));
+  });
+
+  test("ordinary text messages do not invoke the attachment downloader", async () => {
+    let downloadCalls = 0;
+    orch = new Orchestrator({
+      engine,
+      connector,
+      llm: fake,
+      attachmentDownloader: async () => {
+        downloadCalls += 1;
+        return [];
+      },
+    });
+    await orch.start();
+
+    await connector.inject({
+      kind: "message",
+      eventId: "ordinary-text",
+      chatType: "group",
+      chatId: "oc_team",
+      senderId: "ou_me",
+      text: "这是一条普通文本消息",
+      messageId: "om_ordinary_text",
+      messageType: "text",
+      mentionsBot: false,
+      createdAt: Date.now(),
+    });
+
+    expect(downloadCalls).toBe(0);
+    expect((await engine.exportSpace("team/oc_team")).raw).toEqual([
+      expect.objectContaining({
+        messageId: "om_ordinary_text",
+        content: "这是一条普通文本消息",
+      }),
+    ]);
+  });
+
   test("group with mentionsOnly=false answers an unaddressed question", async () => {
     // seed a page + the team space, then flip the group to respond-to-all
     await engine.upsertPage("team/oc_team", {
@@ -210,15 +985,14 @@ describe("orchestrator trunk (cli connector, no feishu)", () => {
     expect(connector.sent[0]!.markdown).toContain("Alice");
   });
 
-  test("assigned agent routes through its CLI provider, passing its instruction", async () => {
-    // No injected llm: the engine must build a CLI-backed client from the
-    // agent's provider. The injected runner returns JSON for route/synth (the
-    // CLI client asks for JSON) and records the prompt to prove the persona
-    // reached it.
+  test("CLI-only runtime classifies a question without punctuation through the space agent", async () => {
+    // No injected orchestrator llm: classification, routing, and synthesis must
+    // all use the space's CLI-backed client. This is the production topology.
     let sawInstruction = false;
+    let sawCliClassification = false;
     const cliEngine = new KnowledgeEngine({
       dataDir: dir,
-      runProvider: async (_id, input) => {
+      runProvider: async (id, input) => {
         if (/像海盗一样说话/.test(input.prompt)) sawInstruction = true;
         if (/JSON Schema/.test(input.prompt) && /relevant/.test(input.prompt)) {
           return JSON.stringify({ slugs: ["entities/alice"], relevant: true });
@@ -233,6 +1007,10 @@ describe("orchestrator trunk (cli connector, no feishu)", () => {
         }
         // intent classification (also JSON) -> a question
         if (/JSON Schema/.test(input.prompt) && /intent/.test(input.prompt)) {
+          sawCliClassification =
+            id === "codex" &&
+            input.model === "gpt-5.6-sol" &&
+            input.reasoningEffort === "high";
           return JSON.stringify({ intent: "question" });
         }
         return "ok";
@@ -251,17 +1029,129 @@ describe("orchestrator trunk (cli connector, no feishu)", () => {
       updatedAt: Date.now(),
       contentHash: "h",
     });
-    const agent = cliEngine.agents.create({ name: "海盗", instruction: "像海盗一样说话，Arrr。", model: "", provider: "claude" });
-    cliEngine.registry.updateMeta("team/oc_team", { agentId: agent.id });
-    const cliConnector = new CliConnector({ groupChatId: "oc_team", p2pChatId: "oc_dm", userId: "ou_me" });
-    // The orchestrator's intent classifier uses its own llm; give it the fake.
-    const cliOrch = new Orchestrator({ engine: cliEngine, connector: cliConnector, llm: fake });
+    const { connector: cliConnector, orchestrator: cliOrch } = makeCliOnlyRuntime(
+      cliEngine,
+      "team/oc_team",
+      {
+        name: "海盗",
+        instruction: "像海盗一样说话，Arrr。",
+        model: "gpt-5.6-sol",
+        reasoningEffort: "high",
+        provider: "codex",
+      },
+    );
     await cliOrch.start();
-    await cliConnector.sendGroup("谁负责后端服务？", true);
+    await cliConnector.sendGroup("谁负责后端服务", true);
     expect(cliConnector.sent[0]!.markdown).toContain("Alice");
+    expect(sawCliClassification).toBe(true);
     expect(sawInstruction).toBe(true);
-    await cliOrch.stop();
-    cliEngine.close();
+  });
+
+  test("CLI-only runtime classifies a natural-language distillation command through the space agent", async () => {
+    let sawCliClassification = false;
+    const cliEngine = new KnowledgeEngine({
+      dataDir: dir,
+      runProvider: async (id, input) => {
+        if (/JSON Schema/.test(input.prompt) && /intent/.test(input.prompt)) {
+          sawCliClassification = id === "codex";
+          return JSON.stringify({ intent: "command" });
+        }
+        if (/JSON Schema/.test(input.prompt) && /operations/.test(input.prompt)) {
+          return JSON.stringify({ operations: [], skippedRawIds: [] });
+        }
+        return "ok";
+      },
+    });
+    const { connector: cliConnector, orchestrator: cliOrch } = makeCliOnlyRuntime(
+      cliEngine,
+      "personal/ou_me",
+      { name: "本机助手", provider: "codex" },
+    );
+
+    await cliOrch.start();
+    await cliConnector.sendP2P("帮我重新提炼一下知识");
+
+    expect(cliConnector.sent[0]!.markdown).toContain("开始重新提炼");
+    expect(sawCliClassification).toBe(true);
+  });
+
+  test("CLI-only runtime classifies an ordinary statement as memory through the space agent", async () => {
+    let sawCliClassification = false;
+    const cliEngine = new KnowledgeEngine({
+      dataDir: dir,
+      runProvider: async (id, input) => {
+        if (/JSON Schema/.test(input.prompt) && /intent/.test(input.prompt)) {
+          sawCliClassification = id === "codex";
+          return JSON.stringify({ intent: "remember" });
+        }
+        return "ok";
+      },
+    });
+    const { connector: cliConnector, orchestrator: cliOrch } = makeCliOnlyRuntime(
+      cliEngine,
+      "personal/ou_me",
+      { name: "本机助手", provider: "codex" },
+    );
+
+    await cliOrch.start();
+    await cliConnector.sendP2P("发布流程先灰度再全量");
+
+    expect(cliConnector.sent[0]!.markdown).toContain("记下");
+    expect(sawCliClassification).toBe(true);
+  });
+
+  test("CLI-only runtime gives configuration guidance when no local provider can be resolved", async () => {
+    saveSettings({ defaultProvider: "gateway" }, dir);
+    resetConfig();
+    const cliEngine = new KnowledgeEngine({ dataDir: dir });
+    const { connector: cliConnector, orchestrator: cliOrch } = makeCliOnlyRuntime(
+      cliEngine,
+      "personal/ou_me",
+    );
+
+    await cliOrch.start();
+    await cliConnector.sendP2P("谁负责后端服务");
+
+    expect(cliConnector.sent[0]!.markdown).toContain("回答 Agent 暂时不可用");
+  });
+
+  test("CLI-only runtime distinguishes a provider timeout from missing configuration", async () => {
+    let calls = 0;
+    const cliEngine = new KnowledgeEngine({
+      dataDir: dir,
+      runProvider: async () => {
+        calls += 1;
+        if (calls === 1) return JSON.stringify({ intent: "question" });
+        throw new Error("provider codex timed out after 120000ms");
+      },
+    });
+    const { connector: cliConnector, orchestrator: cliOrch } = makeCliOnlyRuntime(
+      cliEngine,
+      "personal/ou_me",
+      { name: "快速助手", provider: "codex", model: "gpt-5.6-luna" },
+    );
+
+    await cliOrch.start();
+    await cliConnector.sendP2P("谁负责后端服务");
+
+    expect(cliConnector.sent[0]!.markdown).toContain("回答超时");
+    expect(cliConnector.sent[0]!.markdown).toContain("gpt-5.6-luna");
+    expect(cliConnector.sent[0]!.markdown).not.toContain("未配置");
+  });
+
+  test("CLI-only runtime answers a prefiltered greeting without resolving a provider", async () => {
+    saveSettings({ defaultProvider: "gateway" }, dir);
+    resetConfig();
+    const cliEngine = new KnowledgeEngine({ dataDir: dir });
+    const { connector: cliConnector, orchestrator: cliOrch } = makeCliOnlyRuntime(
+      cliEngine,
+      "personal/ou_me",
+    );
+
+    await cliOrch.start();
+    await cliConnector.sendP2P("你好");
+
+    expect(cliConnector.sent[0]!.markdown).toContain("我在");
   });
 
   test("/task new is handled as a control command: creates a task, not captured, replies", async () => {

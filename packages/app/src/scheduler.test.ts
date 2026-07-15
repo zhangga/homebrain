@@ -2,11 +2,11 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { resetConfig, type SpaceId } from "@homebrain/shared";
-import { KnowledgeEngine, FakeLlm } from "@homebrain/core";
+import { resetConfig, type SpaceId } from "@homeagent/shared";
+import { KnowledgeEngine, FakeLlm } from "@homeagent/core";
 import { DEFAULT_SCHEDULE, Scheduler, shouldRunSpace, type ScheduleConfig } from "./scheduler.ts";
 
-const cfg: ScheduleConfig = { hour: 3, stalenessHours: 24, tickMs: 60000 };
+const cfg: ScheduleConfig = { hour: 3, stalenessHours: 24, tickMs: 60000, rawRetentionDays: 90 };
 
 // A fixed "now" at 04:00 Asia/Shanghai (past the nightly hour).
 const NIGHT = new Date("2026-07-04T04:00:00+08:00");
@@ -54,7 +54,7 @@ describe("Scheduler.tick", () => {
 
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), "hb-sched-"));
-    process.env.HOMEBRAIN_DATA_DIR = dir;
+    process.env.HOMEAGENT_DATA_DIR = dir;
     resetConfig();
     fake = new FakeLlm();
     engine = new KnowledgeEngine({ dataDir: dir, llm: fake });
@@ -63,7 +63,7 @@ describe("Scheduler.tick", () => {
   afterEach(() => {
     engine.close();
     rmSync(dir, { recursive: true, force: true });
-    delete process.env.HOMEBRAIN_DATA_DIR;
+    delete process.env.HOMEAGENT_DATA_DIR;
     resetConfig();
   });
 
@@ -101,5 +101,74 @@ describe("Scheduler.tick", () => {
   test("localHour respects Asia/Shanghai", async () => {
     // covered indirectly; DEFAULT_SCHEDULE hour is 3
     expect(DEFAULT_SCHEDULE.hour).toBe(3);
+  });
+
+  test("exposes whether the scheduler loop is started and its last successful tick", async () => {
+    engine.ensureSpace(SPACE);
+    const sched = new Scheduler(engine, cfg);
+
+    await sched.start();
+    expect(sched.health()).toEqual(
+      expect.objectContaining({
+        started: true,
+        running: false,
+        lastStatus: "ok",
+        lastSuccessAt: expect.any(Number),
+        lastReason: "startup-catchup",
+      }),
+    );
+
+    sched.stop();
+    expect(sched.health().started).toBe(false);
+  });
+
+  test("records a startup failure and does not claim the loop started", async () => {
+    engine.registry.list = () => {
+      throw new Error("registry unavailable");
+    };
+    const sched = new Scheduler(engine, cfg);
+
+    await expect(sched.start()).rejects.toThrow("registry unavailable");
+    expect(sched.health()).toEqual(
+      expect.objectContaining({
+        started: false,
+        running: false,
+        lastStatus: "error",
+        lastFailureAt: expect.any(Number),
+        lastReason: "startup-catchup",
+        lastError: expect.stringContaining("registry unavailable"),
+      }),
+    );
+  });
+
+  test("each maintenance tick applies the configured raw message retention", async () => {
+    const now = new Date("2027-01-15T10:00:00+08:00");
+    await engine.restoreSpace({
+      format: "homeagent.space",
+      version: 1,
+      exportedAt: now.getTime(),
+      space: { id: SPACE, createdAt: now.getTime() - 100 * 86_400_000 },
+      purpose: "purpose",
+      schema: "schema",
+      pages: [],
+      raw: [
+        {
+          id: "expired",
+          space: SPACE,
+          source: "message",
+          content: "expired",
+          attachments: [],
+          createdAt: now.getTime() - 40 * 86_400_000,
+          ingested: true,
+        },
+      ],
+      retractions: [],
+      tasks: [],
+    });
+    const sched = new Scheduler(engine, { ...cfg, rawRetentionDays: 30 });
+
+    await sched.tick("maintenance", now);
+
+    expect((await engine.exportSpace(SPACE)).raw).toEqual([]);
   });
 });

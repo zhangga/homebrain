@@ -12,8 +12,8 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
-import type { SpaceId } from "@homebrain/shared";
-import { isSpaceId } from "@homebrain/shared";
+import type { SpaceId } from "@homeagent/shared";
+import { isSpaceId } from "@homeagent/shared";
 
 /** How often a task runs. */
 export type TaskCadence = "hourly" | "daily";
@@ -184,5 +184,30 @@ export class TaskStore {
     const ok = this.tasks.delete(id);
     if (ok) this.persist();
     return ok;
+  }
+
+  /** Restore exact archived task records after archive-level validation. */
+  restore(tasks: Task[]): Task[] {
+    const restored: Task[] = [];
+    for (const task of tasks) {
+      if (!isSpaceId(task.space)) throw new Error(`invalid task space: ${task.space}`);
+      if (this.tasks.has(task.id)) throw new Error(`task id already exists: ${task.id}`);
+      const copy = { ...task };
+      this.tasks.set(copy.id, copy);
+      restored.push(copy);
+    }
+    if (restored.length > 0) this.persist();
+    return restored;
+  }
+
+  removeBySpace(space: SpaceId): number {
+    let removed = 0;
+    for (const [id, task] of this.tasks) {
+      if (task.space !== space) continue;
+      this.tasks.delete(id);
+      removed += 1;
+    }
+    if (removed > 0) this.persist();
+    return removed;
   }
 }

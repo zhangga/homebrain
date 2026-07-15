@@ -18,18 +18,59 @@
  * runtime behaves as a single consumer queue (plan §III) while the engine's own
  * per-space serialization still applies underneath.
  */
-import type { SpaceId } from "@homebrain/shared";
-import { Serializer, logger } from "@homebrain/shared";
-import { gatewayClient, type KnowledgeEngine, type LlmClient } from "@homebrain/core";
-import type { Connector, InboundEvent, InboundMessage } from "@homebrain/connectors";
+import type { SpaceId } from "@homeagent/shared";
+import { Serializer, logger } from "@homeagent/shared";
+import type { KnowledgeEngine, LlmClient } from "@homeagent/core";
+import type {
+  Connector,
+  DownloadedAttachment,
+  InboundEvent,
+  InboundMessage,
+} from "@homeagent/connectors";
+import { extractAttachmentText } from "./attachment-extractor.ts";
 import { attribute } from "./attribution.ts";
 import { gate } from "./gateway.ts";
-import { classifyIntent } from "./intent.ts";
+import { classifyIntent, type Intent } from "./intent.ts";
 import { formatAnswer } from "./format.ts";
-import { GROUP_ADDED_NOTICE, NO_PROVIDER_NOTICE, coldStartNote } from "./messages.ts";
+import { GROUP_ADDED_NOTICE, coldStartNote, providerNotice } from "./messages.ts";
 import { parseTaskCommand, handleTaskCommand } from "./task-commands.ts";
+import {
+  REMINDER_TIME_CLARIFICATION,
+  formatReminderTime,
+  handleReminderMessage,
+  needsReminderInference,
+  parseReminderRequest,
+  scheduleReminderDraft,
+  type ReminderDraft,
+} from "./reminder-commands.ts";
+import { inferReminderRequest } from "./reminder-inference.ts";
 
 const log = logger.child("orchestrator");
+const RETRACTION_COMMANDS = new Set(["别记这条", "撤回这条", "删掉这条", "不要记这条"]);
+const REMINDER_CONFIRMATION_TTL_MS = 15 * 60_000;
+
+interface PendingReminderConfirmation {
+  draft: ReminderDraft;
+  sourceMessageId: string;
+  expiresAt: number;
+}
+
+function reminderControlText(text: string): string {
+  return text
+    .trim()
+    .replace(/^(?:@\S+\s*)+/u, "")
+    .replace(/[。.!！]+$/u, "")
+    .trim();
+}
+
+function isRetractionCommand(text: string): boolean {
+  const normalized = text
+    .trim()
+    .replace(/^(?:@\S+\s+)+/u, "")
+    .replace(/[。.!！]+$/u, "")
+    .trim();
+  return RETRACTION_COMMANDS.has(normalized);
+}
 
 export interface RuntimeOptions {
   engine: KnowledgeEngine;
@@ -43,24 +84,34 @@ export interface RuntimeOptions {
    * The feishu connector supplies this; the cli connector does not.
    */
   docFetcher?: (urlOrToken: string) => Promise<string | null>;
+  /** Optional direct-message attachment boundary; defaults to the connector capability. */
+  attachmentDownloader?: (messageId: string) => Promise<DownloadedAttachment[]>;
+  /** Optional local extraction boundary; defaults to the built-in extractor. */
+  attachmentExtractor?: (attachment: DownloadedAttachment) => Promise<string | null>;
 }
 
 export class Orchestrator {
   private engine: KnowledgeEngine;
   private connector: Connector;
-  private llm: LlmClient;
+  private llm?: LlmClient;
   private serializer = new Serializer();
   private seen = new Set<string>();
   private seenOrder: string[] = [];
+  private pendingReminderConfirmations = new Map<string, PendingReminderConfirmation>();
   private dedupSize: number;
   private docFetcher?: (urlOrToken: string) => Promise<string | null>;
+  private attachmentDownloader?: (messageId: string) => Promise<DownloadedAttachment[]>;
+  private attachmentExtractor: (attachment: DownloadedAttachment) => Promise<string | null>;
 
   constructor(opts: RuntimeOptions) {
     this.engine = opts.engine;
     this.connector = opts.connector;
-    this.llm = opts.llm ?? gatewayClient;
+    this.llm = opts.llm;
     this.dedupSize = opts.dedupSize ?? 5000;
     this.docFetcher = opts.docFetcher;
+    this.attachmentDownloader = opts.attachmentDownloader
+      ?? this.connector.downloadAttachments?.bind(this.connector);
+    this.attachmentExtractor = opts.attachmentExtractor ?? extractAttachmentText;
   }
 
   async start(): Promise<void> {
@@ -88,6 +139,52 @@ export class Orchestrator {
     return true;
   }
 
+  private pendingReminderKey(msg: InboundMessage, space: SpaceId): string {
+    return `${space}\u0000${msg.chatId}\u0000${msg.senderId}`;
+  }
+
+  private prunePendingReminderConfirmations(now: number): void {
+    for (const [key, pending] of this.pendingReminderConfirmations) {
+      if (pending.expiresAt <= now) this.pendingReminderConfirmations.delete(key);
+    }
+  }
+
+  private handlePendingReminderControl(
+    msg: InboundMessage,
+    space: SpaceId,
+    now: number,
+  ): string | null {
+    const control = reminderControlText(msg.text);
+    if (!["确认", "确认创建", "取消", "取消创建"].includes(control)) {
+      this.prunePendingReminderConfirmations(now);
+      return null;
+    }
+    const key = this.pendingReminderKey(msg, space);
+    const pending = this.pendingReminderConfirmations.get(key);
+    if (!pending) return null;
+    this.pendingReminderConfirmations.delete(key);
+    if (pending.expiresAt <= now) {
+      return "这次提醒确认已过期，没有创建提醒。请重新发送完整的提醒请求。";
+    }
+    if (control === "取消" || control === "取消创建") {
+      return `已取消创建提醒：${pending.draft.title}`;
+    }
+    if (pending.draft.triggerAt <= now) {
+      return "候选提醒时间已经过去，没有创建提醒。请重新发送完整的提醒请求。";
+    }
+    return scheduleReminderDraft(
+      this.engine,
+      {
+        chatId: msg.chatId,
+        senderId: msg.senderId,
+        messageId: pending.sourceMessageId,
+      },
+      space,
+      pending.draft,
+      now,
+    );
+  }
+
   private async handle(event: InboundEvent): Promise<void> {
     if (!this.markSeen(event.eventId)) {
       log.debug("dropping duplicate event", { eventId: event.eventId });
@@ -113,50 +210,148 @@ export class Orchestrator {
     // a reply (even in a group without an @-mention).
     const taskCmd = parseTaskCommand(msg.text);
     if (taskCmd) {
-      this.engine.ensureSpace(writeSpace, { chatId: msg.chatId });
-      const reply = await handleTaskCommand(this.engine, writeSpace, taskCmd);
-      await this.send(msg, reply);
-      return;
+      return this.withThinking(msg, async () => {
+        this.engine.ensureSpace(writeSpace, { chatId: msg.chatId });
+        const reply = await handleTaskCommand(this.engine, writeSpace, taskCmd);
+        await this.send(msg, reply);
+      });
+    }
+
+    // A staged model interpretation is scoped to this chat and sender. Explicit
+    // confirmation/cancellation is a control message, so it bypasses group @ gating
+    // and is never captured as knowledge.
+    const pendingReminderReply = this.handlePendingReminderControl(msg, writeSpace, Date.now());
+    if (pendingReminderReply) {
+      return this.withThinking(msg, () => this.send(msg, pendingReminderReply));
     }
 
     const decision = gate(msg, { mentionsOnly: meta?.mentionsOnly });
 
-    // Always capture (收录 != 应答).
-    if (decision.capture && msg.text.trim() !== "") {
-      await this.engine.remember({
-        space: writeSpace,
-        source: "message",
-        author: msg.senderId,
-        chatId: msg.chatId,
-        messageId: msg.messageId,
-        content: msg.text,
-      });
+    // Retraction is a deterministic control command. Handle it before capture
+    // so the command itself never becomes knowledge.
+    const retractionCommand = isRetractionCommand(msg.text);
+    if (retractionCommand && msg.chatType === "group" && !msg.mentionsBot) {
+      if (!decision.respond) return;
+      return this.withThinking(msg, () => this.send(msg, "群聊中请回复原消息，并 @我 说「别记这条」。"));
+    }
+    if (decision.respond && retractionCommand) {
+      return this.withThinking(msg, () => this.handleRetraction(msg, writeSpace));
     }
 
-    // Doc sync (Q8): pull any docx/wiki links referenced in the message.
-    if (this.docFetcher && msg.docLinks && msg.docLinks.length > 0) {
-      await this.syncDocs(msg, writeSpace);
+    if (decision.respond) {
+      const reminderNow = Date.now();
+      const directDraft = parseReminderRequest(msg.text, reminderNow);
+      const reminderReply = handleReminderMessage(this.engine, msg, writeSpace, reminderNow);
+      if (reminderReply) {
+        if (directDraft) {
+          this.pendingReminderConfirmations.delete(this.pendingReminderKey(msg, writeSpace));
+        }
+        return this.withThinking(msg, () => this.send(msg, reminderReply));
+      }
+      if (needsReminderInference(msg.text)) {
+        const pendingKey = this.pendingReminderKey(msg, writeSpace);
+        // A new request always supersedes an older candidate, even if the new
+        // model interpretation fails or remains unresolved.
+        this.pendingReminderConfirmations.delete(pendingKey);
+        return this.withThinking(msg, async () => {
+          let draft: ReminderDraft | undefined;
+          try {
+            draft = await inferReminderRequest(
+              this.llm ?? this.engine.llmClientForSpace(writeSpace),
+              msg.text,
+              reminderNow,
+            );
+          } catch (err) {
+            log.warn("reminder inference provider unavailable", {
+              space: writeSpace,
+              err: String(err),
+            });
+            await this.send(msg, providerNotice(err));
+            return;
+          }
+          if (!draft) {
+            await this.send(msg, REMINDER_TIME_CLARIFICATION);
+            return;
+          }
+          this.pendingReminderConfirmations.set(pendingKey, {
+            draft,
+            sourceMessageId: msg.messageId,
+            expiresAt: Date.now() + REMINDER_CONFIRMATION_TTL_MS,
+          });
+          await this.send(msg, [
+            "请确认以下理解：",
+            `提醒内容：${draft.title}`,
+            `提醒时间：${formatReminderTime(draft.triggerAt)}`,
+            "请在 15 分钟内回复「确认」后创建，回复「取消」放弃。",
+          ].join("\n"));
+        });
+      }
     }
+
+    const captureInputs = async (): Promise<void> => {
+      // Always capture (收录 != 应答).
+      if (decision.capture && msg.text.trim() !== "") {
+        await this.engine.remember({
+          space: writeSpace,
+          source: "message",
+          author: msg.senderId,
+          chatId: msg.chatId,
+          messageId: msg.messageId,
+          content: msg.text,
+        });
+      }
+
+      if (
+        decision.capture
+        && msg.messageType
+        && ["image", "file", "audio", "media"].includes(msg.messageType)
+        && this.attachmentDownloader
+      ) {
+        await this.syncAttachments(msg, writeSpace);
+      }
+
+      // Doc sync (Q8): pull any docx/wiki links referenced in the message.
+      if (this.docFetcher && msg.docLinks && msg.docLinks.length > 0) {
+        await this.syncDocs(msg, writeSpace);
+      }
+    };
 
     if (!decision.respond) {
+      await captureInputs();
       log.debug("captured without responding", { space: writeSpace, reason: decision.reason });
       return;
     }
 
-    const { intent } = await classifyIntent(this.llm, msg.text);
-    log.debug("classified intent", { intent, chatType: msg.chatType });
+    return this.withThinking(msg, async () => {
+      await captureInputs();
+      let intent: Intent;
+      try {
+        ({ intent } = await classifyIntent(
+          () => this.llm ?? this.engine.llmClientForSpace(writeSpace),
+          msg.text,
+        ));
+      } catch (err) {
+        log.warn("intent provider unavailable; prompting to configure", {
+          space: writeSpace,
+          err: String(err),
+        });
+        await this.send(msg, providerNotice(err));
+        return;
+      }
+      log.debug("classified intent", { intent, chatType: msg.chatType });
 
-    switch (intent) {
-      case "question":
-        return this.answer(msg, readSpaces, writeSpace);
-      case "command":
-        return this.runCommand(msg, writeSpace);
-      case "remember":
-        return this.send(msg, "好的，我记下了。");
-      case "chitchat":
-      default:
-        return this.send(msg, "👋 我在。有需要随时问我，或把要记住的事告诉我。");
-    }
+      switch (intent) {
+        case "question":
+          return this.answer(msg, readSpaces, writeSpace);
+        case "command":
+          return this.runCommand(msg, writeSpace);
+        case "remember":
+          return this.send(msg, "好的，我记下了。");
+        case "chitchat":
+        default:
+          return this.send(msg, "👋 我在。有需要随时问我，或把要记住的事告诉我。");
+      }
+    });
   }
 
   private async answer(msg: InboundMessage, readSpaces: SpaceId[], writeSpace: SpaceId): Promise<void> {
@@ -174,7 +369,7 @@ export class Orchestrator {
       // No runnable provider (unset agent + no usable default CLI), or the CLI
       // failed to answer. Tell the user to configure, rather than fail silently.
       log.warn("ask failed; prompting to configure a provider", { space: writeSpace, err: String(err) });
-      await this.send(msg, NO_PROVIDER_NOTICE);
+      await this.send(msg, providerNotice(err));
       return;
     }
     // Cold-start honesty (Q3): if general and the KB is essentially empty, add a
@@ -198,18 +393,84 @@ export class Orchestrator {
 
   private async runCommand(msg: InboundMessage, writeSpace: SpaceId): Promise<void> {
     const t = msg.text;
-    if (/别记|撤回|删掉这条|不要记/.test(t)) {
-      // MVP: acknowledge; a precise retraction ties to the last raw id, which we
-      // capture in Slice 5 when we wire message->raw id mapping per chat.
-      await this.send(msg, "好的，这条我不会纳入知识（撤回已收到）。");
-      return;
-    }
     if (/重新提炼|重新整理|整理知识|dream/i.test(t)) {
       await this.send(msg, "开始重新提炼本空间知识，稍后完成。");
       void this.engine.runDreamCycle(writeSpace).catch((err) => log.error("manual dream failed", { err: String(err) }));
       return;
     }
     await this.send(msg, "收到指令。目前支持：『别记这条』撤回、『重新提炼』触发整理。");
+  }
+
+  private async handleRetraction(msg: InboundMessage, writeSpace: SpaceId): Promise<void> {
+    let target;
+    try {
+      target = await this.connector.resolveReplyTarget?.(msg.messageId);
+    } catch (err) {
+      log.warn("reply target resolution failed", { messageId: msg.messageId, err: String(err) });
+    }
+    if (!target) {
+      await this.send(msg, "请回复要撤回的那条原消息，并 @我 说「别记这条」。");
+      return;
+    }
+
+    const retractionRequest = {
+      chatId: msg.chatId,
+      messageId: target.messageId,
+      requestedBy: msg.senderId,
+    };
+    let result = await this.engine.retractMessage(writeSpace, retractionRequest);
+    if (result.status === "forbidden" && msg.chatType === "group") {
+      const requesterIsAdmin = await this.connector.isChatAdministrator?.(
+        msg.chatId,
+        msg.senderId,
+      );
+      if (requesterIsAdmin) {
+        result = await this.engine.retractMessage(writeSpace, {
+          ...retractionRequest,
+          requesterIsAdmin: true,
+        });
+      }
+    }
+    if (result.status === "forbidden") {
+      await this.send(msg, "这条消息不是你发送的；只有原作者、群主或群管理员可以撤回。");
+      return;
+    }
+    if (result.status === "not_found") {
+      await this.send(msg, "没有找到这条消息的收录记录；它可能尚未收录或已经撤回。");
+      return;
+    }
+    if (result.status === "already_retracted") {
+      await this.send(msg, "这条消息已经撤回过了，没有重复保留。");
+      return;
+    }
+
+    const pageNote =
+      result.affectedPages.length > 0
+        ? `，并清理了 ${result.affectedPages.length} 个受影响的知识页`
+        : "，原始记录已删除";
+    let rebuildNote = "";
+    if (result.requeuedSourceIds.length > 0) {
+      try {
+        const report = await this.engine.runDreamCycle(writeSpace, {
+          rawIds: result.requeuedSourceIds,
+        });
+        const processedSourceIds = new Set(report.processedRawIds);
+        const rebuiltAllSources = result.requeuedSourceIds.every((sourceId) =>
+          processedSourceIds.has(sourceId),
+        );
+        rebuildNote =
+          report.errors.length === 0 && rebuiltAllSources
+            ? "；其余有效来源已重新提炼"
+            : "；其余来源的自动重建未完全成功，请稍后重新提炼";
+      } catch (err) {
+        rebuildNote = "；其余来源的自动重建暂未完成，请稍后重新提炼";
+        log.warn("post-retraction redistillation failed", {
+          space: writeSpace,
+          err: String(err),
+        });
+      }
+    }
+    await this.send(msg, `已撤回这条消息${pageNote}${rebuildNote}。`);
   }
 
   private async syncDocs(msg: InboundMessage, writeSpace: SpaceId): Promise<void> {
@@ -228,6 +489,72 @@ export class Orchestrator {
         log.info("synced doc into space", { space: writeSpace, link });
       } catch (err) {
         log.warn("doc sync failed", { link, err: String(err) });
+      }
+    }
+  }
+
+  private async syncAttachments(msg: InboundMessage, writeSpace: SpaceId): Promise<void> {
+    let downloads: DownloadedAttachment[];
+    try {
+      downloads = await this.attachmentDownloader!(msg.messageId);
+    } catch (err) {
+      log.warn("attachment download failed", { messageId: msg.messageId, err: String(err) });
+      return;
+    }
+
+    for (const download of downloads) {
+      try {
+        const extracted = await this.attachmentExtractor(download);
+        if (!extracted?.trim()) continue;
+        const name = download.attachment.name ?? download.attachment.ref;
+        await this.engine.remember({
+          space: writeSpace,
+          source: "message",
+          author: msg.senderId,
+          chatId: msg.chatId,
+          messageId: msg.messageId,
+          content: `# 附件：${name}\n\n${extracted.trim()}`,
+          attachments: [download.attachment],
+          createdAt: msg.createdAt,
+        });
+      } catch (err) {
+        log.warn("attachment extraction failed", { messageId: msg.messageId, err: String(err) });
+      } finally {
+        try {
+          download.cleanup();
+        } catch (cleanupErr) {
+          log.warn("attachment cleanup failed", {
+            messageId: msg.messageId,
+            err: String(cleanupErr),
+          });
+        }
+      }
+    }
+  }
+
+  private async withThinking<T>(msg: InboundMessage, work: () => Promise<T>): Promise<T> {
+    let reactionId: string | undefined;
+    try {
+      reactionId = await this.connector.addReaction?.(msg.messageId, "THINKING");
+    } catch (err) {
+      // Optional UX must not interfere with the actual answer path, including
+      // connectors implemented outside this repository.
+      log.warn("thinking reaction failed", { messageId: msg.messageId, err: String(err) });
+    }
+
+    try {
+      return await work();
+    } finally {
+      if (reactionId) {
+        try {
+          await this.connector.removeReaction?.(msg.messageId, reactionId);
+        } catch (err) {
+          log.warn("thinking reaction cleanup failed", {
+            messageId: msg.messageId,
+            reactionId,
+            err: String(err),
+          });
+        }
       }
     }
   }

@@ -2,12 +2,12 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { SpaceId } from "@homebrain/shared";
-import { resetConfig } from "@homebrain/shared";
+import type { SpaceId } from "@homeagent/shared";
+import { resetConfig } from "@homeagent/shared";
 import { SpaceStore } from "./space.ts";
 import { runDreamCycle, isCacheHit } from "./dream.ts";
 import { FakeLlm } from "./testing.ts";
-import type { Page } from "@homebrain/shared";
+import type { Page } from "@homeagent/shared";
 
 let dir: string;
 let store: SpaceStore;
@@ -15,7 +15,7 @@ const SPACE: SpaceId = "team/oc_dream";
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "hb-dream-"));
-  process.env.HOMEBRAIN_DATA_DIR = dir;
+  process.env.HOMEAGENT_DATA_DIR = dir;
   resetConfig();
   store = new SpaceStore(SPACE, dir);
   store.ensure();
@@ -24,7 +24,7 @@ beforeEach(() => {
 afterEach(() => {
   store.close();
   rmSync(dir, { recursive: true, force: true });
-  delete process.env.HOMEBRAIN_DATA_DIR;
+  delete process.env.HOMEAGENT_DATA_DIR;
   resetConfig();
 });
 

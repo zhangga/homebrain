@@ -17,17 +17,38 @@ import type {
   PageRef,
   RawEntry,
   SpaceId,
-} from "@homebrain/shared";
-import { Serializer, config, logger } from "@homebrain/shared";
-import { ping, isCliProvider, type ProviderId } from "@homebrain/llm";
+} from "@homeagent/shared";
+import { Serializer, canonicalModelId, config, logger } from "@homeagent/shared";
+import {
+  isCliProvider,
+  isCodexReasoningEffortSupported,
+  runProvider as runLocalProvider,
+  type ProviderId,
+} from "@homeagent/llm";
 import type { Knowledge } from "./knowledge.ts";
-import type { AskOptions, DreamOptions, SearchOptions } from "./types.ts";
+import {
+  SPACE_ARCHIVE_FORMAT,
+  SPACE_ARCHIVE_VERSION,
+  parseSpaceArchive,
+  type SpaceArchive,
+  type SpaceDeleteResult,
+  type RawRetentionReport,
+} from "./governance.ts";
+import type {
+  AskOptions,
+  DreamOptions,
+  RetractionRequest,
+  RetractionResult,
+  SearchOptions,
+} from "./types.ts";
 import { SpaceRegistry } from "./registry.ts";
 import { AgentStore, type Agent } from "./agents.ts";
 import { TaskStore, type Task } from "./tasks.ts";
+import { ReminderStore, type Reminder } from "./reminders.ts";
 import { runDreamCycle } from "./dream.ts";
+import { refreshDigest } from "./digest.ts";
 import { ask as askImpl } from "./ask.ts";
-import { gatewayClient, type LlmClient } from "./llm.ts";
+import type { LlmClient } from "./llm.ts";
 import { makeCliClient, type RunProviderFn } from "./cli-client.ts";
 
 const log = logger.child("core");
@@ -98,23 +119,71 @@ export interface EngineOptions {
   runProvider?: RunProviderFn;
 }
 
+interface ProviderRunHealth {
+  provider: ProviderId;
+  running: number;
+  lastStatus?: "ok" | "error";
+  lastStartedAt?: number;
+  lastSuccessAt?: number;
+  lastFailureAt?: number;
+  lastError?: string;
+}
+
+interface DreamCycleHealth {
+  space: SpaceId;
+  running: boolean;
+  lastStatus?: "ok" | "error";
+  lastStartedAt?: number;
+  lastSuccessAt?: number;
+  lastFailureAt?: number;
+  lastError?: string;
+  lastExamined?: number;
+  lastPagesWritten?: number;
+}
+
 export class KnowledgeEngine implements Knowledge {
   readonly registry: SpaceRegistry;
   readonly agents: AgentStore;
   readonly tasks: TaskStore;
+  readonly reminders: ReminderStore;
   readonly serializer: Serializer;
   private dataDir: string;
   private llm?: LlmClient;
-  private runProvider?: RunProviderFn;
+  private runProvider: RunProviderFn;
+  private providerRuns = new Map<ProviderId, ProviderRunHealth>();
+  private dreamCycles = new Map<SpaceId, DreamCycleHealth>();
+  private runningTaskCounts = new Map<string, number>();
+  private deliveringReminderCounts = new Map<string, number>();
 
   constructor(opts: EngineOptions = {}) {
     this.dataDir = opts.dataDir ?? config().dataDir;
     this.registry = new SpaceRegistry(this.dataDir);
     this.agents = new AgentStore(this.dataDir);
     this.tasks = new TaskStore(this.dataDir);
+    this.reminders = new ReminderStore(this.dataDir);
     this.serializer = opts.serializer ?? new Serializer();
     this.llm = opts.llm;
-    this.runProvider = opts.runProvider;
+    const providerRunner = opts.runProvider ?? runLocalProvider;
+    this.runProvider = async (provider, input, timeoutMs) => {
+      const run = this.providerRuns.get(provider) ?? { provider, running: 0 };
+      run.running += 1;
+      run.lastStartedAt = Date.now();
+      this.providerRuns.set(provider, run);
+      try {
+        const output = await providerRunner(provider, input, timeoutMs);
+        run.lastSuccessAt = Date.now();
+        run.lastStatus = "ok";
+        run.lastError = undefined;
+        return output;
+      } catch (err) {
+        run.lastFailureAt = Date.now();
+        run.lastStatus = "error";
+        run.lastError = String(err);
+        throw err;
+      } finally {
+        run.running -= 1;
+      }
+    };
   }
 
   /** Ensure a space exists (used by connectors when a group is joined). */
@@ -130,38 +199,345 @@ export class KnowledgeEngine implements Knowledge {
   }
 
   /**
-   * Resolve the LLM client for a space. Tests may inject a single client for
-   * all spaces; otherwise every space runs through a local CLI — the space's
-   * assigned agent's provider/model, or the global default (config()). Throws
-   * NoProviderError if the resolved provider isn't a known CLI.
+   * Resolve the space-scoped LLM client shared by classification, ask, dream,
+   * and tasks. Tests may inject one client for every space; production resolves
+   * the assigned Agent CLI/provider/model or the configured default CLI. Throws
+   * NoProviderError if neither resolves to a supported local CLI.
    */
-  private clientForSpace(space: SpaceId, timeoutMs?: number): LlmClient {
+  llmClientForSpace(space: SpaceId, timeoutMs?: number): LlmClient {
     if (this.llm) return this.llm;
     const agent = this.agentForSpace(space);
     const cfg = config();
     const provider = agent?.provider || cfg.defaultProvider;
-    const model = agent?.model || cfg.defaultModel || undefined;
+    const inheritedModel = !agent || agent.provider === cfg.defaultProvider
+      ? cfg.defaultModel
+      : "";
+    const selectedModel = agent?.model || inheritedModel || undefined;
+    const model = provider === "codex" && selectedModel
+      ? canonicalModelId(selectedModel)
+      : selectedModel;
+    const reasoningEffort =
+      provider === "codex" &&
+      agent?.reasoningEffort &&
+      isCodexReasoningEffortSupported(model, agent.reasoningEffort)
+        ? agent.reasoningEffort
+        : undefined;
     if (!isCliProvider(provider)) throw new NoProviderError(space);
-    return makeCliClient(provider as ProviderId, model, this.runProvider, timeoutMs);
+    return makeCliClient(provider as ProviderId, model, this.runProvider, timeoutMs, reasoningEffort);
   }
 
   async remember(entry: RawEntry): Promise<string> {
     // Capture is a write; serialize per space so it never races distillation.
     return this.serializer.run(entry.space, async () => {
       const store = this.registry.ensure(entry.space, { chatId: entry.chatId });
-      const id = store.index().insertRaw(entry);
+      const index = store.index();
+      if (
+        entry.chatId &&
+        entry.messageId &&
+        index.getMessageRetraction(entry.chatId, entry.messageId)
+      ) {
+        log.info("ignored redelivery of retracted message", {
+          space: entry.space,
+          chatId: entry.chatId,
+          messageId: entry.messageId,
+        });
+        return `retracted:${entry.messageId}`;
+      }
+      const id = index.insertRaw(entry);
       log.debug("remembered raw entry", { space: entry.space, source: entry.source, id });
       return id;
     });
   }
 
+  async retractMessage(space: SpaceId, request: RetractionRequest): Promise<RetractionResult> {
+    return this.serializer.run(space, async () => {
+      const resultFor = (status: RetractionResult["status"]): RetractionResult => ({
+        status,
+        affectedPages: [],
+        requeuedSourceIds: [],
+      });
+      if (!this.registry.has(space)) return resultFor("not_found");
+      const index = this.registry.store(space).index();
+      const matchingRawRecords = index.findRawsByMessageId(request.messageId, request.chatId);
+      if (matchingRawRecords.length === 0) {
+        const prior = index.getMessageRetraction(request.chatId, request.messageId);
+        if (!prior) return resultFor("not_found");
+        return request.requesterIsAdmin || prior.originalAuthor === request.requestedBy
+          ? resultFor("already_retracted")
+          : resultFor("forbidden");
+      }
+      if (
+        !request.requesterIsAdmin &&
+        matchingRawRecords.some(
+          (rawRecord) => !rawRecord.author || rawRecord.author !== request.requestedBy,
+        )
+      ) {
+        return resultFor("forbidden");
+      }
+      const removedSourceIds = new Set(matchingRawRecords.map((rawRecord) => rawRecord.id));
+
+      const store = this.registry.store(space);
+      const affectedPages = index
+        .allPages()
+        .filter((page) => page.sources.some((sourceId) => removedSourceIds.has(sourceId)))
+        .map((page) => page.slug)
+        .sort();
+      const survivingSourceIds = new Set<string>();
+      for (const slug of affectedPages) {
+        const page = index.getPage(slug);
+        for (const sourceId of page?.sources ?? []) {
+          if (!removedSourceIds.has(sourceId) && index.getRaw(sourceId)) {
+            survivingSourceIds.add(sourceId);
+          }
+        }
+        // Delete first so a crash can only lose derived content; it can never
+        // leave content derived from a source that has already been removed.
+        store.deletePage(slug);
+      }
+      index.recordMessageRetraction({
+        chatId: request.chatId,
+        messageId: request.messageId,
+        originalAuthor: matchingRawRecords[0]!.author!,
+        retractedBy: request.requestedBy,
+      });
+      for (const rawRecord of matchingRawRecords) index.deleteRaw(rawRecord.id);
+      index.markPending([...survivingSourceIds]);
+      if (affectedPages.length > 0) refreshDigest(store);
+      log.info("retracted raw message", {
+        space,
+        messageId: request.messageId,
+        rawIds: [...removedSourceIds],
+        affectedPages,
+        requeuedSources: survivingSourceIds.size,
+      });
+      return {
+        status: "retracted",
+        affectedPages,
+        requeuedSourceIds: [...survivingSourceIds],
+      };
+    });
+  }
+
   async runDreamCycle(space: SpaceId, opts: DreamOptions = {}): Promise<DreamReport> {
     return this.serializer.run(space, async () => {
-      const store = this.registry.ensure(space);
-      const report = await runDreamCycle(store, opts, { client: this.clientForSpace(space) });
-      this.registry.setLastDream(space, report.finishedAt);
-      return report;
+      const health = this.dreamCycles.get(space) ?? { space, running: false };
+      health.running = true;
+      health.lastStartedAt = Date.now();
+      this.dreamCycles.set(space, health);
+      try {
+        const store = this.registry.ensure(space);
+        const report = await runDreamCycle(store, opts, { client: this.llmClientForSpace(space) });
+        this.registry.setLastDream(space, report.finishedAt);
+        health.lastExamined = report.examined;
+        health.lastPagesWritten = report.pagesWritten;
+        if (report.errors.length === 0) {
+          health.lastSuccessAt = report.finishedAt;
+          health.lastStatus = "ok";
+          health.lastError = undefined;
+        } else {
+          health.lastFailureAt = report.finishedAt;
+          health.lastStatus = "error";
+          health.lastError = report.errors.join("; ").slice(0, 500);
+        }
+        return report;
+      } catch (err) {
+        health.lastFailureAt = Date.now();
+        health.lastStatus = "error";
+        health.lastError = String(err).slice(0, 500);
+        throw err;
+      } finally {
+        health.running = false;
+      }
     });
+  }
+
+  async exportSpace(space: SpaceId): Promise<SpaceArchive> {
+    if (!this.registry.has(space)) throw new Error(`unknown space: ${space}`);
+    return this.serializer.run(space, async () => {
+      const meta = this.registry.get(space);
+      if (!meta) throw new Error(`unknown space: ${space}`);
+      const store = this.registry.store(space);
+      const index = store.index();
+      const agent = meta.agentId ? this.agents.get(meta.agentId) : undefined;
+      return {
+        format: SPACE_ARCHIVE_FORMAT,
+        version: SPACE_ARCHIVE_VERSION,
+        exportedAt: Date.now(),
+        space: { ...meta },
+        agent: agent ? { ...agent, skills: [...agent.skills] } : undefined,
+        purpose: store.purpose(),
+        schema: store.schema(),
+        pages: store.listPagesFromDisk(),
+        raw: index.listRaw({}),
+        retractions: index.listMessageRetractions(),
+        tasks: this.tasks.list().filter((task) => task.space === space),
+        reminders: this.reminders.list().filter((reminder) => reminder.space === space),
+      };
+    });
+  }
+
+  async restoreSpace(input: unknown): Promise<SpaceId> {
+    const archive = parseSpaceArchive(input);
+    const space = archive.space.id;
+    if (this.registry.has(space)) throw new Error(`space already exists: ${space}`);
+    const initialStorageConflict = this.registry.storageConflict(space);
+    if (initialStorageConflict) {
+      throw new Error(`storage path conflicts with ${initialStorageConflict}: ${space}`);
+    }
+    await this.serializer.run(space, async () => {
+      if (this.registry.has(space)) throw new Error(`space already exists: ${space}`);
+      const storageConflict = this.registry.storageConflict(space);
+      if (storageConflict) {
+        throw new Error(`storage path conflicts with ${storageConflict}: ${space}`);
+      }
+      const taskConflict = archive.tasks.find((task) => this.tasks.has(task.id));
+      if (taskConflict) throw new Error(`task id already exists: ${taskConflict.id}`);
+      const reminderConflict = archive.reminders.find((reminder) => this.reminders.has(reminder.id));
+      if (reminderConflict) throw new Error(`reminder id already exists: ${reminderConflict.id}`);
+      const existingAgent = archive.agent ? this.agents.get(archive.agent.id) : undefined;
+      if (existingAgent && JSON.stringify(existingAgent) !== JSON.stringify(archive.agent)) {
+        throw new Error(`agent id already exists with different data: ${archive.agent!.id}`);
+      }
+      const taskIdsBefore = new Set(this.tasks.list().map((task) => task.id));
+      const reminderIdsBefore = new Set(this.reminders.list().map((reminder) => reminder.id));
+      const agentWasPresent = Boolean(existingAgent);
+      try {
+        if (archive.agent) this.agents.restore(archive.agent);
+        const store = this.registry.ensure(space, { chatId: archive.space.chatId });
+        store.setPurpose(archive.purpose);
+        store.setSchema(archive.schema);
+        const index = store.index();
+        for (const raw of archive.raw) index.restoreRaw(raw);
+        for (const record of archive.retractions) index.restoreMessageRetraction(record);
+        for (const page of archive.pages) store.writePage(page);
+        this.tasks.restore(archive.tasks);
+        this.reminders.restore(archive.reminders);
+        this.registry.restoreMeta({
+          ...archive.space,
+          agentId: archive.space.agentId,
+        });
+      } catch (err) {
+        for (const task of this.tasks.list()) {
+          if (task.space === space && !taskIdsBefore.has(task.id)) this.tasks.remove(task.id);
+        }
+        for (const reminder of this.reminders.list()) {
+          if (reminder.space === space && !reminderIdsBefore.has(reminder.id)) {
+            this.reminders.remove(reminder.id);
+          }
+        }
+        if (this.registry.has(space)) this.registry.remove(space);
+        if (
+          archive.agent
+          && !agentWasPresent
+          && !this.registry.list().some((meta) => meta.agentId === archive.agent!.id)
+        ) {
+          this.agents.remove(archive.agent.id);
+        }
+        throw err;
+      }
+    });
+    return space;
+  }
+
+  async deleteSpace(space: SpaceId): Promise<SpaceDeleteResult> {
+    const empty = (): SpaceDeleteResult => ({
+      status: "not_found",
+      space,
+      pagesDeleted: 0,
+      rawDeleted: 0,
+      tasksDeleted: 0,
+      remindersDeleted: 0,
+    });
+    if (!this.registry.has(space)) return empty();
+    return this.serializer.run(space, async () => {
+      if (!this.registry.has(space)) return empty();
+      const tasks = this.tasks.list().filter((task) => task.space === space);
+      const reminders = this.reminders.list().filter((reminder) => reminder.space === space);
+      if (tasks.some((task) => (this.runningTaskCounts.get(task.id) ?? 0) > 0)) {
+        throw new Error(`space has running tasks: ${space}`);
+      }
+      if (reminders.some(
+        (reminder) => (this.deliveringReminderCounts.get(reminder.id) ?? 0) > 0,
+      )) {
+        throw new Error(`space has delivering reminders: ${space}`);
+      }
+      if (this.dreamCycles.get(space)?.running) {
+        throw new Error(`space has a running dream cycle: ${space}`);
+      }
+      const index = this.registry.store(space).index();
+      const pagesDeleted = index.countPages();
+      const rawDeleted = index.countRaw();
+      let tasksDeleted = 0;
+      let remindersDeleted = 0;
+      try {
+        tasksDeleted = this.tasks.removeBySpace(space);
+        remindersDeleted = this.reminders.removeBySpace(space);
+        this.registry.remove(space);
+      } catch (err) {
+        const missingTasks = tasks.filter((task) => !this.tasks.has(task.id));
+        if (missingTasks.length > 0) this.tasks.restore(missingTasks);
+        const missingReminders = reminders.filter((reminder) => !this.reminders.has(reminder.id));
+        if (missingReminders.length > 0) this.reminders.restore(missingReminders);
+        throw err;
+      }
+      this.dreamCycles.delete(space);
+      return {
+        status: "deleted",
+        space,
+        pagesDeleted,
+        rawDeleted,
+        tasksDeleted,
+        remindersDeleted,
+      };
+    });
+  }
+
+  /**
+   * Deliver one scheduled reminder as a guarded state transition. The running
+   * marker is installed before the first await so space deletion cannot race a
+   * transport already in flight. State advances only after delivery succeeds.
+   */
+  async deliverReminder(
+    reminderId: string,
+    notifiedAt: number,
+    deliver: (reminder: Reminder) => void | Promise<void>,
+  ): Promise<boolean> {
+    const reminder = this.reminders.get(reminderId);
+    if (!reminder || reminder.status !== "scheduled") return false;
+    this.deliveringReminderCounts.set(
+      reminderId,
+      (this.deliveringReminderCounts.get(reminderId) ?? 0) + 1,
+    );
+    try {
+      await deliver({ ...reminder });
+      return Boolean(this.reminders.markNotified(reminderId, notifiedAt));
+    } finally {
+      const remaining = (this.deliveringReminderCounts.get(reminderId) ?? 1) - 1;
+      if (remaining > 0) this.deliveringReminderCounts.set(reminderId, remaining);
+      else this.deliveringReminderCounts.delete(reminderId);
+    }
+  }
+
+  async pruneRawMessages(retentionDays: number, now = Date.now()): Promise<RawRetentionReport> {
+    const days = Math.max(0, Math.trunc(retentionDays));
+    const cutoff = days > 0 ? now - days * 86_400_000 : now;
+    const report: RawRetentionReport = {
+      retentionDays: days,
+      cutoff,
+      deleted: 0,
+      bySpace: {},
+    };
+    if (days === 0) return report;
+    for (const meta of this.registry.list()) {
+      const deleted = await this.serializer.run(meta.id, async () => {
+        if (!this.registry.has(meta.id)) return 0;
+        return this.registry.store(meta.id).index().deleteExpiredRawMessages(cutoff);
+      });
+      if (deleted === 0) continue;
+      report.bySpace[meta.id] = deleted;
+      report.deleted += deleted;
+    }
+    return report;
   }
 
   /**
@@ -175,50 +551,57 @@ export class KnowledgeEngine implements Knowledge {
     const task = this.tasks.get(taskId);
     if (!task) throw new Error(`unknown task: ${taskId}`);
     const startedAt = Date.now();
-    this.registry.ensure(task.space);
-    const agent = this.agentForSpace(task.space);
+    this.runningTaskCounts.set(taskId, (this.runningTaskCounts.get(taskId) ?? 0) + 1);
     try {
-      // The LLM call runs OUTSIDE the per-space serializer — research is
-      // long-running and must not block captures/distillation. Only the write
-      // (remember) is serialized, and it acquires the lock itself.
-      const client = this.clientForSpace(task.space, TASK_TIMEOUT_MS);
-      const res = await client.complete({
-        system: agent?.instruction || undefined,
-        prompt: researchPrompt(task.topic),
-        model: agent?.model || undefined,
-        purpose: "distill",
-        space: task.space,
-      });
-      const text = res.text.trim();
-      if (!text) throw new Error("task produced empty output");
-      const rawId = await this.remember({
-        space: task.space,
-        source: "task",
-        content: `# 任务研究：${task.name}\n主题：${task.topic}\n\n${text}`,
-      });
-      // Distill immediately so the research becomes a wiki page now, not at the
-      // next nightly cycle. The per-task `distillOnRun` is the default; an
-      // explicit opts.distill overrides it. Best-effort: a distillation failure
-      // doesn't fail the task (the raw entry is safely captured for later).
-      let pagesWritten: number | undefined;
-      const distill = opts.distill ?? task.distillOnRun;
-      if (distill) {
-        try {
-          const report = await this.runDreamCycle(task.space);
-          pagesWritten = report.pagesWritten;
-        } catch (err) {
-          log.warn("post-task distillation failed (raw kept for nightly)", { taskId, err: String(err) });
+      this.registry.ensure(task.space);
+      const agent = this.agentForSpace(task.space);
+      try {
+        // The LLM call runs OUTSIDE the per-space serializer — research is
+        // long-running and must not block captures/distillation. Only the write
+        // (remember) is serialized, and it acquires the lock itself.
+        const client = this.llmClientForSpace(task.space, TASK_TIMEOUT_MS);
+        const res = await client.complete({
+          system: agent?.instruction || undefined,
+          prompt: researchPrompt(task.topic),
+          model: agent?.model || undefined,
+          purpose: "distill",
+          space: task.space,
+        });
+        const text = res.text.trim();
+        if (!text) throw new Error("task produced empty output");
+        const rawId = await this.remember({
+          space: task.space,
+          source: "task",
+          content: `# 任务研究：${task.name}\n主题：${task.topic}\n\n${text}`,
+        });
+        // Distill immediately so the research becomes a wiki page now, not at the
+        // next nightly cycle. The per-task `distillOnRun` is the default; an
+        // explicit opts.distill overrides it. Best-effort: a distillation failure
+        // doesn't fail the task (the raw entry is safely captured for later).
+        let pagesWritten: number | undefined;
+        const distill = opts.distill ?? task.distillOnRun;
+        if (distill) {
+          try {
+            const report = await this.runDreamCycle(task.space);
+            pagesWritten = report.pagesWritten;
+          } catch (err) {
+            log.warn("post-task distillation failed (raw kept for nightly)", { taskId, err: String(err) });
+          }
         }
+        const summary = text.slice(0, 200);
+        this.tasks.setLastRun(taskId, { at: Date.now(), status: "ok", summary });
+        log.info("task run ok", { taskId, space: task.space, rawId, pagesWritten });
+        return { taskId, space: task.space, ok: true, summary, rawId, pagesWritten, startedAt, finishedAt: Date.now() };
+      } catch (err) {
+        const error = String(err);
+        this.tasks.setLastRun(taskId, { at: Date.now(), status: "error", error });
+        log.error("task run failed", { taskId, space: task.space, err: error });
+        return { taskId, space: task.space, ok: false, error, startedAt, finishedAt: Date.now() };
       }
-      const summary = text.slice(0, 200);
-      this.tasks.setLastRun(taskId, { at: Date.now(), status: "ok", summary });
-      log.info("task run ok", { taskId, space: task.space, rawId, pagesWritten });
-      return { taskId, space: task.space, ok: true, summary, rawId, pagesWritten, startedAt, finishedAt: Date.now() };
-    } catch (err) {
-      const error = String(err);
-      this.tasks.setLastRun(taskId, { at: Date.now(), status: "error", error });
-      log.error("task run failed", { taskId, space: task.space, err: error });
-      return { taskId, space: task.space, ok: false, error, startedAt, finishedAt: Date.now() };
+    } finally {
+      const remaining = (this.runningTaskCounts.get(taskId) ?? 1) - 1;
+      if (remaining > 0) this.runningTaskCounts.set(taskId, remaining);
+      else this.runningTaskCounts.delete(taskId);
     }
   }
 
@@ -227,7 +610,7 @@ export class KnowledgeEngine implements Knowledge {
     // primary (write) space — the space the message belongs to.
     const stores = spaces.filter((s) => this.registry.has(s)).map((s) => this.registry.store(s));
     const primary = spaces[0] ?? stores[0]?.space;
-    const client = primary ? this.clientForSpace(primary) : this.clientForSpace(spaces[0]!);
+    const client = primary ? this.llmClientForSpace(primary) : this.llmClientForSpace(spaces[0]!);
     return askImpl(stores, question, opts, { client });
   }
 
@@ -269,18 +652,59 @@ export class KnowledgeEngine implements Knowledge {
 
   async health(): Promise<HealthReport> {
     const spaces = this.registry.list();
-    const gatewayOk = await ping().catch(() => false);
+    let ok = true;
+    const spaceDetails = spaces.map((space) => {
+      try {
+        const index = this.registry.store(space.id).index();
+        return {
+          id: space.id,
+          ok: true,
+          pages: index.countPages(),
+          pendingRaw: index.countRaw(true),
+          lastDreamAt: space.lastDreamAt,
+        };
+      } catch (err) {
+        ok = false;
+        return { id: space.id, ok: false, error: String(err), lastDreamAt: space.lastDreamAt };
+      }
+    });
+    const reminders = this.reminders.list();
+    const reminderCounts = reminders.reduce(
+      (counts, reminder) => {
+        counts[reminder.status] += 1;
+        return counts;
+      },
+      { scheduled: 0, completed: 0, cancelled: 0 },
+    );
     return {
-      ok: gatewayOk,
+      ok,
       spaces: spaces.length,
       details: {
-        gatewayOk,
-        spaces: spaces.map((s) => ({
-          id: s.id,
-          pages: this.registry.store(s.id).index().countPages(),
-          pendingRaw: this.registry.store(s.id).index().countRaw(true),
-          lastDreamAt: s.lastDreamAt,
+        mode: "cli-only",
+        providerRuns: [...this.providerRuns.values()]
+          .map((run) => ({ ...run }))
+          .sort((a, b) => a.provider.localeCompare(b.provider)),
+        dreamCycles: [...this.dreamCycles.values()]
+          .map((cycle) => ({ ...cycle }))
+          .sort((a, b) => a.space.localeCompare(b.space)),
+        tasks: this.tasks.list().map((task) => ({
+          id: task.id,
+          name: task.name,
+          space: task.space,
+          enabled: task.enabled,
+          running: (this.runningTaskCounts.get(task.id) ?? 0) > 0,
+          lastRunAt: task.lastRunAt,
+          lastStatus: task.lastStatus,
+          lastError: task.lastError,
         })),
+        reminders: {
+          total: reminders.length,
+          ...reminderCounts,
+          delivering: reminders.filter(
+            (reminder) => (this.deliveringReminderCounts.get(reminder.id) ?? 0) > 0,
+          ).length,
+        },
+        spaces: spaceDetails,
       },
     };
   }

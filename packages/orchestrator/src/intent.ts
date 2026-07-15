@@ -10,8 +10,8 @@
  * The classifier is injected an LlmClient (from core) so it is unit-testable
  * offline with a fake.
  */
-import { config } from "@homebrain/shared";
-import type { LlmClient } from "@homebrain/core";
+import { config } from "@homeagent/shared";
+import type { LlmClient } from "@homeagent/core";
 
 export type Intent = "question" | "remember" | "command" | "chitchat";
 
@@ -20,6 +20,9 @@ export interface Classification {
   /** true when the deterministic pre-filter decided, skipping the model */
   prefiltered: boolean;
 }
+
+/** Lazily resolves the space-scoped client after the no-model prefilter. */
+export type IntentClientResolver = () => LlmClient;
 
 /** Short pure-greeting / acknowledgement phrases that never need a model call. */
 const GREETINGS = new Set([
@@ -60,8 +63,11 @@ function validate(raw: unknown): { intent: Intent } {
   return { intent };
 }
 
-export async function classifyIntent(client: LlmClient, text: string): Promise<Classification> {
+export async function classifyIntent(resolveClient: IntentClientResolver, text: string): Promise<Classification> {
   if (prefilterChitchat(text)) return { intent: "chitchat", prefiltered: true };
+  // Resolve outside the classifier-failure fallback: missing configuration must
+  // reach the runtime so it can give actionable setup guidance.
+  const client = resolveClient();
   try {
     const { value } = await client.completeJSON<{ intent: Intent }>({
       model: config().modelFast,

@@ -8,7 +8,7 @@
  */
 
 export const GROUP_ADDED_NOTICE = [
-  "大家好，我是 homebrain 🧠。",
+  "大家好，我是 homeagent 🧠。",
   "我会学习本群里分享的知识，用于以后回答大家的问题（@我 即可提问）。",
   "如果某条消息不希望我记录，回复时 @我 说「别记这条」即可撤回。",
 ].join("\n");
@@ -19,9 +19,20 @@ export const GROUP_ADDED_NOTICE = [
  * Directs the operator to the management backend rather than failing silently.
  */
 export const NO_PROVIDER_NOTICE = [
-  "⚠️ 我暂时无法作答：本群还没有配置可用的回答 Agent。",
-  "请在管理后台 Integrations 给本群指定一个 Agent，或在设置里配置默认的本机 CLI。",
+  "⚠️ 回答 Agent 暂时不可用，可能是本机 CLI 未配置、鉴权失败或服务不可达。",
+  "请在管理后台检查当前空间的 Agent，或在设置里更换默认的本机 CLI。",
 ].join("\n");
+
+export const PROVIDER_TIMEOUT_NOTICE = [
+  "⚠️ 回答超时：当前 Agent 已配置，但本机 AI 没有在 120 秒内完成这次回答。",
+  "可以稍后重试或改用更快的模型；Codex 推荐在“设置”或当前空间的 Agent 中选择 gpt-5.6-luna。",
+].join("\n");
+
+export function providerNotice(error: unknown): string {
+  return /timed?\s*out|timeout|超时/i.test(String(error))
+    ? PROVIDER_TIMEOUT_NOTICE
+    : NO_PROVIDER_NOTICE;
+}
 
 /** Usage help for the /task chat commands. */
 export const TASK_HELP = [

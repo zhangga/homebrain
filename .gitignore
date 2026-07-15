@@ -9,10 +9,9 @@ coverage/
 
 .idea/
 
-# homebrain
+# homeagent
 data/
 reference/
 *.db
 *.db-shm
 *.db-wal
-bun.lock

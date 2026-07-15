@@ -2,8 +2,8 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { type SpaceId } from "@homebrain/shared";
-import { KnowledgeEngine, type Task } from "@homebrain/core";
+import { type SpaceId } from "@homeagent/shared";
+import { KnowledgeEngine, type Task } from "@homeagent/core";
 import { shouldRunTask, TaskScheduler } from "./task-scheduler.ts";
 
 const SPACE: SpaceId = "team/oc_tsched";
@@ -90,5 +90,42 @@ describe("TaskScheduler.tick", () => {
     const ran = await sched.tick("test", T10);
     expect(ran).not.toContain(t.id);
     expect(notified).toEqual([]);
+  });
+
+  test("exposes whether the task scheduler loop is started", async () => {
+    const sched = new TaskScheduler(engine);
+
+    await sched.start();
+    expect(sched.health()).toEqual(
+      expect.objectContaining({
+        started: true,
+        running: false,
+        lastStatus: "ok",
+        lastSuccessAt: expect.any(Number),
+        lastReason: "startup-catchup",
+      }),
+    );
+
+    sched.stop();
+    expect(sched.health().started).toBe(false);
+  });
+
+  test("records a startup failure and does not claim the loop started", async () => {
+    engine.tasks.list = () => {
+      throw new Error("task registry unavailable");
+    };
+    const sched = new TaskScheduler(engine);
+
+    await expect(sched.start()).rejects.toThrow("task registry unavailable");
+    expect(sched.health()).toEqual(
+      expect.objectContaining({
+        started: false,
+        running: false,
+        lastStatus: "error",
+        lastFailureAt: expect.any(Number),
+        lastReason: "startup-catchup",
+        lastError: expect.stringContaining("task registry unavailable"),
+      }),
+    );
   });
 });

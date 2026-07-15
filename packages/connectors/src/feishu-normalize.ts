@@ -14,10 +14,13 @@
  *   1. a `mentions[]` array (feishu's raw field, often preserved) whose entry
  *      open_id matches the configured bot open_id, or whose name matches the
  *      configured bot name;
- *   2. the rendered content containing "@<botName>".
- * Operators set HOMEBRAIN_FEISHU_BOT_NAME / _OPEN_ID for precise gating; without
+ *   2. the rendered content containing "@<botName>";
+ *   3. when identity hints and structured mentions are both absent, a textual
+ *      @mention token in the rendered content.
+ * Operators set HOMEAGENT_FEISHU_BOT_NAME / _OPEN_ID for precise gating; without
  * them we fall back to "any mention present" so the bot is not permanently mute.
  */
+import type { Attachment } from "@homeagent/shared";
 import type { BotAddedEvent, InboundMessage } from "./connector.ts";
 
 export interface FeishuIdentity {
@@ -33,6 +36,47 @@ interface MentionEntry {
 
 function asString(v: unknown): string | undefined {
   return typeof v === "string" && v.length > 0 ? v : undefined;
+}
+
+export interface FeishuMessageResource {
+  kind: Attachment["kind"];
+  fileKey: string;
+  resourceType: "image" | "file";
+  name?: string;
+}
+
+export function parseMessageResources(
+  messageType: string | undefined,
+  content: string | undefined,
+): FeishuMessageResource[] {
+  if (!messageType || !content || !["image", "file", "audio", "media"].includes(messageType)) {
+    return [];
+  }
+
+  let value: unknown;
+  try {
+    value = JSON.parse(content);
+  } catch {
+    return [];
+  }
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return [];
+  const parsed = value as Record<string, unknown>;
+
+  const imageKey = asString(parsed.image_key);
+  const fileKey = asString(parsed.file_key);
+  const name = asString(parsed.file_name);
+  if (messageType === "image" && imageKey) {
+    return [{ kind: "image", fileKey: imageKey, resourceType: "image" }];
+  }
+  if (!fileKey) return [];
+
+  const kind: Attachment["kind"] =
+    messageType === "audio"
+      ? "audio"
+      : name?.toLowerCase().endsWith(".pdf")
+        ? "pdf"
+        : "file";
+  return [{ kind, fileKey, resourceType: "file", name }];
 }
 
 function extractMentions(obj: Record<string, unknown>): MentionEntry[] {
@@ -63,6 +107,10 @@ export function detectBotMention(
   // No precise identity configured: any mention is assumed to address the bot
   // (people @ the bot to ask it). This keeps a group-added bot responsive.
   if (!identity.botOpenId && !identity.botName && mentions.length > 0) return true;
+  // lark-cli's flattened receive event can omit `mentions[]` while retaining
+  // the rendered "@BotName" token. Require start/whitespace before @ so an
+  // email address does not accidentally open the group reply gate.
+  if (!identity.botOpenId && !identity.botName && /(?:^|\s)@\S+/u.test(content)) return true;
 
   return false;
 }
@@ -101,6 +149,7 @@ export function normalizeMessage(
     senderId,
     text: content,
     messageId,
+    messageType: asString(obj.message_type),
     mentionsBot: chatType === "p2p" ? true : detectBotMention(obj, content, identity),
     docLinks: extractDocLinks(content),
     createdAt: Number.isFinite(createdAt) ? createdAt : Date.now(),

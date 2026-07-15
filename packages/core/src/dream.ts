@@ -21,8 +21,8 @@
  */
 import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { DreamReport, Page, RawRecord } from "@homebrain/shared";
-import { config, logger } from "@homebrain/shared";
+import type { DreamReport, Page, RawRecord } from "@homeagent/shared";
+import { config, logger } from "@homeagent/shared";
 import type { SpaceStore } from "./space.ts";
 import type { DreamOptions } from "./types.ts";
 import { gatewayClient, type LlmClient } from "./llm.ts";
@@ -332,14 +332,21 @@ export async function runDreamCycle(
   const errors: string[] = [];
 
   const idx = store.index();
-  const batch = idx.listRaw({
-    onlyPending: !force,
-    limit: opts.maxEntries ?? DEFAULT_MAX_ENTRIES,
-  });
+  const batch =
+    opts.rawIds === undefined
+      ? idx.listRaw({
+          onlyPending: !force,
+          limit: opts.maxEntries ?? DEFAULT_MAX_ENTRIES,
+        })
+      : idx.listRawByIds(opts.rawIds, {
+          onlyPending: !force,
+          limit: opts.maxEntries,
+        });
 
   const report: DreamReport = {
     space: store.space,
     examined: batch.length,
+    processedRawIds: [],
     distilled: 0,
     skipped: 0,
     pagesWritten: 0,
@@ -414,6 +421,7 @@ export async function runDreamCycle(
   }
 
   idx.markIngested([...ingestedIds]);
+  report.processedRawIds = [...ingestedIds];
 
   // Refresh the deterministic map pages and append a log line.
   if (report.pagesWritten > 0) {

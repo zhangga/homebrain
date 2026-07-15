@@ -6,10 +6,27 @@
  */
 import { html, raw } from "hono/html";
 import type { HtmlEscapedString } from "hono/utils/html";
-import type { AskResult, PageRef, RawRecord, SpaceId, Page } from "@homebrain/shared";
-import type { SpaceMeta, Agent, Task } from "@homebrain/core";
-import { AGENT_PERMISSIONS, TASK_CADENCES } from "@homebrain/core";
-import type { DetectedProvider } from "@homebrain/llm";
+import type {
+  AskResult,
+  PageRef,
+  RawRecord,
+  SpaceId,
+  Page,
+  SystemHealthSnapshot,
+  LarkProvisioningSession,
+  LarkSetupStatus,
+} from "@homeagent/shared";
+import type { SpaceMeta, Agent, Task, Reminder } from "@homeagent/core";
+import { AGENT_PERMISSIONS, TASK_CADENCES } from "@homeagent/core";
+import { codexReasoningEffortsForModel, type DetectedProvider } from "@homeagent/llm";
+import type { FeishuRuntimeStatus } from "./integrations.ts";
+import type { FeishuExternalSharingStatus } from "./external-sharing.ts";
+import {
+  feishuProvisioningPollScript,
+  isFeishuProvisioningActive,
+  isFeishuProvisioningFailure,
+} from "./feishu-provisioning-view.ts";
+import { safeLarkVerificationUrl } from "./verification-url.ts";
 
 const SINGLETON = new Set(["index", "overview", "log", "glossary"]);
 
@@ -175,6 +192,124 @@ function escapePre(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
+// ---- runtime health -------------------------------------------------------
+
+export function healthView(
+  snapshot: SystemHealthSnapshot,
+  flashMsg?: string,
+  serviceRestartable = false,
+): HtmlEscapedString | Promise<HtmlEscapedString> {
+  const labels: Record<string, string> = {
+    knowledge: "知识存储",
+    providers: "本机 CLI",
+    feishu: "飞书事件消费者",
+    dreamCycles: "Dream Cycle",
+    tasks: "任务执行",
+    dreamScheduler: "Dream Cycle 调度器",
+    taskScheduler: "任务调度器",
+    service: "后台服务",
+  };
+  const rows = Object.entries(snapshot.components).map(([key, component]) => {
+    const serviceDetails = key === "service" ? component.details : undefined;
+    const serviceControls = serviceDetails
+      ? html`<div class="row" style="margin-top:12px">
+          <span class="muted">PID：${String(serviceDetails.pid ?? "—")} · 启动时间：${fmtTime(
+            typeof serviceDetails.startedAt === "number" ? serviceDetails.startedAt : undefined,
+          )}</span>
+          ${serviceRestartable && serviceDetails.managed === true
+            ? html`<form method="post" action="/service/restart" class="inline-form"
+                onsubmit="return confirm('安全重启 homeagent 后台服务？')">
+                <button type="submit" class="secondary">安全重启</button>
+              </form>`
+            : ""}
+        </div>`
+      : "";
+    const details = component.details
+      ? html`<details><summary class="muted">查看详情</summary><pre>${raw(
+          escapePre(JSON.stringify(component.details, null, 2)),
+        )}</pre></details>`
+      : "";
+    return html`<div class="card">
+      <div class="row">
+        <strong>${labels[key] ?? key}</strong>
+        <span class="badge ${component.status}">${component.status}</span>
+      </div>
+      <div style="margin-top:8px">${component.summary}</div>
+      ${serviceControls}
+      ${details}
+    </div>`;
+  });
+  return html`<h1>运行状态</h1>
+    <p class="subtitle">检查时间：${fmtTime(snapshot.checkedAt)} · Ready：${snapshot.ready ? "是" : "否"}</p>
+    ${flash(flashMsg)}
+    <div class="card">
+      <div class="row">
+        <strong>总体状态</strong>
+        <span class="badge ${snapshot.status}">${snapshot.status}</span>
+      </div>
+    </div>
+    ${rows}`;
+}
+
+// ---- data governance -----------------------------------------------------
+
+export interface GovernanceSpaceSummary {
+  meta: SpaceMeta;
+  pages: number;
+  raw: number;
+  pending: number;
+  tasks: number;
+}
+
+export function governanceView(
+  spaces: GovernanceSpaceSummary[],
+  retentionDays: number,
+  flashMsg?: string,
+): HtmlEscapedString | Promise<HtmlEscapedString> {
+  const rows = spaces.length === 0
+    ? html`<tr><td colspan="6" class="empty">暂无空间</td></tr>`
+    : spaces.map(({ meta, pages, raw: rawCount, pending, tasks }) => html`<tr>
+        <td><strong>${meta.name || meta.id}</strong><div class="muted">${meta.id}</div></td>
+        <td>${pages}</td>
+        <td>${rawCount}</td>
+        <td>${pending}</td>
+        <td>${tasks}</td>
+        <td>
+          <div class="actions">
+            <a class="btn secondary" href="/spaces/${encodeURIComponent(meta.id)}/export">导出</a>
+            <form method="post" action="/spaces/${encodeURIComponent(meta.id)}/delete" class="inline-form"
+              onsubmit="return confirm('永久删除该空间的知识、原始记录和任务？请先导出备份。后续新消息可能重新创建空空间。')">
+              <button type="submit" class="danger">删除</button>
+            </form>
+          </div>
+        </td>
+      </tr>`);
+  return html`<h1>数据治理</h1>
+    <p class="subtitle">导出版本化 JSON 备份、恢复空间，或永久删除空间数据。</p>
+    ${flash(flashMsg)}
+    <div class="card">
+      <h2 style="margin-top:0">原始消息保留</h2>
+      <p class="muted">当前策略：${retentionDays === 0 ? "永久保留" : `已提炼的消息正文保留 ${retentionDays} 天`}。待提炼消息和文档不会被删除。</p>
+      <form method="post" action="/governance/prune" class="actions"
+        onsubmit="return confirm('按当前保留周期立即清理已提炼的过期消息？')">
+        <button type="submit" class="secondary">立即清理</button>
+      </form>
+    </div>
+    <div class="card">
+      <h2 style="margin-top:0">恢复空间</h2>
+      <p class="muted">仅接受 homeagent.space v1 归档；已有同名空间不会被覆盖。</p>
+      <form method="post" action="/governance/restore" enctype="multipart/form-data" class="actions">
+        <input type="file" name="archive" accept="application/json,.json" required />
+        <button type="submit">上传并恢复</button>
+      </form>
+    </div>
+    <h2>空间数据</h2>
+    <table>
+      <thead><tr><th>空间</th><th>知识页</th><th>原始记录</th><th>待提炼</th><th>任务</th><th>操作</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>`;
+}
+
 // ---- Agents (mew two-pane: list + editor) ----------------------------------
 
 /** Agents page: list column + right editor. `selected` is the agent being edited (or null = new). */
@@ -183,6 +318,7 @@ export function agentsView(
   selected: Agent | null,
   providers: DetectedProvider[],
   models: Record<string, string[]>,
+  defaults: { provider: string; model: string },
   flashMsg?: string,
 ): HtmlEscapedString | Promise<HtmlEscapedString> {
   const listItems = agents.map((a) => {
@@ -200,6 +336,7 @@ export function agentsView(
   const nameVal = editing?.name ?? "";
   const instrVal = editing?.instruction ?? "";
   const modelVal = editing?.model ?? "";
+  const reasoningEffortVal = editing?.reasoningEffort ?? "";
   const providerVal = editing?.provider ?? providers.find((p) => p.available)?.id ?? "claude";
   const visVal = editing?.visibility ?? "Team";
   // Reserved task-execution fields (not consumed by ask/dream yet).
@@ -207,10 +344,18 @@ export function agentsView(
   const permVal = editing?.permission ?? "read-only";
   const skillsVal = (editing?.skills ?? []).join(", ");
   const permLabels: Record<string, string> = { "read-only": "只读", write: "可写", full: "完全访问" };
+  const reasoningEffortLabels: Record<string, string> = {
+    none: "无（None）",
+    low: "低（Low）",
+    medium: "中（Medium）",
+    high: "高（High）",
+    xhigh: "超高（Extra High）",
+    max: "最大（Max）",
+  };
 
   // Provider dropdown: only local CLIs, selectable when detected as runnable,
   // else greyed with the reason. (The internal API is used by the claude CLI
-  // itself, not exposed as a homebrain provider.)
+  // itself, not exposed as a homeagent provider.)
   const availableList = providers.filter((p) => p.available).map((p) => p.name).join("、");
   const providerOptions = providers.map((p) => {
     const sel = p.id === providerVal ? "selected" : "";
@@ -230,16 +375,48 @@ export function agentsView(
   if (modelVal && !initialModels.includes(modelVal)) {
     modelOpts.push(html`<option value="${modelVal}" selected>${modelVal}（自定义）</option>`);
   }
+  const inheritedCodexModel = defaults.provider === "codex" ? defaults.model : "";
+  const reasoningModels = [...new Set(["", ...(models.codex ?? []), ...(modelVal ? [modelVal] : [])])];
+  const reasoningCatalog = Object.fromEntries(
+    reasoningModels.map((model) => [
+      model,
+      codexReasoningEffortsForModel(model || inheritedCodexModel || undefined),
+    ]),
+  );
+  const initialReasoningEfforts = providerVal === "codex"
+    ? codexReasoningEffortsForModel(modelVal || inheritedCodexModel || undefined)
+    : [];
 
   // A tiny client script: on provider change, rebuild the Model <select> from
   // the embedded catalog. No framework — plain DOM.
   const catalogJson = JSON.stringify(models);
+  const reasoningCatalogJson = JSON.stringify(reasoningCatalog);
+  const reasoningLabelsJson = JSON.stringify(reasoningEffortLabels);
   const modelScript = raw(`<script>
 (function(){
   var CATALOG = ${catalogJson};
+  var REASONING = ${reasoningCatalogJson};
+  var REASONING_LABELS = ${reasoningLabelsJson};
   var prov = document.getElementById('agent-provider');
   var model = document.getElementById('agent-model');
-  if (!prov || !model) return;
+  var reasoning = document.getElementById('agent-reasoning-effort');
+  if (!prov || !model || !reasoning) return;
+  function syncReasoning(){
+    var current = reasoning.value;
+    reasoning.disabled = prov.value !== 'codex';
+    reasoning.innerHTML = '';
+    var inherited = document.createElement('option');
+    inherited.value = ''; inherited.textContent = '默认（继承 Codex 配置）';
+    reasoning.appendChild(inherited);
+    if (reasoning.disabled) return;
+    var list = model.value === '' ? (REASONING[''] || []) : (REASONING[model.value] || []);
+    list.forEach(function(effort){
+      var option = document.createElement('option');
+      option.value = effort; option.textContent = REASONING_LABELS[effort] || effort;
+      if (effort === current) option.selected = true;
+      reasoning.appendChild(option);
+    });
+  }
   prov.addEventListener('change', function(){
     var list = CATALOG[prov.value] || [];
     var cur = model.value;
@@ -253,7 +430,10 @@ export function agentsView(
       if (m === cur) o.selected = true;
       model.appendChild(o);
     });
+    syncReasoning();
   });
+  model.addEventListener('change', syncReasoning);
+  syncReasoning();
 })();
 </script>`);
 
@@ -294,6 +474,15 @@ export function agentsView(
               <label>Model <span class="hint">随 Provider 变化</span></label>
               <select name="model" id="agent-model">
                 ${modelOpts}
+              </select>
+            </div>
+            <div class="field">
+              <label>推理强度 <span class="hint">仅 Codex；档位随模型变化，级别越高通常越慢</span></label>
+              <select name="reasoningEffort" id="agent-reasoning-effort" ${providerVal === "codex" ? "" : "disabled"}>
+                <option value="" ${reasoningEffortVal === "" ? "selected" : ""}>默认（继承 Codex 配置）</option>
+                ${initialReasoningEfforts.map(
+                  (effort) => html`<option value="${effort}" ${effort === reasoningEffortVal ? "selected" : ""}>${reasoningEffortLabels[effort] ?? effort}</option>`,
+                )}
               </select>
             </div>
             <div class="field">
@@ -457,15 +646,148 @@ export function tasksView(
     </div>`;
 }
 
-// ---- Integrations (mew: Lark bot + Lark groups) ----------------------------
-export function integrationsView(
-  botName: string,
-  botOpenId: string,
-  groups: SpaceMeta[],
-  agents: Agent[],
+// ---- Reminders ------------------------------------------------------------
+
+const REMINDER_STATUS_LABELS: Record<Reminder["status"], string> = {
+  scheduled: "待提醒",
+  completed: "已完成",
+  cancelled: "已取消",
+};
+
+export function remindersView(
+  reminders: Reminder[],
   flashMsg?: string,
 ): HtmlEscapedString | Promise<HtmlEscapedString> {
+  const rows = reminders.map((reminder) => {
+    const controls = reminder.status === "scheduled"
+      ? html`<div class="actions">
+          <form method="post" action="/reminders/${encodeURIComponent(reminder.id)}/complete" class="inline-form">
+            <button type="submit" class="secondary">标记完成</button>
+          </form>
+          <form method="post" action="/reminders/${encodeURIComponent(reminder.id)}/cancel" class="inline-form"
+            onsubmit="return confirm('取消该提醒？')">
+            <button type="submit" class="danger">取消提醒</button>
+          </form>
+        </div>`
+      : "";
+    return html`<tr>
+      <td><strong>${reminder.title}</strong><div class="muted">${reminder.id}</div></td>
+      <td>${fmtTime(reminder.nextTriggerAt)}</td>
+      <td><span class="badge ${reminder.status === "scheduled" ? "knowledge" : "general"}">${REMINDER_STATUS_LABELS[reminder.status]}</span>
+        ${reminder.untilConfirmed && reminder.repeatEveryMs
+          ? html`<div class="muted">每 ${Math.round(reminder.repeatEveryMs / 3600_000)} 小时，直到确认</div>`
+          : ""}</td>
+      <td>${reminder.space}<div class="muted">创建者：${reminder.creatorId}</div></td>
+      <td>${controls}</td>
+    </tr>`;
+  });
+  return html`<h1>提醒</h1>
+    <p class="subtitle">通过飞书对机器人说“明天上午 9 点提醒我……”即可创建。这里显示持久化状态并提供管理员控制。</p>
+    ${flash(flashMsg)}
+    ${rows.length > 0
+      ? html`<table>
+          <tr><th>内容</th><th>下次提醒</th><th>状态</th><th>空间</th><th>操作</th></tr>
+          ${rows}
+        </table>`
+      : html`<div class="empty">还没有提醒。</div>`}`;
+}
+
+// ---- Integrations (mew: Lark bot + Lark groups) ----------------------------
+function feishuProvisioningControl(
+  setup: LarkSetupStatus,
+  provisioning: LarkProvisioningSession,
+): HtmlEscapedString | Promise<HtmlEscapedString> {
+  const url = safeLarkVerificationUrl(provisioning.verificationUrl);
+  const active = isFeishuProvisioningActive(provisioning.state);
+  if (active) {
+    return html`<div class="integration-actions">
+      <span class="muted">${provisioning.state === "verifying" ? "正在验证机器人和授权…" : provisioning.message}</span>
+      ${url ? html`<a class="btn" href="${url}" target="_blank" rel="noreferrer">打开飞书并确认</a>` : ""}
+      ${feishuProvisioningPollScript()}
+    </div>`;
+  }
+  const label = setup.state === "ready" && setup.verified ? "创建并切换机器人" : "一键创建并连接";
+  return html`<form method="post" action="/setup/feishu/automatic" class="integration-actions">
+    ${isFeishuProvisioningFailure(provisioning.state)
+      ? html`<span class="muted">${provisioning.message}</span>`
+      : ""}
+    <input type="hidden" name="brand" value="feishu" />
+    <input type="hidden" name="returnTo" value="/integrations" />
+    <button type="submit">${label}</button>
+  </form>`;
+}
+
+function externalSharingControl(
+  sharing: FeishuExternalSharingStatus,
+): HtmlEscapedString | Promise<HtmlEscapedString> {
+  if (sharing.state === "verified") {
+    return html`<div class="integration-actions"><span class="badge ok">对外共享已验证</span><span class="muted">${sharing.verifiedGroupName ?? sharing.verifiedChatId ?? "外部群消息已收到"}</span></div>`;
+  }
+  if (sharing.state === "awaiting_external_message") {
+    return html`<div class="integration-actions"><span class="badge degraded">等待外部群消息</span>${sharing.consoleUrl ? html`<a class="btn secondary" href="${sharing.consoleUrl}" target="_blank" rel="noreferrer">打开飞书应用</a>` : ""}<a class="btn secondary" href="/integrations">重新检查</a></div>`;
+  }
+  if (sharing.state === "skipped") {
+    return html`<div class="integration-actions"><span class="muted">当前仅供企业内部使用</span>
+      ${sharing.consoleUrl ? html`<a class="btn secondary" href="${sharing.consoleUrl}" target="_blank" rel="noreferrer">打开飞书应用</a>` : ""}
+      <form method="post" action="/setup/feishu/external-sharing/start">
+        <input type="hidden" name="returnTo" value="/integrations" />
+        <button type="submit" class="secondary">我已提交，开始验证</button>
+      </form>
+    </div>`;
+  }
+  return html`<div class="integration-actions">
+    ${sharing.consoleUrl ? html`<a class="btn secondary" href="${sharing.consoleUrl}" target="_blank" rel="noreferrer">打开当前飞书应用</a>` : ""}
+    <form method="post" action="/setup/feishu/external-sharing/start">
+      <input type="hidden" name="returnTo" value="/integrations" />
+      <button type="submit">开始对外共享验证</button>
+    </form>
+  </div>`;
+}
+
+export interface IntegrationsViewInput {
+  botName: string;
+  botOpenId: string;
+  setup: LarkSetupStatus;
+  provisioning: LarkProvisioningSession;
+  restartRequired: boolean;
+  runtime?: FeishuRuntimeStatus;
+  externalSharing: FeishuExternalSharingStatus;
+  groups: SpaceMeta[];
+  agents: Agent[];
+  flashMsg?: string;
+}
+
+export function integrationsView(
+  input: IntegrationsViewInput,
+): HtmlEscapedString | Promise<HtmlEscapedString> {
+  const {
+    botName,
+    botOpenId,
+    setup,
+    provisioning,
+    restartRequired,
+    runtime,
+    externalSharing,
+    groups,
+    agents,
+    flashMsg,
+  } = input;
+  const shownBotName = setup.botName ?? botName;
+  const shownBotOpenId = setup.botOpenId ?? botOpenId;
   const agentName = (id?: string) => agents.find((a) => a.id === id)?.name;
+  const runtimeFailed = runtime?.consumers.some((consumer) => consumer.state === "failed") ?? false;
+  const runtimeBadge = restartRequired
+    ? html`<span class="badge degraded">需要重启</span>`
+    : runtimeFailed
+      ? html`<span class="badge down">消息监听异常</span>`
+      : runtime?.ready
+        ? html`<span class="badge ok">消息监听已就绪</span>`
+        : html`<span class="badge degraded">等待连接</span>`;
+  const runtimeRecovery = restartRequired
+    ? html`<a class="btn secondary" href="/health">前往运行状态重启</a>`
+    : runtimeFailed
+      ? html`<a class="btn secondary" href="/health">前往运行状态恢复</a>`
+      : "";
 
   const groupCards = groups.length
     ? groups.map((g) => {
@@ -503,44 +825,83 @@ export function integrationsView(
               <label class="switch"><input type="checkbox" name="replyInThread" ${(g.replyInThread ?? true) ? "checked" : ""} /><span class="slider"></span></label>
             </div>
             <div class="toggle-row">
-              <div><strong>@ mentions only</strong><div class="hint">仅在被 @ 时回复；关闭后响应群内全部消息</div></div>
+              <div><strong>@ mentions only</strong><div class="hint">推荐开启；敏感权限已在创建时申请。若企业尚未批准，关闭后可能无法收到全部消息。</div></div>
               <label class="switch"><input type="checkbox" name="mentionsOnly" ${(g.mentionsOnly ?? true) ? "checked" : ""} /><span class="slider"></span></label>
             </div>
-            <div class="actions"><button type="submit">保存群设置</button></div>
+            <div class="actions">
+              <button type="submit">保存群设置</button>
+              <button type="submit" class="secondary" formaction="/integrations/groups/${enc}/test">发送测试消息</button>
+            </div>
           </form>
         </div>`;
       })
     : [html`<div class="empty">还没有群空间。把机器人加入飞书群即可出现在这里。</div>`];
 
-  return html`<h1>Integrations</h1>
-    <p class="subtitle">Connect homebrain to external channels and tools.</p>
+  return html`<h1>飞书连接</h1>
+    <p class="subtitle">创建机器人、连接群聊，并管理每个群的回答方式。</p>
     ${flash(flashMsg)}
 
-    <div class="card">
-      <div class="row">
+    <section class="card integration-card">
+      <div class="integration-row">
         <div>
-          <div style="font-weight:600">Lark bot</div>
-          <div class="muted">用于收发飞书群消息的机器人身份（改动需重启生效）。</div>
+          <strong>飞书机器人</strong>
+          <div class="muted">接收群消息、发送回答，并建立群知识空间。</div>
         </div>
+        ${setup.state === "ready" && setup.verified
+          ? html`<div class="connection-pill"><span><span class="dot"></span>${shownBotName || "已连接机器人"}</span><span class="muted">${restartRequired ? "待启用" : "当前"}</span></div>`
+          : feishuProvisioningControl(setup, provisioning)}
       </div>
-      <form method="post" action="/integrations/bot" class="stack" style="margin-top:12px">
+      ${setup.state === "ready" && setup.verified ? html`<div class="integration-row">
+        <div>
+          <strong>${shownBotName || "已连接机器人"}</strong>
+          <div class="muted">${setup.appId ?? ""}${shownBotOpenId ? ` · ${shownBotOpenId}` : ""}</div>
+        </div>
+        ${feishuProvisioningControl(setup, provisioning)}
+      </div>` : ""}
+      <div class="integration-row">
+        <div>
+          <strong>飞书群聊</strong>
+          <div class="muted">机器人加入群后自动建立对应工作空间。</div>
+        </div>
+        <div class="integration-actions">${runtimeBadge}${runtimeRecovery}</div>
+      </div>
+      ${setup.state === "ready" && setup.verified && setup.brand !== "lark" ? html`<div class="integration-row">
+        <div>
+          <strong>对外共享</strong>
+          <div class="muted">允许机器人加入外部群，并接受外部用户私聊。</div>
+        </div>
+        ${externalSharingControl(externalSharing)}
+      </div>` : ""}
+      <div class="integration-detail">
+        <div class="muted">首次确认会申请完整权限：消息收发、群消息读取、附件、表情、群信息和两条事件订阅。企业管理员可能需要在这次确认中批准敏感权限；上述权限无需事后进入开放平台补配置。手动连接已有应用时仍需自行确认权限。对外共享由飞书限制在版本发布流程中：创建版本时开启“允许机器人被添加到外部群中使用”和“允许外部用户与机器人单聊”，再提交发布并完成管理员审批。</div>
+      </div>
+    </section>
+
+    <h2>已连接群聊</h2>
+    ${groupCards}
+
+    <details class="card">
+      <summary style="cursor:pointer;font-weight:600">更多设置</summary>
+      <div class="muted" style="margin:10px 0 6px">手动连接已有应用，或重新验证当前 lark-cli 配置。</div>
+      <div class="muted" style="margin:0 0 14px">若一键创建未完成，请回到上方重试；只有手动应用缺少配置时，才需要在对应开发者后台补齐权限和事件订阅。</div>
+      <form method="post" action="/integrations/bot/setup" class="stack">
+        <div class="field">
+          <label>应用平台</label>
+          <select name="brand"><option value="feishu">飞书</option><option value="lark"${setup.brand === "lark" ? " selected" : ""}>Lark</option></select>
+        </div>
         <div class="grid2">
           <div class="field">
-            <label>Bot 名称 <span class="hint">HOMEBRAIN_FEISHU_BOT_NAME</span></label>
-            <input type="text" name="feishuBotName" value="${botName}" placeholder="homebrain" />
+            <label>App ID</label>
+            <input type="text" name="appId" placeholder="cli_..." required autocomplete="off" />
           </div>
           <div class="field">
-            <label>Bot open_id <span class="hint">HOMEBRAIN_FEISHU_BOT_OPEN_ID</span></label>
-            <input type="text" name="feishuBotOpenId" value="${botOpenId}" placeholder="ou_..." />
+            <label>App Secret</label>
+            <input type="password" name="appSecret" required autocomplete="new-password" />
           </div>
         </div>
-        <div class="actions"><button type="submit">保存 Bot</button></div>
+        <div class="actions"><button type="submit" class="secondary">手动连接已有应用</button><button type="submit" class="secondary" formnovalidate formaction="/integrations/bot/verify">只验证现有配置</button></div>
       </form>
-    </div>
-
-    <h2>Lark groups</h2>
-    <p class="subtitle" style="margin-top:-8px">管理群连接及其默认响应设置。</p>
-    ${groupCards}`;
+    </details>`;
 }
 
 // ---- Settings --------------------------------------------------------------
@@ -550,6 +911,7 @@ export interface SettingsData {
   defaultModel: string;
   dailyBudgetUsd: number;
   dreamHour: number;
+  rawRetentionDays: number;
   webPort: number;
 }
 
@@ -613,6 +975,7 @@ export function settingsView(
       <div class="grid2">
         <div class="field"><label>每日预算 (USD) <span class="hint">仅对可计费的 provider 有意义</span></label><input type="number" step="0.01" min="0" name="dailyBudgetUsd" value="${s.dailyBudgetUsd}" /></div>
         <div class="field"><label>提炼时刻 <span class="hint">0-23，Asia/Shanghai</span></label><input type="number" min="0" max="23" name="dreamHour" value="${s.dreamHour}" /></div>
+        <div class="field"><label>原始消息保留（天） <span class="hint">0 = 永久保留；仅清理已提炼消息</span></label><input type="number" min="0" max="36500" name="rawRetentionDays" value="${s.rawRetentionDays}" /></div>
         <div class="field"><label>后台端口 <span class="hint">重启生效</span></label><input type="number" min="1" max="65535" name="webPort" value="${s.webPort}" /></div>
       </div>
       <div class="actions"><button type="submit">保存设置</button></div>

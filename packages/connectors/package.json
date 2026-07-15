@@ -1,5 +1,5 @@
 {
-  "name": "@homebrain/connectors",
+  "name": "@homeagent/connectors",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -8,6 +8,7 @@
     ".": "./src/index.ts"
   },
   "dependencies": {
-    "@homebrain/shared": "workspace:*"
+    "@homeagent/shared": "workspace:*",
+    "@larksuiteoapi/node-sdk": "^1.71.1"
   }
 }

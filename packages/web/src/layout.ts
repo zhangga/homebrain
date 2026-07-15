@@ -3,7 +3,8 @@
  * tagged-template helper rather than JSX: it needs no transform config,
  * auto-escapes interpolations (XSS-safe by default), and keeps views as plain
  * functions. Layout mirrors mew's structure: a dark left nav rail with the main
- * sections (Spaces/Knowledge, Agents, Integrations, Logs, Settings), and a
+ * sections (Spaces/Knowledge, Agents, Tasks, Integrations, Governance, Health,
+ * Logs, Settings), and a
  * content area. Unlike the previous read-only viewer, forms here mutate — every
  * mutating form POSTs and re-renders.
  */
@@ -52,6 +53,14 @@ const STYLE = `
   .card { background:var(--card); border:1px solid var(--border); border-radius:10px; padding:16px 18px; margin-bottom:14px; }
   .row { display:flex; align-items:center; justify-content:space-between; gap:16px; }
   .row + .row { border-top:1px solid var(--border); padding-top:14px; margin-top:14px; }
+  .integration-card { padding:0; overflow:hidden; }
+  .integration-row { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:24px; align-items:center; padding:18px 20px; }
+  .integration-row + .integration-row { border-top:1px solid var(--border); }
+  .connection-pill { min-width:220px; display:flex; align-items:center; justify-content:space-between; gap:12px;
+    padding:9px 12px; border:1px solid var(--border); border-radius:8px; background:#fff; color:#374151; font-size:13px; }
+  .connection-pill .dot { flex:0 0 auto; margin-right:0; }
+  .integration-actions { display:flex; align-items:center; justify-content:flex-end; flex-wrap:wrap; gap:8px; }
+  .integration-detail { padding:0 20px 18px; }
   .muted { color:var(--muted); font-size:13px; }
   .tag { display:inline-block; background:var(--accent-soft); color:var(--accent); border-radius:5px; padding:1px 8px; font-size:12px; margin-right:4px; }
   .dot { display:inline-block; width:8px; height:8px; border-radius:50%; background:var(--ok); margin-right:6px; vertical-align:middle; }
@@ -63,7 +72,7 @@ const STYLE = `
   .field { display:flex; flex-direction:column; gap:5px; margin-bottom:14px; }
   .field label { font-size:13px; font-weight:600; color:#374151; }
   .field .hint { font-size:12px; color:var(--muted); font-weight:400; }
-  input[type=text], input[type=number], select, textarea {
+  input[type=text], input[type=password], input[type=number], select, textarea {
     width:100%; padding:8px 11px; border:1px solid var(--border); border-radius:8px; font-size:14px; background:#fff; font-family:inherit; }
   textarea { min-height:96px; resize:vertical; }
   input:focus, select:focus, textarea:focus { outline:none; border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-soft); }
@@ -85,8 +94,12 @@ const STYLE = `
   .badge { font-size:12px; padding:2px 8px; border-radius:10px; }
   .badge.knowledge { background:var(--ok-soft); color:#166534; }
   .badge.general { background:var(--warn-soft); color:var(--warn); }
+  .badge.ok { background:var(--ok-soft); color:#166534; }
+  .badge.degraded { background:var(--warn-soft); color:var(--warn); }
+  .badge.down { background:#fee2e2; color:#991b1b; }
   .empty { color:var(--muted); padding:22px; text-align:center; }
   .flash { background:var(--ok-soft); color:#166534; border:1px solid #bbf7d0; border-radius:8px; padding:9px 13px; margin-bottom:16px; font-size:14px; }
+  .health-alert { background:#fee2e2; color:#991b1b; border:1px solid #fecaca; border-radius:8px; padding:9px 13px; margin-bottom:16px; font-size:14px; }
 
   /* toggle switch */
   .switch { position:relative; display:inline-block; width:40px; height:22px; }
@@ -96,6 +109,11 @@ const STYLE = `
   .switch input:checked + .slider { background:var(--accent); }
   .switch input:checked + .slider:before { transform:translateX(18px); }
   .toggle-row { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:8px 0; }
+  @media (max-width:720px) {
+    .integration-row { grid-template-columns:1fr; gap:12px; }
+    .integration-actions { justify-content:flex-start; }
+    .connection-pill { min-width:0; width:100%; }
+  }
 `;
 
 export interface Crumb {
@@ -108,7 +126,10 @@ const NAV: { key: string; label: string; href: string; ico: string }[] = [
   { key: "spaces", label: "空间 / 知识", href: "/", ico: "🗂" },
   { key: "agents", label: "Agents", href: "/agents", ico: "🤖" },
   { key: "tasks", label: "任务", href: "/tasks", ico: "⏰" },
-  { key: "integrations", label: "Integrations", href: "/integrations", ico: "🔌" },
+  { key: "reminders", label: "提醒", href: "/reminders", ico: "🔔" },
+  { key: "integrations", label: "飞书连接", href: "/integrations", ico: "🔌" },
+  { key: "governance", label: "数据治理", href: "/governance", ico: "🛡" },
+  { key: "health", label: "运行状态", href: "/health", ico: "🩺" },
   { key: "logs", label: "调用日志", href: "/logs", ico: "📋" },
   { key: "settings", label: "设置", href: "/settings", ico: "⚙️" },
 ];
@@ -136,12 +157,12 @@ export function layout(
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>${title} · homebrain</title>
+    <title>${title} · homeagent</title>
     <style>${raw(STYLE)}</style>
   </head>
   <body>
     <nav class="rail">
-      <div class="brand">🧠 homebrain</div>
+      <div class="brand">🧠 homeagent</div>
       ${navLinks}
       <div class="spacer"></div>
       <div class="foot">管理后台 · 内网自用</div>
@@ -149,9 +170,21 @@ export function layout(
     <div class="content">
       <main>
         <div class="crumbs">${trail}</div>
+        <div id="runtime-health-alert" class="health-alert" hidden>
+          运行状态异常，部分能力可能不可用。<a href="/health">查看详情</a>
+        </div>
         ${body}
       </main>
     </div>
+    <script>
+      fetch("/readyz", { cache: "no-store" })
+        .then(function (response) {
+          if (!response.ok) document.getElementById("runtime-health-alert").hidden = false;
+        })
+        .catch(function () {
+          document.getElementById("runtime-health-alert").hidden = false;
+        });
+    </script>
   </body>
 </html>`;
 }

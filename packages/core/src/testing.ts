@@ -3,7 +3,7 @@
  * the gateway, it returns queued responses (or runs a handler) and records the
  * calls it saw, so tests can assert on prompts and drive deterministic outputs.
  */
-import type { CompleteOptions, CompleteResult, JSONOptions } from "@homebrain/llm";
+import type { CompleteOptions, CompleteResult, JSONOptions } from "@homeagent/llm";
 import type { LlmClient } from "./llm.ts";
 
 export interface RecordedCall {

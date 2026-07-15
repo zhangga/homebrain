@@ -4,7 +4,7 @@
  * to execute tasks) in a space.
  *
  * Active fields (used today): name, instruction (persona), provider (local CLI),
- * model, visibility. Reserved fields for the upcoming task-execution platform
+ * model, Codex reasoning effort, visibility. Reserved fields for the upcoming task-execution platform
  * (learning tasks / todos / more) are stored and editable but NOT yet consumed
  * by ask/dream: workdir, permission, skills. They are surfaced in the UI marked
  * "尚未生效" so the data model is ready when the execution engine lands.
@@ -16,8 +16,14 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
-import type { ProviderId } from "@homebrain/llm";
-import { isCliProvider, DEFAULT_CLI_PROVIDER } from "@homebrain/llm";
+import type { CodexReasoningEffort, ProviderId } from "@homeagent/llm";
+import {
+  CODEX_REASONING_EFFORTS,
+  DEFAULT_CLI_PROVIDER,
+  isCliProvider,
+  isCodexReasoningEffortSupported,
+} from "@homeagent/llm";
+import { canonicalModelId } from "@homeagent/shared";
 
 /** Task-execution permission tier (reserved; not enforced yet). */
 export type AgentPermission = "read-only" | "write" | "full";
@@ -31,6 +37,8 @@ export interface Agent {
   instruction: string;
   /** model id; empty string means "use the global default model" */
   model: string;
+  /** Codex reasoning effort; empty string means "inherit the Codex default". */
+  reasoningEffort: CodexReasoningEffort | "";
   /** local agent CLI to run (claude / codex / trae-cli) */
   provider: ProviderId;
   /** display-only: "Personal" | "Team" etc. */
@@ -50,6 +58,7 @@ export interface AgentInput {
   name?: string;
   instruction?: string;
   model?: string;
+  reasoningEffort?: string;
   provider?: string;
   visibility?: string;
   workdir?: string;
@@ -73,6 +82,19 @@ function normalizeProvider(raw?: string): ProviderId {
 function normalizePermission(raw?: string): AgentPermission {
   const v = raw?.trim() as AgentPermission | undefined;
   return v && AGENT_PERMISSIONS.includes(v) ? v : "read-only";
+}
+
+/** Normalize a Codex reasoning level; unknown/empty => inherit the CLI default. */
+function normalizeReasoningEffort(raw: string | undefined, model: string): CodexReasoningEffort | "" {
+  const value = raw?.trim() as CodexReasoningEffort | undefined;
+  if (!value) return "";
+  if (!model) return CODEX_REASONING_EFFORTS.includes(value) ? value : "";
+  return isCodexReasoningEffortSupported(model, value) ? value : "";
+}
+
+/** Store the explicit GPT-5.6 Sol id instead of its shorter routing alias. */
+function normalizeModel(raw?: string): string {
+  return canonicalModelId(raw ?? "");
 }
 
 /** Parse skills from a string (comma/newline) or array into a clean string[]. */
@@ -103,9 +125,15 @@ export class AgentStore {
             const normalized = normalizeProvider(a.provider as string | undefined);
             if (normalized !== a.provider) migrated = true;
             a.provider = normalized;
+            const model = normalizeModel(a.model);
+            if (model !== a.model) migrated = true;
+            a.model = model;
             // Backfill reserved task-execution fields for older records.
             if (a.permission === undefined) { a.permission = "read-only"; migrated = true; }
             if (!Array.isArray(a.skills)) { a.skills = normalizeSkills(a.skills as unknown as string); migrated = true; }
+            const reasoningEffort = normalizeReasoningEffort(a.reasoningEffort, a.model);
+            if (reasoningEffort !== a.reasoningEffort) migrated = true;
+            a.reasoningEffort = reasoningEffort;
             map.set(id, a);
           }
         }
@@ -139,11 +167,13 @@ export class AgentStore {
 
   create(input: AgentInput): Agent {
     const now = Date.now();
+    const model = normalizeModel(input.model);
     const agent: Agent = {
       id: `agent_${randomUUID()}`,
       name: input.name?.trim() || "未命名 Agent",
       instruction: input.instruction ?? "",
-      model: input.model?.trim() ?? "",
+      model,
+      reasoningEffort: normalizeReasoningEffort(input.reasoningEffort, model),
       provider: normalizeProvider(input.provider),
       visibility: input.visibility?.trim() || "Team",
       workdir: input.workdir?.trim() || undefined,
@@ -163,7 +193,12 @@ export class AgentStore {
     if (!agent) return undefined;
     if (input.name !== undefined) agent.name = input.name.trim() || agent.name;
     if (input.instruction !== undefined) agent.instruction = input.instruction;
-    if (input.model !== undefined) agent.model = input.model.trim();
+    if (input.model !== undefined) agent.model = normalizeModel(input.model);
+    if (input.reasoningEffort !== undefined) {
+      agent.reasoningEffort = normalizeReasoningEffort(input.reasoningEffort, agent.model);
+    } else if (input.model !== undefined) {
+      agent.reasoningEffort = normalizeReasoningEffort(agent.reasoningEffort, agent.model);
+    }
     if (input.provider !== undefined) agent.provider = normalizeProvider(input.provider);
     if (input.visibility !== undefined) agent.visibility = input.visibility.trim() || agent.visibility;
     if (input.workdir !== undefined) agent.workdir = input.workdir.trim() || undefined;
@@ -178,5 +213,15 @@ export class AgentStore {
     const ok = this.agents.delete(id);
     if (ok) this.persist();
     return ok;
+  }
+
+  /** Restore an exact archived agent only when that id is not already present. */
+  restore(agent: Agent): Agent {
+    const existing = this.agents.get(agent.id);
+    if (existing) return existing;
+    const restored = { ...agent, skills: [...agent.skills] };
+    this.agents.set(restored.id, restored);
+    this.persist();
+    return restored;
   }
 }

@@ -14,9 +14,9 @@
  * The handler is a pure-ish function over the engine, returning the reply text;
  * long-running work (run) is fire-and-forget so the event loop isn't blocked.
  */
-import type { SpaceId } from "@homebrain/shared";
-import { logger, spaceKind } from "@homebrain/shared";
-import type { KnowledgeEngine, Task } from "@homebrain/core";
+import type { SpaceId } from "@homeagent/shared";
+import { logger, spaceKind } from "@homeagent/shared";
+import type { KnowledgeEngine, Task } from "@homeagent/core";
 import { TASK_HELP } from "./messages.ts";
 
 const log = logger.child("task-commands");

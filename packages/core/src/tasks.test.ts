@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { SpaceId } from "@homebrain/shared";
+import type { SpaceId } from "@homeagent/shared";
 import { TaskStore } from "./tasks.ts";
 
 let dir: string;

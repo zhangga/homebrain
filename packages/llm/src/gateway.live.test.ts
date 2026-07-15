@@ -1,12 +1,13 @@
 /**
- * Live gateway integration test. Skipped unless HOMEBRAIN_LIVE=1 so the default
+ * Live gateway integration test. Skipped unless HOMEAGENT_LIVE=1 so the default
  * `bun test` stays offline/deterministic. Run with:
- *   HOMEBRAIN_LIVE=1 bun test packages/llm/src/gateway.live.test.ts
+ *   HOMEAGENT_LIVE=1 bun test packages/llm/src/gateway.live.test.ts
  */
 import { describe, expect, test } from "bun:test";
+import { brandedEnv } from "@homeagent/shared";
 import { complete, completeJSON, ping } from "./gateway.ts";
 
-const LIVE = process.env.HOMEBRAIN_LIVE === "1";
+const LIVE = brandedEnv(process.env, "LIVE") === "1";
 const maybe = LIVE ? describe : describe.skip;
 
 maybe("gateway (live)", () => {

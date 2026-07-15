@@ -1,7 +1,7 @@
 /**
  * A CLI-backed LlmClient. Instead of the network gateway, all LLM work is run
  * through a local agent CLI (claude / codex / trae-cli) via runProvider(). This
- * is the only LLM path in homebrain — there is no network-API fallback.
+ * is the only LLM path in homeagent — there is no network-API fallback.
  *
  *   - complete(): the CLI's stdout is the answer text.
  *   - completeJSON(): we append a strict "output only JSON matching this schema"
@@ -14,16 +14,27 @@
  * they manage their own auth/model. Cost/usage isn't reliably available, so we
  * report zeros (the daily budget is not meaningful for CLI providers).
  */
-import type { CompleteOptions, CompleteResult, JSONOptions, ProviderId } from "@homebrain/llm";
-import { runProvider as realRunProvider } from "@homebrain/llm";
-import { logger } from "@homebrain/shared";
+import type {
+  CodexReasoningEffort,
+  CompleteOptions,
+  CompleteResult,
+  JSONOptions,
+  ProviderId,
+} from "@homeagent/llm";
+import { runProvider as realRunProvider } from "@homeagent/llm";
+import { logger } from "@homeagent/shared";
 import type { LlmClient } from "./llm.ts";
 
 const log = logger.child("cli-client");
 
 export type RunProviderFn = (
   id: ProviderId,
-  input: { prompt: string; system?: string; model?: string },
+  input: {
+    prompt: string;
+    system?: string;
+    model?: string;
+    reasoningEffort?: CodexReasoningEffort;
+  },
   timeoutMs?: number,
 ) => Promise<string>;
 
@@ -77,6 +88,7 @@ export function makeCliClient(
   model: string | undefined,
   run: RunProviderFn = realRunProvider,
   timeoutMs?: number,
+  reasoningEffort?: CodexReasoningEffort,
 ): LlmClient {
   // The model is fixed at construction (the engine already resolved it from the
   // space's agent / global default). We deliberately IGNORE per-call opts.model:
@@ -94,14 +106,22 @@ export function makeCliClient(
     async complete(opts: CompleteOptions): Promise<CompleteResult> {
       const base = opts.prompt ?? (opts.messages ?? []).map((m) => m.content).join("\n\n");
       const prompt = withSystem(opts.system, base);
-      const out = await run(provider, { prompt, system: opts.system, model: cliModel }, timeoutMs);
+      const out = await run(
+        provider,
+        { prompt, system: opts.system, model: cliModel, reasoningEffort },
+        timeoutMs,
+      );
       return { ...zeroResult(cliModel ?? provider), text: out.trim() };
     },
 
     async completeJSON<T>(opts: JSONOptions<T>): Promise<{ value: T; result: CompleteResult }> {
       const base = opts.prompt ?? (opts.messages ?? []).map((m) => m.content).join("\n\n");
       const prompt = withSystem(opts.system, base) + jsonInstruction(opts.schema);
-      const out = await run(provider, { prompt, system: opts.system, model: cliModel }, timeoutMs);
+      const out = await run(
+        provider,
+        { prompt, system: opts.system, model: cliModel, reasoningEffort },
+        timeoutMs,
+      );
       let parsed: unknown;
       try {
         parsed = extractJson(out);

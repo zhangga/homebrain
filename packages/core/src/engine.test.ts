@@ -4,7 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Knowledge } from "./knowledge.ts";
 import { KnowledgeEngine } from "./engine.ts";
-import type { Page, SpaceId } from "@homebrain/shared";
+import { FakeLlm } from "./testing.ts";
+import type { Page, SpaceId } from "@homeagent/shared";
 
 let dir: string;
 let engine: KnowledgeEngine;
@@ -52,6 +53,7 @@ describe("Knowledge seam contract", () => {
     const k: Knowledge = engine;
     for (const method of [
       "remember",
+      "retractMessage",
       "runDreamCycle",
       "ask",
       "search",
@@ -74,6 +76,171 @@ describe("Knowledge seam contract", () => {
     expect(typeof id).toBe("string");
     // no pages yet (distillation is a separate step)
     expect(await engine.listPages(SPACE)).toEqual([]);
+  });
+
+  test("message author can retract a pending capture by chat and message id", async () => {
+    await engine.remember({
+      space: SPACE,
+      source: "message",
+      author: "ou_owner",
+      chatId: "oc_contract",
+      messageId: "om_source",
+      content: "测试代号是北极星",
+    });
+
+    expect(
+      await engine.retractMessage(SPACE, {
+        chatId: "oc_contract",
+        messageId: "om_source",
+        requestedBy: "ou_owner",
+      }),
+    ).toEqual({ status: "retracted", affectedPages: [], requeuedSourceIds: [] });
+
+    expect(
+      await engine.retractMessage(SPACE, {
+        chatId: "oc_contract",
+        messageId: "om_source",
+        requestedBy: "ou_owner",
+      }),
+    ).toEqual({ status: "already_retracted", affectedPages: [], requeuedSourceIds: [] });
+    await engine.remember({
+      space: SPACE,
+      source: "message",
+      author: "ou_owner",
+      chatId: "oc_contract",
+      messageId: "om_source",
+      content: "重投也不能恢复北极星",
+    });
+    expect((await engine.runDreamCycle(SPACE)).examined).toBe(0);
+  });
+
+  test("one user cannot retract another user's captured message", async () => {
+    await engine.remember({
+      space: SPACE,
+      source: "message",
+      author: "ou_owner",
+      chatId: "oc_contract",
+      messageId: "om_source",
+      content: "只有作者能撤回",
+    });
+
+    expect(
+      await engine.retractMessage(SPACE, {
+        chatId: "oc_contract",
+        messageId: "om_source",
+        requestedBy: "ou_other",
+      }),
+    ).toEqual({ status: "forbidden", affectedPages: [], requeuedSourceIds: [] });
+    expect((await engine.runDreamCycle(SPACE)).examined).toBe(1);
+  });
+
+  test("group administrator can retract another user's captured message", async () => {
+    await engine.remember({
+      space: SPACE,
+      source: "message",
+      author: "ou_owner",
+      chatId: "oc_contract",
+      messageId: "om_source",
+      content: "管理员可以治理群知识",
+    });
+
+    expect(
+      await engine.retractMessage(SPACE, {
+        chatId: "oc_contract",
+        messageId: "om_source",
+        requestedBy: "ou_admin",
+        requesterIsAdmin: true,
+      }),
+    ).toEqual({ status: "retracted", affectedPages: [], requeuedSourceIds: [] });
+    expect((await engine.runDreamCycle(SPACE)).examined).toBe(0);
+  });
+
+  test("retraction removes every raw record derived from the same message", async () => {
+    for (const source of ["message", "doc"] as const) {
+      await engine.remember({
+        space: SPACE,
+        source,
+        author: "ou_owner",
+        chatId: "oc_contract",
+        messageId: "om_source",
+        content: source === "message" ? "见项目文档" : "文档正文",
+      });
+    }
+
+    expect(
+      await engine.retractMessage(SPACE, {
+        chatId: "oc_contract",
+        messageId: "om_source",
+        requestedBy: "ou_owner",
+      }),
+    ).toEqual({ status: "retracted", affectedPages: [], requeuedSourceIds: [] });
+    expect(
+      await engine.retractMessage(SPACE, {
+        chatId: "oc_contract",
+        messageId: "om_source",
+        requestedBy: "ou_owner",
+      }),
+    ).toEqual({ status: "already_retracted", affectedPages: [], requeuedSourceIds: [] });
+    expect((await engine.runDreamCycle(SPACE)).examined).toBe(0);
+  });
+
+  test("retracting an ingested source removes affected pages and requeues surviving sources", async () => {
+    const fake = new FakeLlm();
+    const retractEngine = new KnowledgeEngine({ dataDir: join(dir, "retraction"), llm: fake });
+    const removedId = await retractEngine.remember({
+      space: SPACE,
+      source: "message",
+      author: "ou_owner",
+      chatId: "oc_contract",
+      messageId: "om_remove",
+      content: "项目代号是北极星",
+    });
+    const survivingId = await retractEngine.remember({
+      space: SPACE,
+      source: "message",
+      author: "ou_owner",
+      chatId: "oc_contract",
+      messageId: "om_keep",
+      content: "项目负责人是 Alice",
+    });
+    fake.queueJSON({
+      operations: [
+        {
+          type: "concept",
+          name: "project-facts",
+          title: "项目信息",
+          rawIds: [removedId, survivingId],
+        },
+      ],
+      skippedRawIds: [],
+    });
+    fake.queueJSON({
+      title: "项目信息",
+      summary: "项目代号与负责人",
+      aliases: [],
+      tags: [],
+      links: [],
+      content: "# 项目信息\n项目代号是北极星，负责人是 Alice。",
+    });
+    await retractEngine.runDreamCycle(SPACE);
+    expect(await retractEngine.getPage(SPACE, "concepts/project-facts")).not.toBeNull();
+
+    expect(
+      await retractEngine.retractMessage(SPACE, {
+        chatId: "oc_contract",
+        messageId: "om_remove",
+        requestedBy: "ou_owner",
+      }),
+    ).toEqual({
+      status: "retracted",
+      affectedPages: ["concepts/project-facts"],
+      requeuedSourceIds: [survivingId],
+    });
+    expect(await retractEngine.getPage(SPACE, "concepts/project-facts")).toBeNull();
+
+    fake.queueJSON({ operations: [], skippedRawIds: [survivingId] });
+    expect((await retractEngine.runDreamCycle(SPACE)).examined).toBe(1);
+    retractEngine.close();
   });
 
   test("upsertPage writes markdown file and is searchable", async () => {
@@ -120,6 +287,122 @@ describe("Knowledge seam contract", () => {
     const report = await engine.runDreamCycle(SPACE);
     expect(report.space).toBe(SPACE);
     expect(typeof report.finishedAt).toBe("number");
+  });
+
+  test("health reports CLI execution success and failure without probing the old gateway", async () => {
+    const healthEngine = new KnowledgeEngine({
+      dataDir: join(dir, "health"),
+      runProvider: async (_provider, input) => {
+        if (input.prompt.includes("失败主题")) throw new Error("CLI authentication failed");
+        return "研究结果";
+      },
+    });
+    healthEngine.ensureSpace(SPACE);
+    const agent = healthEngine.agents.create({ name: "Codex", provider: "codex" });
+    healthEngine.registry.updateMeta(SPACE, { agentId: agent.id });
+    const successful = healthEngine.tasks.create({
+      name: "成功任务",
+      space: SPACE,
+      topic: "成功主题",
+      distillOnRun: false,
+    })!;
+    const failed = healthEngine.tasks.create({
+      name: "失败任务",
+      space: SPACE,
+      topic: "失败主题",
+      distillOnRun: false,
+    })!;
+
+    await healthEngine.runTask(successful.id);
+    await healthEngine.runTask(failed.id);
+    const report = await healthEngine.health();
+    const providerRuns = report.details?.providerRuns as Array<Record<string, unknown>>;
+    const tasks = report.details?.tasks as Array<Record<string, unknown>>;
+
+    expect(report.ok).toBe(true);
+    expect(report.details?.mode).toBe("cli-only");
+    expect(providerRuns).toEqual([
+      expect.objectContaining({
+        provider: "codex",
+        running: 0,
+        lastStatus: "error",
+        lastSuccessAt: expect.any(Number),
+        lastFailureAt: expect.any(Number),
+        lastError: "Error: CLI authentication failed",
+      }),
+    ]);
+    expect(tasks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: successful.id, running: false, lastStatus: "ok" }),
+        expect.objectContaining({
+          id: failed.id,
+          running: false,
+          lastStatus: "error",
+          lastError: "Error: CLI authentication failed",
+        }),
+      ]),
+    );
+    healthEngine.close();
+  });
+
+  test("health reports the latest dream-cycle outcome for each space", async () => {
+    await engine.remember({ space: SPACE, source: "message", content: "待提炼知识" });
+    await engine.runDreamCycle(SPACE);
+
+    const report = await engine.health();
+    expect(report.details?.dreamCycles).toEqual([
+      expect.objectContaining({
+        space: SPACE,
+        running: false,
+        lastStatus: "ok",
+        lastSuccessAt: expect.any(Number),
+        lastExamined: 1,
+      }),
+    ]);
+  });
+
+  test("health keeps a task running until all concurrent runs finish", async () => {
+    const completions: Array<(value: string) => void> = [];
+    const healthEngine = new KnowledgeEngine({
+      dataDir: join(dir, "concurrent-health"),
+      runProvider: async () => new Promise<string>((resolve) => completions.push(resolve)),
+    });
+    healthEngine.ensureSpace(SPACE);
+    const task = healthEngine.tasks.create({ name: "并发任务", space: SPACE, topic: "并发" })!;
+
+    const first = healthEngine.runTask(task.id, { distill: false });
+    const second = healthEngine.runTask(task.id, { distill: false });
+    expect(completions).toHaveLength(2);
+
+    completions[0]!("第一次完成");
+    await first;
+    let tasks = (await healthEngine.health()).details?.tasks as Array<Record<string, unknown>>;
+    expect(tasks[0]?.running).toBe(true);
+
+    completions[1]!("第二次完成");
+    await second;
+    tasks = (await healthEngine.health()).details?.tasks as Array<Record<string, unknown>>;
+    expect(tasks[0]?.running).toBe(false);
+    healthEngine.close();
+  });
+
+  test("health clears running state when task setup throws", async () => {
+    const healthEngine = new KnowledgeEngine({
+      dataDir: join(dir, "setup-failure-health"),
+      runProvider: async () => "unused",
+    });
+    healthEngine.ensureSpace(SPACE);
+    const task = healthEngine.tasks.create({ name: "失败任务", space: SPACE, topic: "失败" })!;
+    healthEngine.agentForSpace = () => {
+      throw new Error("agent store unavailable");
+    };
+
+    await expect(healthEngine.runTask(task.id, { distill: false })).rejects.toThrow(
+      "agent store unavailable",
+    );
+    const tasks = (await healthEngine.health()).details?.tasks as Array<Record<string, unknown>>;
+    expect(tasks[0]?.running).toBe(false);
+    healthEngine.close();
   });
 
   test("space scaffold seeds purpose.md and schema.md", async () => {

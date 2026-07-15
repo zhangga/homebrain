@@ -10,7 +10,7 @@
  * The markdown file is the source of truth; the SQLite index is a rebuildable
  * projection of it (plan §2.1 ".index.db can be rebuilt from md").
  */
-import type { Page, PageType } from "@homebrain/shared";
+import type { Page, PageType } from "@homeagent/shared";
 
 const FIELD_KEYS = [
   "slug",

@@ -3,8 +3,15 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Hono } from "hono";
-import { resetConfig, type Page, type SpaceId } from "@homebrain/shared";
-import { KnowledgeEngine, FakeLlm } from "@homebrain/core";
+import {
+  readSettings,
+  resetConfig,
+  saveSettings,
+  type Page,
+  type SpaceId,
+  type SystemHealthSnapshot,
+} from "@homeagent/shared";
+import { KnowledgeEngine, FakeLlm } from "@homeagent/core";
 import { createWebApp } from "./app.ts";
 
 let dir: string;
@@ -31,7 +38,7 @@ function page(slug: string, title: string, content: string): Page {
 
 beforeEach(async () => {
   dir = mkdtempSync(join(tmpdir(), "hb-web-"));
-  process.env.HOMEBRAIN_DATA_DIR = dir;
+  process.env.HOMEAGENT_DATA_DIR = dir;
   resetConfig();
   fake = new FakeLlm();
   engine = new KnowledgeEngine({ dataDir: dir, llm: fake });
@@ -47,7 +54,7 @@ beforeEach(async () => {
     ],
     providerModels: async () => ({
       claude: ["sonnet", "opus"],
-      codex: ["gpt-5.5", "gpt-5.4", "gpt-5.3-codex-spark"],
+      codex: ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5"],
       "trae-cli": ["openrouter-3o"],
     }),
   });
@@ -56,17 +63,603 @@ beforeEach(async () => {
 afterEach(() => {
   engine.close();
   rmSync(dir, { recursive: true, force: true });
-  delete process.env.HOMEBRAIN_DATA_DIR;
+  delete process.env.HOMEAGENT_DATA_DIR;
   resetConfig();
 });
 
 describe("web backend (read-only)", () => {
+  test("health endpoints distinguish liveness from readiness", async () => {
+    const snapshot: SystemHealthSnapshot = {
+      status: "degraded",
+      ready: false,
+      checkedAt: 1_783_932_000_000,
+      components: {
+        feishu: {
+          status: "down",
+          summary: "消息消费者未就绪",
+        },
+      },
+    };
+    const healthApp = createWebApp({
+      engine,
+      health: async () => snapshot,
+    });
+
+    const live = await healthApp.request("/healthz");
+    expect(live.status).toBe(200);
+    expect(await live.json()).toEqual(
+      expect.objectContaining({ status: "ok", checkedAt: expect.any(Number) }),
+    );
+
+    const ready = await healthApp.request("/readyz");
+    expect(ready.status).toBe(503);
+    expect(await ready.json()).toEqual(snapshot);
+  });
+
+  test("fresh installs redirect the dashboard to guided setup", async () => {
+    await engine.deleteSpace(SPACE);
+    const fresh = createWebApp({
+      engine,
+      detectProviders: async () => [],
+      providerModels: async () => ({}),
+      larkSetup: {
+        status: async () => ({ state: "unconfigured", verified: false, message: "missing" }),
+        configure: async () => { throw new Error("unused"); },
+      },
+    });
+
+    const response = await fresh.request("/");
+    expect(response.status).toBe(302);
+    expect(response.headers.get("location")).toBe("/setup");
+    expect((await fresh.request("/setup")).status).toBe(200);
+  });
+
+  test("an imported space does not hide an unconfigured production connection", async () => {
+    const unconfigured = createWebApp({
+      engine,
+      larkSetup: {
+        status: async () => ({ state: "unconfigured", verified: false, message: "missing" }),
+        configure: async () => { throw new Error("unused"); },
+      },
+    });
+    const response = await unconfigured.request("/");
+    expect(response.status).toBe(302);
+    expect(response.headers.get("location")).toBe("/setup");
+  });
+
+  test("starts automatic Feishu setup and exposes a pollable safe session", async () => {
+    let starts = 0;
+    const session = {
+      state: "waiting_for_user" as const,
+      brand: "feishu" as const,
+      verificationUrl: "https://open.feishu.cn/page/cli?user_code=x",
+      message: "等待确认",
+    };
+    const setupApp = createWebApp({
+      engine,
+      detectProviders: async () => [],
+      providerModels: async () => ({}),
+      larkSetup: {
+        status: async () => ({ state: "unconfigured", verified: false, message: "missing" }),
+        configure: async () => { throw new Error("unused"); },
+        startAutomatic: async () => { starts += 1; return session; },
+        provisioningStatus: () => session,
+      },
+    });
+
+    const start = await setupApp.request("/setup/feishu/automatic", {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: "brand=feishu",
+    });
+    expect(start.status).toBe(302);
+    expect(starts).toBe(1);
+    const poll = await setupApp.request("/setup/feishu/session");
+    expect(await poll.json()).toEqual(session);
+  });
+
+  test("starts official one-click Feishu creation from Integrations", async () => {
+    let starts = 0;
+    const session = {
+      state: "waiting_for_user" as const,
+      brand: "feishu" as const,
+      verificationUrl: "https://open.feishu.cn/page/cli?user_code=SAFE",
+      message: "请在飞书页面完成授权",
+    };
+    const setupApp = createWebApp({
+      engine,
+      detectProviders: async () => [],
+      providerModels: async () => ({}),
+      larkSetup: {
+        status: async () => ({ state: "unconfigured", verified: false, message: "never-render-this-secret" }),
+        configure: async () => { throw new Error("unused"); },
+        startAutomatic: async () => { starts += 1; return session; },
+        provisioningStatus: () => session,
+      },
+    });
+
+    const response = await setupApp.request("/setup/feishu/automatic", {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: "brand=feishu&returnTo=%2Fintegrations",
+    });
+
+    expect(response.status).toBe(302);
+    expect(response.headers.get("location")).toStartWith("/integrations?ok=");
+    expect(starts).toBe(1);
+    const page = await (await setupApp.request("/integrations")).text();
+    expect(page).toContain("请在飞书页面完成授权");
+    expect(page).toContain("打开飞书并确认");
+    expect(page).toContain("SAFE");
+    expect(page).toContain("首次确认会申请完整权限");
+    expect(page).toContain("/setup/feishu/session");
+    expect(page).not.toContain("never-render-this-secret");
+  });
+
+  test("recovers the verified bot identity after an automatic session is lost on restart", async () => {
+    const idleSession = {
+      state: "idle" as const,
+      brand: "feishu" as const,
+      message: "尚未开始",
+    };
+    const setupApp = createWebApp({
+      engine,
+      detectProviders: async () => [],
+      providerModels: async () => ({}),
+      larkSetup: {
+        status: async () => ({
+          state: "ready",
+          verified: true,
+          brand: "feishu",
+          appId: "cli_ready",
+          botName: "HomeAgent",
+          botOpenId: "ou_ready",
+          message: "ready",
+        }),
+        configure: async () => { throw new Error("unused"); },
+        provisioningStatus: () => idleSession,
+      },
+    });
+
+    const response = await setupApp.request("/setup");
+    expect(response.status).toBe(200);
+    expect(readSettings(dir)).toEqual(expect.objectContaining({
+      feishuBotName: "HomeAgent",
+      feishuBotOpenId: "ou_ready",
+    }));
+  });
+
+  test("rejects a model that belongs to a different AI provider", async () => {
+    const response = await app.request("/setup/ai", {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: "provider=claude&model=gpt-5.4",
+    });
+    expect(response.status).toBe(302);
+    expect(response.headers.get("location")).toContain("%E6%89%80%E9%80%89%E6%A8%A1%E5%9E%8B");
+    expect(readSettings(dir).defaultModel).toBeUndefined();
+  });
+
+  test("connects managed Codex without exposing installer or login output", async () => {
+    let installed = false;
+    let installCalls = 0;
+    let loginStarts = 0;
+    let session: import("@homeagent/llm").CodexLoginSession = {
+      state: "idle",
+      message: "尚未连接",
+    };
+    const managed = createWebApp({
+      engine,
+      detectProviders: async () => [
+        {
+          id: "codex",
+          name: "Codex",
+          bin: "/managed/codex",
+          available: installed,
+          detail: installed ? "ready" : "missing",
+        },
+      ],
+      providerModels: async () => ({ codex: ["gpt-5.4"] }),
+      codexSetup: {
+        canInstall: true,
+        isInstalled: () => installed,
+        install: async (consented) => {
+          expect(consented).toBeTrue();
+          installCalls += 1;
+          installed = true;
+        },
+        startDeviceLogin: async () => {
+          loginStarts += 1;
+          session = {
+            state: "waiting_for_user",
+            verificationUrl: "https://auth.openai.com/device",
+            userCode: "SAFE-CODE",
+            message: "等待确认",
+          };
+          return session;
+        },
+        deviceLoginStatus: () => session,
+        cancelDeviceLogin: () => ({ state: "cancelled", message: "已取消" }),
+      },
+    });
+
+    const refused = await managed.request("/setup/ai/codex/install", {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: "",
+    });
+    expect(refused.headers.get("location")).toContain("%E9%9C%80%E8%A6%81%E7%A1%AE%E8%AE%A4");
+    expect(installCalls).toBe(0);
+
+    await managed.request("/setup/ai/codex/install", {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: "consent=on",
+    });
+    await Bun.sleep(0);
+    expect(installCalls).toBe(1);
+    expect(loginStarts).toBe(1);
+    expect(await (await managed.request("/setup/ai/codex/session")).json()).toEqual(session);
+
+    session = { state: "ready", message: "ChatGPT 已连接" };
+    expect((await managed.request("/setup/ai/codex/session")).status).toBe(200);
+    expect(readSettings(dir)).toEqual(expect.objectContaining({
+      defaultProvider: "codex",
+      defaultModel: "",
+    }));
+  });
+
+  test("sanitizes managed Codex installation failures", async () => {
+    const secret = "raw download URL and token";
+    const broken = createWebApp({
+      engine,
+      detectProviders: async () => [],
+      providerModels: async () => ({}),
+      codexSetup: {
+        canInstall: true,
+        isInstalled: () => false,
+        install: async () => { throw new Error(secret); },
+        startDeviceLogin: async () => ({ state: "failed", message: "失败" }),
+        deviceLoginStatus: () => ({ state: "idle", message: "尚未连接" }),
+        cancelDeviceLogin: () => ({ state: "cancelled", message: "已取消" }),
+      },
+    });
+    await broken.request("/setup/ai/codex/install", {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: "consent=on",
+    });
+    await Bun.sleep(0);
+    const result = JSON.stringify(await (await broken.request("/setup/ai/codex/session")).json());
+    expect(result).toContain("Codex 安装未完成");
+    expect(result).not.toContain(secret);
+  });
+
+  test("does not finish setup before AI, bot identity, and runtime are ready", async () => {
+    const response = await app.request("/setup/finish", { method: "POST" });
+    expect(response.status).toBe(302);
+    expect(response.headers.get("location")).toContain("/setup?ok=");
+    expect(readSettings(dir).onboardingCompletedAt).toBeUndefined();
+  });
+
+  test("allows an explicitly private-only finish after the connection is ready", async () => {
+    saveSettings({ defaultProvider: "claude", onboardingStartedAt: Date.now() + 1_000 });
+    const ready = createWebApp({
+      engine,
+      detectProviders: async () => [
+        { id: "claude", name: "Claude Code", bin: "claude", available: true, detail: "ready" },
+      ],
+      providerModels: async () => ({ claude: ["sonnet"] }),
+      larkSetup: {
+        status: async () => ({
+          state: "ready",
+          verified: true,
+          botName: "HomeAgent",
+          botOpenId: "ou_ready",
+          message: "ready",
+        }),
+        configure: async () => { throw new Error("unused"); },
+      },
+      activeFeishuIdentity: { botName: "HomeAgent", botOpenId: "ou_ready" },
+      feishuRuntime: () => ({ ready: true, consumers: [] }),
+    });
+    const response = await ready.request("/setup/finish", { method: "POST" });
+    expect(response.headers.get("location")).toBe("/");
+    expect(readSettings(dir).onboardingCompletedAt).toEqual(expect.any(Number));
+  });
+
+  test("finishes group verification only after a new real message", async () => {
+    const startedAt = Date.now() + 1_000;
+    saveSettings({
+      onboardingStartedAt: startedAt,
+      feishuBotName: "HomeAgent",
+      feishuBotOpenId: "ou_ready",
+    });
+    const setupApp = createWebApp({
+      engine,
+      detectProviders: async () => [
+        { id: "claude", name: "Claude Code", bin: "claude", available: true, detail: "ready" },
+      ],
+      providerModels: async () => ({ claude: ["sonnet"] }),
+      larkSetup: {
+        status: async () => ({
+          state: "ready",
+          verified: true,
+          botName: "HomeAgent",
+          botOpenId: "ou_ready",
+          message: "ready",
+        }),
+        configure: async () => { throw new Error("unused"); },
+      },
+      activeFeishuIdentity: { botName: "HomeAgent", botOpenId: "ou_ready" },
+      feishuRuntime: () => ({ ready: true, consumers: [] }),
+    });
+
+    expect(await (await setupApp.request("/setup")).text()).toContain("发送第一条共同记忆");
+    await engine.remember({
+      space: SPACE,
+      source: "task",
+      content: "不是飞书消息",
+      createdAt: startedAt + 1,
+    });
+    expect(await (await setupApp.request("/setup")).text()).toContain("发送第一条共同记忆");
+    await engine.remember({
+      space: SPACE,
+      source: "message",
+      content: "来自本次设置的飞书消息",
+      createdAt: startedAt + 2,
+    });
+    expect(await (await setupApp.request("/setup")).text()).toContain("一切就绪");
+  });
+
+  test("guides and verifies external sharing with a new external-group message", async () => {
+    saveSettings({ defaultProvider: "claude" });
+    const checkedChats: string[] = [];
+    const setupApp = createWebApp({
+      engine,
+      detectProviders: async () => [
+        { id: "claude", name: "Claude Code", bin: "claude", available: true, detail: "ready" },
+      ],
+      providerModels: async () => ({ claude: ["sonnet"] }),
+      larkSetup: {
+        status: async () => ({
+          state: "ready",
+          verified: true,
+          appId: "cli_external",
+          brand: "feishu",
+          botName: "HomeAgent",
+          botOpenId: "ou_ready",
+          message: "ready",
+        }),
+        configure: async () => { throw new Error("unused"); },
+        chatIsExternal: async (chatId) => {
+          checkedChats.push(chatId);
+          return chatId === "oc_external";
+        },
+      },
+      activeFeishuIdentity: { botName: "HomeAgent", botOpenId: "ou_ready" },
+      feishuRuntime: () => ({ ready: true, consumers: [] }),
+    });
+
+    const guide = await (await setupApp.request("/setup")).text();
+    expect(guide).toContain("发布对外共享版本");
+    expect(guide).toContain("https://open.feishu.cn/app/cli_external");
+
+    const start = await setupApp.request("/setup/feishu/external-sharing/start", {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: "returnTo=%2Fsetup",
+    });
+    expect(start.headers.get("location")).toStartWith("/setup?ok=");
+    const started = readSettings(dir);
+    expect(started.feishuExternalSharingAppId).toBe("cli_external");
+    expect(started.feishuExternalSharingStartedAt).toEqual(expect.any(Number));
+
+    await engine.remember({
+      space: SPACE,
+      source: "message",
+      chatId: "oc_external",
+      content: "@HomeAgent 对外共享测试",
+      createdAt: started.feishuExternalSharingStartedAt! + 1,
+    });
+    await setupApp.request("/setup");
+
+    expect(checkedChats).toContain("oc_external");
+    expect(readSettings(dir)).toEqual(expect.objectContaining({
+      feishuExternalSharingVerifiedAt: expect.any(Number),
+      feishuExternalSharingVerifiedChatId: "oc_external",
+    }));
+    const integrations = await (await setupApp.request("/integrations")).text();
+    expect(integrations).toContain("对外共享已验证");
+  });
+
+  test("can explicitly keep the current Feishu app internal-only", async () => {
+    const setupApp = createWebApp({
+      engine,
+      larkSetup: {
+        status: async () => ({
+          state: "ready",
+          verified: true,
+          appId: "cli_internal",
+          brand: "feishu",
+          botName: "HomeAgent",
+          botOpenId: "ou_ready",
+          message: "ready",
+        }),
+        configure: async () => { throw new Error("unused"); },
+      },
+    });
+
+    const response = await setupApp.request("/setup/feishu/external-sharing/skip", {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: "returnTo=%2Fintegrations",
+    });
+    expect(response.headers.get("location")).toStartWith("/integrations?ok=");
+    expect(readSettings(dir).feishuExternalSharingSkippedAppId).toBe("cli_internal");
+    const integrations = await (await setupApp.request("/integrations")).text();
+    expect(integrations).toContain("https://open.feishu.cn/app/cli_internal");
+    expect(integrations).toContain("允许机器人被添加到外部群中使用");
+    expect(integrations).toContain("允许外部用户与机器人单聊");
+  });
+
+  test("admin token protects management routes but leaves probes public", async () => {
+    const secureApp = createWebApp({ engine, adminToken: "admin-secret" });
+
+    expect((await secureApp.request("/healthz")).status).toBe(200);
+    expect((await secureApp.request("/readyz")).status).toBe(200);
+
+    const denied = await secureApp.request("/");
+    expect(denied.status).toBe(401);
+    expect(denied.headers.get("www-authenticate")).toContain("Basic");
+
+    const basic = Buffer.from("homeagent:admin-secret").toString("base64");
+    expect((await secureApp.request("/", { headers: { authorization: `Basic ${basic}` } })).status).toBe(200);
+    expect((await secureApp.request("/governance", {
+      headers: { authorization: "Bearer admin-secret" },
+    })).status).toBe(200);
+    expect((await secureApp.request("/", {
+      headers: { authorization: "Bearer wrong" },
+    })).status).toBe(401);
+
+    expect((await secureApp.request("/governance/prune", {
+      method: "POST",
+      headers: {
+        authorization: `Basic ${basic}`,
+        origin: "https://attacker.example",
+        "sec-fetch-site": "cross-site",
+      },
+    })).status).toBe(403);
+    expect((await secureApp.request("/governance/prune", {
+      method: "POST",
+      headers: {
+        authorization: `Basic ${basic}`,
+        origin: "http://localhost",
+        "sec-fetch-site": "same-origin",
+      },
+    })).status).toBe(302);
+
+    expect((await app.request("/governance/prune", {
+      method: "POST",
+      headers: {
+        origin: "https://attacker.example",
+        "sec-fetch-site": "cross-site",
+      },
+    })).status).toBe(403);
+    expect((await app.request("/", {
+      headers: { host: "attacker.example" },
+    })).status).toBe(403);
+  });
+
+  test("health routes degrade safely when the reporter itself fails", async () => {
+    const healthApp = createWebApp({
+      engine,
+      health: async () => {
+        throw new Error("health aggregation failed");
+      },
+    });
+
+    const live = await healthApp.request("/healthz");
+    expect(live.status).toBe(200);
+    expect(await live.json()).toEqual(
+      expect.objectContaining({ status: "ok", checkedAt: expect.any(Number) }),
+    );
+
+    expect((await healthApp.request("/readyz")).status).toBe(503);
+    expect((await healthApp.request("/health")).status).toBe(200);
+  });
+
+  test("liveness does not wait for readiness aggregation", async () => {
+    const healthApp = createWebApp({
+      engine,
+      health: () => new Promise<SystemHealthSnapshot>(() => {}),
+    });
+
+    const live = await Promise.race([
+      healthApp.request("/healthz"),
+      Bun.sleep(50).then(() => {
+        throw new Error("liveness timed out");
+      }),
+    ]);
+    expect(live.status).toBe(200);
+  });
+
+  test("management backend renders component failures and a global readiness alert", async () => {
+    const snapshot: SystemHealthSnapshot = {
+      status: "down",
+      ready: false,
+      checkedAt: 1_783_932_000_000,
+      components: {
+        feishu: {
+          status: "down",
+          summary: "消息消费者未就绪",
+          details: { lastEventAt: 1_783_931_000_000 },
+        },
+      },
+    };
+    const healthApp = createWebApp({ engine, health: async () => snapshot });
+
+    const page = await healthApp.request("/health");
+    expect(page.status).toBe(200);
+    const healthBody = await page.text();
+    expect(healthBody).toContain("运行状态");
+    expect(healthBody).toContain("消息消费者未就绪");
+
+    const homeBody = await (await healthApp.request("/")).text();
+    expect(homeBody).toContain("runtime-health-alert");
+    expect(homeBody).toContain("/readyz");
+  });
+
+  test("managed service status exposes a guarded restart action", async () => {
+    let restarts = 0;
+    const snapshot: SystemHealthSnapshot = {
+      status: "ok",
+      ready: true,
+      checkedAt: 1_783_932_000_000,
+      components: {
+        service: {
+          status: "ok",
+          summary: "LaunchAgent 托管运行（PID 7788）",
+          details: { managed: true, pid: 7788, startedAt: 1_783_931_000_000 },
+        },
+      },
+    };
+    const managedApp = createWebApp({
+      engine,
+      health: async () => snapshot,
+      onServiceRestart: () => { restarts += 1; },
+    });
+
+    const page = await managedApp.request("/health");
+    const body = await page.text();
+    expect(body).toContain("后台服务");
+    expect(body).toContain("PID 7788");
+    expect(body).toContain('action="/service/restart"');
+
+    const restart = await managedApp.request("/service/restart", { method: "POST" });
+    expect(restart.status).toBe(302);
+    expect(restarts).toBe(1);
+
+    const manualApp = createWebApp({
+      engine,
+      health: async () => ({
+        ...snapshot,
+        components: {
+          service: { ...snapshot.components.service!, details: { managed: false, pid: 7788 } },
+        },
+      }),
+      onServiceRestart: () => { restarts += 1; },
+    });
+    expect((await manualApp.request("/service/restart", { method: "POST" })).status).toBe(409);
+    expect(restarts).toBe(1);
+  });
+
   test("home lists spaces", async () => {
     const res = await app.request("/");
     expect(res.status).toBe(200);
     const body = await res.text();
     expect(body).toContain("team/oc_web");
-    expect(body).toContain("homebrain");
+    expect(body).toContain("homeagent");
   });
 
   test("space detail shows knowledge pages", async () => {
@@ -126,10 +719,72 @@ describe("web backend (read-only)", () => {
 });
 
 describe("management backend (read-write)", () => {
+  test("data governance exports, deletes, and restores a complete space", async () => {
+    const governance = await app.request("/governance");
+    expect(governance.status).toBe(200);
+    const governanceBody = await governance.text();
+    expect(governanceBody).toContain("数据治理");
+    expect(governanceBody).toContain("原始消息保留");
+
+    const exported = await app.request(`/spaces/${encodeURIComponent(SPACE)}/export`);
+    expect(exported.status).toBe(200);
+    expect(exported.headers.get("content-disposition")).toContain("attachment");
+    const archiveText = await exported.text();
+    expect(JSON.parse(archiveText)).toEqual(
+      expect.objectContaining({ format: "homeagent.space", version: 1 }),
+    );
+
+    const deleted = await app.request(`/spaces/${encodeURIComponent(SPACE)}/delete`, {
+      method: "POST",
+    });
+    expect([302, 303]).toContain(deleted.status);
+    expect(engine.registry.has(SPACE)).toBe(false);
+
+    const form = new FormData();
+    form.set("archive", new File([archiveText], "space.json", { type: "application/json" }));
+    const restored = await app.request("/governance/restore", { method: "POST", body: form });
+    expect([302, 303]).toContain(restored.status);
+    expect(engine.registry.has(SPACE)).toBe(true);
+    expect(await engine.getPage(SPACE, "entities/alice")).not.toBeNull();
+
+    const pruned = await app.request("/governance/prune", { method: "POST" });
+    expect([302, 303]).toContain(pruned.status);
+  });
+
+  test("data governance rejects an unsafe archive without changing spaces", async () => {
+    const form = new FormData();
+    form.set(
+      "archive",
+      new File(
+        [
+          JSON.stringify({
+            format: "homeagent.space",
+            version: 1,
+            exportedAt: 1,
+            space: { id: "team/unsafe", createdAt: 1 },
+            purpose: "x",
+            schema: "x",
+            pages: [{ slug: "../../outside", type: "concept" }],
+            raw: [],
+            retractions: [],
+            tasks: [],
+          }),
+        ],
+        "unsafe.json",
+        { type: "application/json" },
+      ),
+    );
+
+    const res = await app.request("/governance/restore", { method: "POST", body: form });
+    expect([302, 303]).toContain(res.status);
+    expect(decodeURIComponent(res.headers.get("location") ?? "")).toContain("恢复失败");
+    expect(engine.registry.has("team/unsafe")).toBe(false);
+  });
+
   test("nav rail exposes the mew-style sections", async () => {
     const body = await (await app.request("/")).text();
     expect(body).toContain("Agents");
-    expect(body).toContain("Integrations");
+    expect(body).toContain("飞书连接");
     expect(body).toContain("设置");
   });
 
@@ -147,6 +802,88 @@ describe("management backend (read-write)", () => {
     // the agent editor renders the saved instruction
     const view = await (await app.request(`/agents/${encodeURIComponent(agents[0]!.id)}`)).text();
     expect(view).toContain("简洁作答");
+  });
+
+  test("creating a Codex agent persists its exact model and reasoning effort", async () => {
+    const form = new URLSearchParams({
+      name: "深度助手",
+      provider: "codex",
+      model: "gpt-5.6-sol",
+      reasoningEffort: "high",
+    });
+    const response = await app.request("/agents", {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: form.toString(),
+    });
+
+    expect([302, 303]).toContain(response.status);
+    const agent = engine.agents.list().find((item) => item.name === "深度助手");
+    expect(agent?.model).toBe("gpt-5.6-sol");
+    expect(agent?.reasoningEffort).toBe("high");
+
+    const view = await (await app.request(`/agents/${encodeURIComponent(agent!.id)}`)).text();
+    expect(view).toContain('name="reasoningEffort"');
+    expect(view).toContain('value="high" selected');
+    expect(view).toContain("仅 Codex");
+  });
+
+  test("rejects a reasoning effort unsupported by the selected Codex model", async () => {
+    const form = new URLSearchParams({
+      name: "旧模型助手",
+      provider: "codex",
+      model: "gpt-5.5",
+      reasoningEffort: "max",
+    });
+    const response = await app.request("/agents", {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: form.toString(),
+    });
+
+    expect([302, 303]).toContain(response.status);
+    expect(engine.agents.list().find((item) => item.name === "旧模型助手")?.reasoningEffort).toBe("");
+  });
+
+  test("uses the inherited global Codex model to offer reasoning efforts", async () => {
+    saveSettings({ defaultProvider: "codex", defaultModel: "gpt-5.6-sol" }, dir);
+    const form = new URLSearchParams({
+      name: "继承 Sol",
+      provider: "codex",
+      model: "",
+      reasoningEffort: "max",
+    });
+    const response = await app.request("/agents", {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: form.toString(),
+    });
+
+    expect([302, 303]).toContain(response.status);
+    const agent = engine.agents.list().find((item) => item.name === "继承 Sol");
+    expect(agent?.reasoningEffort).toBe("max");
+    const view = await (await app.request(`/agents/${encodeURIComponent(agent!.id)}`)).text();
+    expect(view).toContain('value="max" selected');
+  });
+
+  test("does not offer inherited reasoning efforts to an unknown custom model", async () => {
+    saveSettings({ defaultProvider: "codex", defaultModel: "gpt-5.6-sol" }, dir);
+    const response = await app.request("/agents", {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        name: "自定义模型",
+        provider: "codex",
+        model: "gpt-5.6-custom",
+        reasoningEffort: "max",
+      }).toString(),
+    });
+
+    expect([302, 303]).toContain(response.status);
+    const agent = engine.agents.list().find((item) => item.name === "自定义模型");
+    expect(agent?.reasoningEffort).toBe("");
+    const view = await (await app.request(`/agents/${encodeURIComponent(agent!.id)}`)).text();
+    expect(view).toContain('"gpt-5.6-custom":[]');
   });
 
   test("agents page shows detected providers; unavailable ones are disabled", async () => {
@@ -229,9 +966,13 @@ describe("management backend (read-write)", () => {
   test("integrations lists team groups and binds per-group settings", async () => {
     const agent = engine.agents.create({ name: "群助手", model: "" });
     const listing = await (await app.request("/integrations")).text();
-    expect(listing).toContain("Lark bot");
-    expect(listing).toContain("Lark groups");
+    expect(listing).toContain("飞书连接");
+    expect(listing).toContain('action="/setup/feishu/automatic"');
+    expect(listing).toContain("已连接群聊");
     expect(listing).toContain(SPACE); // the seeded team space
+    expect(listing).toContain('action="/integrations/groups/team%2Foc_web"');
+    expect(listing).toContain("敏感权限已在创建时申请");
+    expect(listing).toContain("若企业尚未批准");
 
     const form = new URLSearchParams({
       name: "研发群",
@@ -252,6 +993,317 @@ describe("management backend (read-write)", () => {
     expect(meta?.mentionsOnly).toBe(false);
   });
 
+  test("integration page makes official one-click creation the primary bot action", async () => {
+    const idle = {
+      state: "idle" as const,
+      brand: "feishu" as const,
+      message: "尚未开始创建飞书应用",
+    };
+    const setupApp = createWebApp({
+      engine,
+      detectProviders: async () => [],
+      providerModels: async () => ({}),
+      larkSetup: {
+        status: async () => ({ state: "unconfigured", verified: false, message: "missing" }),
+        configure: async () => { throw new Error("unused"); },
+        startAutomatic: async () => idle,
+        provisioningStatus: () => idle,
+      },
+    });
+
+    const page = await (await setupApp.request("/integrations")).text();
+    expect(page).toContain("飞书机器人");
+    expect(page).toContain("一键创建并连接");
+    expect(page).toContain('action="/setup/feishu/automatic"');
+    expect(page).toContain('name="returnTo" value="/integrations"');
+    expect(page.indexOf("一键创建并连接")).toBeLessThan(page.indexOf("手动连接已有应用"));
+    expect(page).toContain("飞书群聊");
+    expect(page).toContain("首次确认会申请完整权限");
+    expect(page).toContain("群消息读取、附件、表情");
+    expect(page).toContain("两条事件订阅");
+    expect(page).toContain("无需事后进入开放平台补配置");
+    expect(page).toContain("企业管理员可能需要在这次确认中批准敏感权限");
+  });
+
+  test("manual existing-app setup offers Lark and preserves that brand when configuring", async () => {
+    const configured: { appId: string; appSecret: string; brand: string }[] = [];
+    const setupApp = createWebApp({
+      engine,
+      detectProviders: async () => [],
+      providerModels: async () => ({}),
+      larkSetup: {
+        status: async () => ({ state: "unconfigured", verified: false, brand: "lark", message: "missing" }),
+        configure: async (input) => {
+          configured.push(input);
+          return {
+            state: "ready",
+            verified: true,
+            appId: input.appId,
+            brand: input.brand,
+            botName: "Lark Bot",
+            botOpenId: "ou_lark",
+            message: "Bot identity: ready",
+          };
+        },
+      },
+    });
+
+    const page = await (await setupApp.request("/integrations")).text();
+    expect(page).toContain('<select name="brand">');
+    expect(page).toContain('<option value="feishu">飞书</option>');
+    expect(page).toContain('<option value="lark" selected>Lark</option>');
+
+    const response = await setupApp.request("/integrations/bot/setup", {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        appId: "cli_lark",
+        appSecret: "lark-secret",
+        brand: "lark",
+      }).toString(),
+    });
+
+    expect([302, 303]).toContain(response.status);
+    expect(configured).toEqual([
+      { appId: "cli_lark", appSecret: "lark-secret", brand: "lark" },
+    ]);
+  });
+
+  test("integration page shows a safe retry after Feishu creation fails", async () => {
+    const failed = {
+      state: "failed" as const,
+      brand: "feishu" as const,
+      verificationUrl: "https://attacker.example/page/launcher?user_code=LEAK",
+      message: "创建失败，请重试",
+    };
+    const setupApp = createWebApp({
+      engine,
+      detectProviders: async () => [],
+      providerModels: async () => ({}),
+      larkSetup: {
+        status: async () => ({ state: "unconfigured", verified: false, message: "raw-status-secret" }),
+        configure: async () => { throw new Error("unused"); },
+        startAutomatic: async () => failed,
+        provisioningStatus: () => failed,
+      },
+    });
+
+    const page = await (await setupApp.request("/integrations")).text();
+    expect(page).toContain("创建失败，请重试");
+    expect(page).toContain("一键创建并连接");
+    expect(page).not.toContain("attacker.example");
+    expect(page).not.toContain("LEAK");
+    expect(page).not.toContain("raw-status-secret");
+  });
+
+  test("integration setup verifies app credentials and discovers the bot identity", async () => {
+    const configured: { appId: string; appSecret: string; brand: string }[] = [];
+    const setupApp = createWebApp({
+      engine,
+      detectProviders: async () => [],
+      providerModels: async () => ({}),
+      larkSetup: {
+        status: async () => ({
+          state: "ready",
+          verified: true,
+          appId: "cli_new",
+          brand: "feishu",
+          botName: "新机器人",
+          botOpenId: "ou_new",
+          message: "Bot identity: ready",
+        }),
+        configure: async (input) => {
+          configured.push(input);
+          return {
+            state: "ready",
+            verified: true,
+            appId: input.appId,
+            brand: input.brand,
+            botName: "新机器人",
+            botOpenId: "ou_new",
+            message: "Bot identity: ready",
+          };
+        },
+      },
+    });
+
+    const form = new URLSearchParams({
+      appId: "cli_new",
+      appSecret: "top-secret-value",
+      brand: "feishu",
+    });
+    const response = await setupApp.request("/integrations/bot/setup", {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: form.toString(),
+    });
+
+    expect([302, 303]).toContain(response.status);
+    expect(configured).toEqual([
+      { appId: "cli_new", appSecret: "top-secret-value", brand: "feishu" },
+    ]);
+    expect(readSettings(dir)).toEqual(
+      expect.objectContaining({ feishuBotName: "新机器人", feishuBotOpenId: "ou_new" }),
+    );
+    expect(JSON.stringify(readSettings(dir))).not.toContain("top-secret-value");
+
+    const page = await (await setupApp.request("/integrations")).text();
+    expect(page).toContain("创建并切换机器人");
+    expect(page).toContain("新机器人");
+    expect(page).toContain("ou_new");
+    expect(page).toContain('<span class="muted">待启用</span>');
+    expect(page).not.toContain("⌄");
+    expect(page).not.toContain("top-secret-value");
+  });
+
+  test("integration setup sends a real test message to a bound group", async () => {
+    const sent: { chatId: string; text: string }[] = [];
+    const setupApp = createWebApp({
+      engine,
+      detectProviders: async () => [],
+      providerModels: async () => ({}),
+      onIntegrationTest: async (chatId, text) => {
+        sent.push({ chatId, text });
+      },
+    });
+
+    const response = await setupApp.request(
+      `/integrations/groups/${encodeURIComponent(SPACE)}/test`,
+      { method: "POST" },
+    );
+
+    expect([302, 303]).toContain(response.status);
+    expect(sent).toEqual([
+      {
+        chatId: "oc_web",
+        text: expect.stringContaining("配置测试成功"),
+      },
+    ]);
+    expect(response.headers.get("location")).toContain(encodeURIComponent("测试消息已发送"));
+  });
+
+  test("integration setup can re-verify an existing lark-cli profile without a secret", async () => {
+    const setupApp = createWebApp({
+      engine,
+      detectProviders: async () => [],
+      providerModels: async () => ({}),
+      larkSetup: {
+        status: async () => ({
+          state: "ready",
+          verified: true,
+          appId: "cli_existing",
+          brand: "feishu",
+          botName: "现有机器人",
+          botOpenId: "ou_existing",
+          message: "Bot identity: ready",
+        }),
+        configure: async () => {
+          throw new Error("not expected");
+        },
+      },
+    });
+
+    const response = await setupApp.request("/integrations/bot/verify", { method: "POST" });
+
+    expect([302, 303]).toContain(response.status);
+    expect(readSettings(dir)).toEqual(
+      expect.objectContaining({
+        feishuBotName: "现有机器人",
+        feishuBotOpenId: "ou_existing",
+      }),
+    );
+    expect(response.headers.get("location")).toContain(encodeURIComponent("Bot 身份已同步"));
+  });
+
+  test("integration setup shows whether required Feishu event consumers are ready", async () => {
+    const setupApp = createWebApp({
+      engine,
+      detectProviders: async () => [],
+      providerModels: async () => ({}),
+      feishuRuntime: () => ({
+        ready: true,
+        consumers: [
+          { key: "im.message.receive_v1", state: "ready" },
+          { key: "im.chat.member.bot.added_v1", state: "ready" },
+        ],
+      }),
+    });
+
+    const page = await (await setupApp.request("/integrations")).text();
+
+    expect(page).toContain("消息监听已就绪");
+    expect(page).toContain("首次确认会申请完整权限");
+    expect(page).toContain("手动连接已有应用时仍需自行确认权限");
+    expect(page).toContain("若一键创建未完成，请回到上方重试");
+    expect(page).toContain("只有手动应用缺少配置时，才需要在对应开发者后台补齐权限和事件订阅");
+    expect(page).not.toContain("权限和事件订阅会由飞书自动配置");
+    expect(page).not.toContain("im.message.receive_v1");
+    expect(page).not.toContain("im.chat.member.bot.added_v1");
+  });
+
+  test("integration setup surfaces failed Feishu consumers with a recovery action", async () => {
+    const setupApp = createWebApp({
+      engine,
+      detectProviders: async () => [],
+      providerModels: async () => ({}),
+      feishuRuntime: () => ({
+        ready: true,
+        consumers: [
+          { key: "im.message.receive_v1", state: "failed", lastError: "raw secret" },
+          { key: "im.chat.member.bot.added_v1", state: "ready" },
+        ],
+      }),
+    });
+
+    const page = await (await setupApp.request("/integrations")).text();
+
+    expect(page).toContain("消息监听异常");
+    expect(page).toContain('href="/health"');
+    expect(page).toContain("前往运行状态恢复");
+    expect(page).not.toContain("等待连接");
+    expect(page).not.toContain("raw secret");
+  });
+
+  test("integration setup keeps a restart warning until the active connector uses the new identity", async () => {
+    const setupApp = createWebApp({
+      engine,
+      detectProviders: async () => [],
+      providerModels: async () => ({}),
+      activeFeishuIdentity: { botName: "旧机器人", botOpenId: "ou_old" },
+      larkSetup: {
+        status: async () => ({
+          state: "ready",
+          verified: true,
+          appId: "cli_new",
+          brand: "feishu",
+          botName: "新机器人",
+          botOpenId: "ou_new",
+          message: "Bot identity: ready",
+        }),
+        configure: async () => {
+          throw new Error("not expected");
+        },
+      },
+      feishuRuntime: () => ({
+        ready: true,
+        consumers: [
+          { key: "im.message.receive_v1", state: "ready" },
+          { key: "im.chat.member.bot.added_v1", state: "ready" },
+        ],
+      }),
+    });
+
+    const page = await (await setupApp.request("/integrations")).text();
+
+    expect(page).toContain('<span class="muted">待启用</span>');
+    expect(page).not.toContain('<span class="muted">当前</span>');
+    expect(page).toContain("需要重启");
+    expect(page).toContain('href="/health"');
+    expect(page).toContain("前往运行状态重启");
+    expect(page).toContain("创建并切换机器人");
+    expect(page).not.toContain("消息监听已就绪");
+  });
+
   test("settings POST persists default provider/model + config and reflects it back", async () => {
     const form = new URLSearchParams({
       defaultProvider: "trae-cli",
@@ -259,6 +1311,7 @@ describe("management backend (read-write)", () => {
       dailyBudgetUsd: "12",
       dreamHour: "5",
       webPort: "3000",
+      rawRetentionDays: "30",
     });
     const res = await app.request("/settings", {
       method: "POST",
@@ -272,6 +1325,8 @@ describe("management backend (read-write)", () => {
     expect(view).toContain('value="trae-cli" selected');
     // dreamHour value is rendered in the number input
     expect(view).toContain('value="5"');
+    expect(view).toContain('name="rawRetentionDays"');
+    expect(view).toContain('value="30"');
   });
 
   test("tasks: nav + create + edit + list rendering", async () => {
@@ -341,5 +1396,27 @@ describe("management backend (read-write)", () => {
     const res = await app.request(`/tasks/${encodeURIComponent(task.id)}/delete`, { method: "POST" });
     expect([302, 303]).toContain(res.status);
     expect(engine.tasks.has(task.id)).toBe(false);
+  });
+
+  test("reminders: list and administrative controls reflect durable reminder state", async () => {
+    const reminder = engine.reminders.create({
+      title: "去茶饼斋",
+      space: SPACE,
+      chatId: "oc_web",
+      creatorId: "ou_me",
+      triggerAt: Date.now() + 3600_000,
+    })!;
+
+    const page = await (await app.request("/reminders")).text();
+    expect(page).toContain("提醒");
+    expect(page).toContain("去茶饼斋");
+    expect(page).toContain("标记完成");
+    expect(page).toContain("取消提醒");
+
+    const response = await app.request(`/reminders/${encodeURIComponent(reminder.id)}/complete`, {
+      method: "POST",
+    });
+    expect([302, 303]).toContain(response.status);
+    expect(engine.reminders.get(reminder.id)?.status).toBe("completed");
   });
 });

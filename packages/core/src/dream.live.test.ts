@@ -1,19 +1,18 @@
 /**
- * Live dream-cycle test. Skipped unless HOMEBRAIN_LIVE=1. Verifies the full
+ * Live dream-cycle test. Skipped unless HOMEAGENT_LIVE=1. Verifies the full
  * two-step distillation against the real gateway produces a sensible page with
  * provenance. Run:
- *   HOMEBRAIN_LIVE=1 bun test packages/core/src/dream.live.test.ts
+ *   HOMEAGENT_LIVE=1 bun test packages/core/src/dream.live.test.ts
  */
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { SpaceId } from "@homebrain/shared";
-import { resetConfig } from "@homebrain/shared";
+import { brandedEnv, resetConfig, type SpaceId } from "@homeagent/shared";
 import { SpaceStore } from "./space.ts";
 import { runDreamCycle } from "./dream.ts";
 
-const LIVE = process.env.HOMEBRAIN_LIVE === "1";
+const LIVE = brandedEnv(process.env, "LIVE") === "1";
 const maybe = LIVE ? describe : describe.skip;
 
 let dir: string;
@@ -22,7 +21,7 @@ const SPACE: SpaceId = "team/oc_live_dream";
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "hb-dream-live-"));
-  process.env.HOMEBRAIN_DATA_DIR = dir;
+  process.env.HOMEAGENT_DATA_DIR = dir;
   resetConfig();
   store = new SpaceStore(SPACE, dir);
   store.ensure();
@@ -31,7 +30,7 @@ beforeEach(() => {
 afterEach(() => {
   store.close();
   rmSync(dir, { recursive: true, force: true });
-  delete process.env.HOMEBRAIN_DATA_DIR;
+  delete process.env.HOMEAGENT_DATA_DIR;
   resetConfig();
 });
 

@@ -8,8 +8,8 @@
  * The decision of *whether* to run a space is a pure function (shouldRunSpace)
  * so the policy is unit-tested without timers.
  */
-import { logger, config, type SpaceId } from "@homebrain/shared";
-import type { KnowledgeEngine } from "@homebrain/core";
+import { logger, config, type SpaceId } from "@homeagent/shared";
+import type { KnowledgeEngine } from "@homeagent/core";
 
 const log = logger.child("scheduler");
 
@@ -20,12 +20,15 @@ export interface ScheduleConfig {
   stalenessHours: number;
   /** wake cadence in ms; default 15 min */
   tickMs: number;
+  /** delete distilled raw messages older than this many days; 0 disables */
+  rawRetentionDays: number;
 }
 
 export const DEFAULT_SCHEDULE: ScheduleConfig = {
   hour: 3,
   stalenessHours: 24,
   tickMs: 15 * 60 * 1000,
+  rawRetentionDays: 90,
 };
 
 /** Local hour (0-23) in Asia/Shanghai for a given instant. */
@@ -44,6 +47,17 @@ export interface SpaceState {
   lastDreamAt?: number;
   /** whether the space has any pending (un-ingested) raw entries */
   hasPending: boolean;
+}
+
+export interface RuntimeLoopHealth {
+  started: boolean;
+  running: boolean;
+  lastStatus?: "ok" | "error";
+  lastTickAt?: number;
+  lastSuccessAt?: number;
+  lastFailureAt?: number;
+  lastReason?: string;
+  lastError?: string;
 }
 
 /**
@@ -89,13 +103,23 @@ export class Scheduler {
   private cfg: ScheduleConfig;
   /** true when the nightly hour was pinned by the caller (tests); else follow config() */
   private hourPinned: boolean;
+  /** true when retention was pinned by the caller (tests); else follow config() */
+  private retentionPinned: boolean;
   private timer?: ReturnType<typeof setInterval>;
   private running = false;
+  private started = false;
+  private lastStatus?: "ok" | "error";
+  private lastTickAt?: number;
+  private lastSuccessAt?: number;
+  private lastFailureAt?: number;
+  private lastReason?: string;
+  private lastError?: string;
 
   constructor(engine: KnowledgeEngine, cfg: Partial<ScheduleConfig> = {}) {
     this.engine = engine;
     this.cfg = { ...DEFAULT_SCHEDULE, ...cfg };
     this.hourPinned = cfg.hour !== undefined;
+    this.retentionPinned = cfg.rawRetentionDays !== undefined;
   }
 
   /**
@@ -104,33 +128,62 @@ export class Scheduler {
    * reads are wrapped so a scheduler used in tests without env still works.
    */
   private effectiveConfig(): ScheduleConfig {
-    if (this.hourPinned) return this.cfg;
     let hour = this.cfg.hour;
+    let rawRetentionDays = this.cfg.rawRetentionDays;
     try {
-      hour = config().dreamHour;
+      const live = config();
+      if (!this.hourPinned) hour = live.dreamHour;
+      if (!this.retentionPinned) rawRetentionDays = live.rawRetentionDays;
     } catch {
       // config() may be unavailable (missing env in unit tests); keep default.
     }
-    return { ...this.cfg, hour };
+    return { ...this.cfg, hour, rawRetentionDays };
   }
 
   /** Start the loop and run an immediate catch-up pass. */
   async start(): Promise<void> {
-    await this.tick("startup-catchup");
-    this.timer = setInterval(() => void this.tick("interval"), this.cfg.tickMs);
+    this.started = true;
+    try {
+      await this.tick("startup-catchup");
+      this.timer = setInterval(() => {
+        void this.tick("interval").catch((err) => {
+          log.error("scheduler tick failed", { err: String(err) });
+        });
+      }, this.cfg.tickMs);
+    } catch (err) {
+      this.started = false;
+      throw err;
+    }
   }
 
   stop(): void {
     if (this.timer) clearInterval(this.timer);
     this.timer = undefined;
+    this.started = false;
+  }
+
+  health(): RuntimeLoopHealth {
+    return {
+      started: this.started,
+      running: this.running,
+      lastStatus: this.lastStatus,
+      lastTickAt: this.lastTickAt,
+      lastSuccessAt: this.lastSuccessAt,
+      lastFailureAt: this.lastFailureAt,
+      lastReason: this.lastReason,
+      lastError: this.lastError,
+    };
   }
 
   /** One scheduling pass over all known spaces. Exposed for tests. */
   async tick(reason: string, now = new Date()): Promise<SpaceId[]> {
     if (this.running) return [];
     this.running = true;
+    this.lastTickAt = Date.now();
+    this.lastReason = reason;
     const cfg = this.effectiveConfig();
     const ran: SpaceId[] = [];
+    const errors: string[] = [];
     try {
       for (const meta of this.engine.registry.list()) {
         const idx = this.engine.registry.store(meta.id).index();
@@ -147,11 +200,31 @@ export class Scheduler {
           await this.engine.runDreamCycle(meta.id, { model });
           ran.push(meta.id);
         } catch (err) {
+          errors.push(`${meta.id}: ${String(err)}`);
           log.error("scheduled dream failed", { space: meta.id, err: String(err) });
         }
       }
+      const retention = await this.engine.pruneRawMessages(cfg.rawRetentionDays, now.getTime());
+      if (retention.deleted > 0) {
+        log.info("pruned expired raw messages", {
+          retentionDays: retention.retentionDays,
+          deleted: retention.deleted,
+        });
+      }
+    } catch (err) {
+      errors.push(String(err));
+      throw err;
     } finally {
       this.running = false;
+      if (errors.length === 0) {
+        this.lastSuccessAt = Date.now();
+        this.lastStatus = "ok";
+        this.lastError = undefined;
+      } else {
+        this.lastFailureAt = Date.now();
+        this.lastStatus = "error";
+        this.lastError = errors.join("; ").slice(0, 500);
+      }
     }
     return ran;
   }

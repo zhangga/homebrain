@@ -1,5 +1,5 @@
 {
-  "name": "@homebrain/web",
+  "name": "@homeagent/web",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -11,8 +11,9 @@
     "dev": "bun run src/dev.ts"
   },
   "dependencies": {
-    "@homebrain/shared": "workspace:*",
-    "@homebrain/core": "workspace:*",
+    "@homeagent/shared": "workspace:*",
+    "@homeagent/core": "workspace:*",
+    "@homeagent/llm": "workspace:*",
     "hono": "^4.6.0"
   }
 }

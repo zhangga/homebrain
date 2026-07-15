@@ -2,9 +2,9 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { JSONOptions } from "@homebrain/llm";
-import type { Page, SpaceId } from "@homebrain/shared";
-import { resetConfig } from "@homebrain/shared";
+import type { JSONOptions } from "@homeagent/llm";
+import type { Page, SpaceId } from "@homeagent/shared";
+import { resetConfig } from "@homeagent/shared";
 import { SpaceStore } from "./space.ts";
 import { ask, buildCatalog, expandGraph, resolveCitations } from "./ask.ts";
 import { makeCliClient } from "./cli-client.ts";
@@ -33,7 +33,7 @@ function page(slug: string, title: string, content: string, extra: Partial<Page>
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "hb-ask-"));
-  process.env.HOMEBRAIN_DATA_DIR = dir;
+  process.env.HOMEAGENT_DATA_DIR = dir;
   resetConfig();
   store = new SpaceStore(SPACE, dir);
   store.ensure();
@@ -42,7 +42,7 @@ beforeEach(() => {
 afterEach(() => {
   store.close();
   rmSync(dir, { recursive: true, force: true });
-  delete process.env.HOMEBRAIN_DATA_DIR;
+  delete process.env.HOMEAGENT_DATA_DIR;
   resetConfig();
 });
 

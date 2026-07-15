@@ -2,11 +2,13 @@
  * Core-internal types layered on the shared domain vocabulary. Options bags for
  * the Knowledge seam live here so the interface file stays declarative.
  */
-import type { SpaceId } from "@homebrain/shared";
+import type { SpaceId } from "@homeagent/shared";
 
 export interface DreamOptions {
   /** cap on raw entries processed this run (cost control) */
   maxEntries?: number;
+  /** process only these raw entries; when set, the normal 40-entry batch cap is not applied */
+  rawIds?: string[];
   /** re-distill even if the source hash is unchanged */
   force?: boolean;
   /** model override for distillation */
@@ -26,6 +28,24 @@ export interface AskOptions {
 
 export interface SearchOptions {
   limit?: number;
+}
+
+export interface RetractionRequest {
+  chatId: string;
+  messageId: string;
+  requestedBy: string;
+  /** trusted role assertion supplied by the chat connector */
+  requesterIsAdmin?: boolean;
+}
+
+export type RetractionStatus = "retracted" | "already_retracted" | "not_found" | "forbidden";
+
+export interface RetractionResult {
+  status: RetractionStatus;
+  /** content pages removed because they included the retracted source */
+  affectedPages: string[];
+  /** exact surviving source ids to rebuild before confirming the retraction */
+  requeuedSourceIds: string[];
 }
 
 /** A space and its on-disk purpose/schema, as tracked by the registry. */

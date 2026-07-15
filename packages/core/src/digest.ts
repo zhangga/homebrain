@@ -8,7 +8,7 @@
  * - glossary: title + aliases -> slug, so alias lookups resolve.
  * - overview: grouped counts + the index, a human landing page.
  */
-import type { Page, PageRef } from "@homebrain/shared";
+import type { Page, PageRef } from "@homeagent/shared";
 import type { SpaceStore } from "./space.ts";
 
 function nowHash(refs: PageRef[]): string {

@@ -2,8 +2,8 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { resetConfig, type SpaceId } from "@homebrain/shared";
-import { KnowledgeEngine } from "@homebrain/core";
+import { resetConfig, type SpaceId } from "@homeagent/shared";
+import { KnowledgeEngine } from "@homeagent/core";
 import { parseTaskCommand, handleTaskCommand } from "./task-commands.ts";
 
 describe("parseTaskCommand", () => {
@@ -38,7 +38,7 @@ describe("handleTaskCommand", () => {
 
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), "hb-taskcmd-"));
-    process.env.HOMEBRAIN_DATA_DIR = dir;
+    process.env.HOMEAGENT_DATA_DIR = dir;
     resetConfig();
     engine = new KnowledgeEngine({ dataDir: dir, runProvider: async () => "ok" });
     engine.ensureSpace(SPACE);
@@ -47,7 +47,7 @@ describe("handleTaskCommand", () => {
   afterEach(() => {
     engine.close();
     rmSync(dir, { recursive: true, force: true });
-    delete process.env.HOMEBRAIN_DATA_DIR;
+    delete process.env.HOMEAGENT_DATA_DIR;
     resetConfig();
   });
 
