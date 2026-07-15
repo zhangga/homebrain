@@ -34,6 +34,7 @@ import { classifyIntent, type Intent } from "./intent.ts";
 import { formatAnswer } from "./format.ts";
 import { GROUP_ADDED_NOTICE, coldStartNote, providerNotice } from "./messages.ts";
 import { parseTaskCommand, handleTaskCommand } from "./task-commands.ts";
+import { handleReminderMessage } from "./reminder-commands.ts";
 
 const log = logger.child("orchestrator");
 const RETRACTION_COMMANDS = new Set(["别记这条", "撤回这条", "删掉这条", "不要记这条"]);
@@ -156,6 +157,13 @@ export class Orchestrator {
     }
     if (decision.respond && retractionCommand) {
       return this.withThinking(msg, () => this.handleRetraction(msg, writeSpace));
+    }
+
+    if (decision.respond) {
+      const reminderReply = handleReminderMessage(this.engine, msg, writeSpace);
+      if (reminderReply) {
+        return this.withThinking(msg, () => this.send(msg, reminderReply));
+      }
     }
 
     const captureInputs = async (): Promise<void> => {

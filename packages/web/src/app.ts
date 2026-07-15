@@ -51,6 +51,7 @@ import {
   logsView,
   pageView,
   rawListView,
+  remindersView,
   settingsView,
   spaceDetailView,
   spaceListView,
@@ -690,7 +691,7 @@ export function createWebApp(opts: WebOptions): Hono {
     try {
       const result = await engine.deleteSpace(space);
       const message = result.status === "deleted"
-        ? `已删除 ${space}：${result.pagesDeleted} 个知识页、${result.rawDeleted} 条原始记录、${result.tasksDeleted} 个任务`
+        ? `已删除 ${space}：${result.pagesDeleted} 个知识页、${result.rawDeleted} 条原始记录、${result.tasksDeleted} 个任务、${result.remindersDeleted} 个提醒`
         : `空间不存在：${space}`;
       return c.redirect(`/governance?ok=${encodeURIComponent(message)}`);
     } catch (err) {
@@ -983,6 +984,36 @@ export function createWebApp(opts: WebOptions): Hono {
       })
       .catch(() => {});
     return c.redirect(`/tasks/${encodeURIComponent(id)}?ok=${encodeURIComponent("任务已开始，完成后刷新查看结果")}`);
+  });
+
+  // ---- Reminders -----------------------------------------------------------
+
+  app.get("/reminders", async (c) => {
+    const ok = c.req.query("ok") ?? undefined;
+    return c.html(
+      await layout(
+        "提醒",
+        [{ label: "提醒" }],
+        await remindersView(engine.reminders.list(), ok),
+        "reminders",
+      ),
+    );
+  });
+
+  app.post("/reminders/:id/complete", async (c) => {
+    const id = decodeURIComponent(c.req.param("id"));
+    const reminder = engine.reminders.get(id);
+    if (!reminder) return c.notFound();
+    engine.reminders.complete(id, reminder.creatorId);
+    return c.redirect(`/reminders?ok=${encodeURIComponent("已标记完成")}`);
+  });
+
+  app.post("/reminders/:id/cancel", async (c) => {
+    const id = decodeURIComponent(c.req.param("id"));
+    const reminder = engine.reminders.get(id);
+    if (!reminder) return c.notFound();
+    engine.reminders.cancel(id, reminder.creatorId);
+    return c.redirect(`/reminders?ok=${encodeURIComponent("已取消")}`);
   });
 
   // ---- Integrations --------------------------------------------------------

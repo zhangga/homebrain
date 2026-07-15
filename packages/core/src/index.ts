@@ -4,6 +4,7 @@ export * from "./engine.ts";
 export * from "./registry.ts";
 export * from "./agents.ts";
 export * from "./tasks.ts";
+export * from "./reminders.ts";
 export * from "./space.ts";
 export * from "./sqlite.ts";
 export * from "./markdown.ts";

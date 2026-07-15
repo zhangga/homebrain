@@ -37,6 +37,7 @@ describe("system health reporter", () => {
       }),
       dreamSchedulerHealth: () => loopHealth,
       taskSchedulerHealth: () => loopHealth,
+      reminderSchedulerHealth: () => loopHealth,
       serviceHealth: () => ({
         managed: true,
         pid: 7788,
@@ -59,8 +60,10 @@ describe("system health reporter", () => {
         feishu: expect.objectContaining({ status: "ok" }),
         dreamCycles: expect.objectContaining({ status: "ok" }),
         tasks: expect.objectContaining({ status: "ok" }),
+        reminders: expect.objectContaining({ status: "ok" }),
         dreamScheduler: expect.objectContaining({ status: "ok" }),
         taskScheduler: expect.objectContaining({ status: "ok" }),
+        reminderScheduler: expect.objectContaining({ status: "ok" }),
         service: expect.objectContaining({
           status: "ok",
           details: expect.objectContaining({ managed: true, pid: 7788 }),

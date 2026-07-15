@@ -149,6 +149,106 @@ describe("orchestrator trunk (cli connector, no feishu)", () => {
     expect(engine.registry.store("personal/ou_me").index().countRaw(true)).toBe(1);
   });
 
+  test("an addressed natural-language reminder creates a durable reminder", async () => {
+    const before = Date.now();
+    await orch.start();
+    await connector.sendGroup("@agent 1小时后提醒我喝水", true);
+
+    const reminders = engine.reminders.list();
+    expect(reminders).toHaveLength(1);
+    expect(reminders[0]).toEqual(expect.objectContaining({
+      title: "喝水",
+      space: "team/oc_team",
+      chatId: "oc_team",
+      creatorId: "ou_me",
+      status: "scheduled",
+    }));
+    expect(reminders[0]!.triggerAt).toBeGreaterThanOrEqual(before + 3600_000);
+    expect(reminders[0]!.triggerAt).toBeLessThanOrEqual(Date.now() + 3600_000);
+    expect(connector.sent.at(-1)?.markdown).toContain("已创建提醒");
+    expect(connector.sent.at(-1)?.markdown).toContain("喝水");
+    expect(engine.registry.store("team/oc_team").index().countRaw()).toBe(0);
+  });
+
+  test("asking for the coming week lists scheduled reminders instead of searching the wiki", async () => {
+    const now = Date.now();
+    engine.reminders.create({
+      title: "去茶饼斋",
+      space: "team/oc_team",
+      chatId: "oc_team",
+      creatorId: "ou_me",
+      triggerAt: now + 2 * 3600_000,
+    }, now);
+    await orch.start();
+    await connector.sendGroup("@agent 我最近一周有什么安排吗", true);
+
+    expect(connector.sent.at(-1)?.markdown).toContain("未来 7 天的安排");
+    expect(connector.sent.at(-1)?.markdown).toContain("去茶饼斋");
+    expect(engine.registry.store("team/oc_team").index().countRaw()).toBe(0);
+  });
+
+  test("the creator can confirm a repeating reminder in natural language", async () => {
+    const now = Date.now();
+    const reminder = engine.reminders.create({
+      title: "确认去大同",
+      space: "team/oc_team",
+      chatId: "oc_team",
+      creatorId: "ou_me",
+      triggerAt: now + 3600_000,
+      repeatEveryMs: 3 * 3600_000,
+      untilConfirmed: true,
+    }, now)!;
+    await orch.start();
+    await connector.sendGroup("@agent 确认去大同", true);
+
+    expect(engine.reminders.get(reminder.id)?.status).toBe("completed");
+    expect(connector.sent.at(-1)?.markdown).toContain("已完成提醒");
+    expect(connector.sent.at(-1)?.markdown).toContain("确认去大同");
+  });
+
+  test("the creator can cancel a scheduled reminder in natural language", async () => {
+    const now = Date.now();
+    const reminder = engine.reminders.create({
+      title: "去茶饼斋",
+      space: "team/oc_team",
+      chatId: "oc_team",
+      creatorId: "ou_me",
+      triggerAt: now + 3600_000,
+    }, now)!;
+    await orch.start();
+    await connector.sendGroup("@agent 取消去茶饼斋的提醒", true);
+
+    expect(engine.reminders.get(reminder.id)?.status).toBe("cancelled");
+    expect(connector.sent.at(-1)?.markdown).toContain("已取消提醒：去茶饼斋");
+  });
+
+  test("the creator can snooze a scheduled reminder by a duration", async () => {
+    const before = Date.now();
+    const reminder = engine.reminders.create({
+      title: "去茶饼斋",
+      space: "team/oc_team",
+      chatId: "oc_team",
+      creatorId: "ou_me",
+      triggerAt: before + 3600_000,
+    }, before)!;
+    await orch.start();
+    await connector.sendGroup("@agent 把去茶饼斋的提醒延后2小时", true);
+
+    const updated = engine.reminders.get(reminder.id)!;
+    expect(updated.nextTriggerAt).toBeGreaterThanOrEqual(before + 2 * 3600_000);
+    expect(updated.nextTriggerAt).toBeLessThanOrEqual(Date.now() + 2 * 3600_000);
+    expect(connector.sent.at(-1)?.markdown).toContain("已延后提醒：去茶饼斋");
+  });
+
+  test("a reminder without a time asks for one instead of pretending it was saved", async () => {
+    await orch.start();
+    await connector.sendGroup("@agent 提醒我喝水", true);
+
+    expect(engine.reminders.list()).toEqual([]);
+    expect(connector.sent.at(-1)?.markdown).toContain("没有识别到具体时间");
+    expect(connector.sent.at(-1)?.markdown).toContain("明天上午 9 点");
+  });
+
   test("replying 别记这条 retracts the source and does not capture the command", async () => {
     const reactive = connector as CliConnector & Connector;
     reactive.resolveReplyTarget = async () => ({

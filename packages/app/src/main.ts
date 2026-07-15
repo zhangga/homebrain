@@ -21,6 +21,7 @@ import {
 import { createWebApp } from "@homebrain/web";
 import { Scheduler } from "./scheduler.ts";
 import { TaskScheduler } from "./task-scheduler.ts";
+import { ReminderScheduler } from "./reminder-scheduler.ts";
 import { createSystemHealthReporter } from "./health.ts";
 import { resolveRuntimePaths } from "./runtime-paths.ts";
 import { launchDesktop } from "./desktop.ts";
@@ -82,11 +83,13 @@ async function run(cfg: ReturnType<typeof config>, processLock: ProcessLock): Pr
 
   let scheduler: Scheduler | undefined;
   let taskScheduler: TaskScheduler | undefined;
+  let reminderScheduler: ReminderScheduler | undefined;
   const reportHealth = createSystemHealthReporter({
     engine,
     connectorHealth: () => connector.health(),
     dreamSchedulerHealth: () => scheduler?.health(),
     taskSchedulerHealth: () => taskScheduler?.health(),
+    reminderSchedulerHealth: () => reminderScheduler?.health(),
     serviceHealth: () => runtimeServiceStatus({ startedAt: processLock.startedAt }),
   });
 
@@ -153,6 +156,16 @@ async function run(cfg: ReturnType<typeof config>, processLock: ProcessLock): Pr
   await taskScheduler.start();
   log.info("task scheduler started");
 
+  // 5. user reminder scheduler. Delivery state advances only after Feishu
+  // accepts the outbound message, so transient failures remain retryable.
+  reminderScheduler = new ReminderScheduler(engine, {
+    notify: async (reminder, message) => {
+      await connector.notice(reminder.chatId, message);
+    },
+  });
+  await reminderScheduler.start();
+  log.info("reminder scheduler started");
+
   let shuttingDown = false;
   const shutdown = async (signal: string) => {
     if (shuttingDown) return;
@@ -167,6 +180,7 @@ async function run(cfg: ReturnType<typeof config>, processLock: ProcessLock): Pr
     };
     contain("dream scheduler", () => scheduler.stop());
     contain("task scheduler", () => taskScheduler.stop());
+    contain("reminder scheduler", () => reminderScheduler.stop());
     contain("web server", () => server.stop(true));
     try {
       await orchestrator.stop();

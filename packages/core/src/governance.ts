@@ -15,6 +15,7 @@ import {
 import type { Agent } from "./agents.ts";
 import { AGENT_PERMISSIONS } from "./agents.ts";
 import { TASK_CADENCES, type Task } from "./tasks.ts";
+import type { Reminder } from "./reminders.ts";
 import type { SpaceMeta } from "./types.ts";
 
 export const SPACE_ARCHIVE_FORMAT = "homebrain.space" as const;
@@ -41,6 +42,7 @@ export interface SpaceArchiveV1 {
   raw: RawRecord[];
   retractions: MessageRetractionRecord[];
   tasks: Task[];
+  reminders: Reminder[];
 }
 
 export type SpaceArchive = SpaceArchiveV1;
@@ -51,6 +53,7 @@ export interface SpaceDeleteResult {
   pagesDeleted: number;
   rawDeleted: number;
   tasksDeleted: number;
+  remindersDeleted: number;
 }
 
 export interface RawRetentionReport {
@@ -255,6 +258,51 @@ function parseTask(value: unknown, index: number, space: SpaceId): Task {
   };
 }
 
+function parseReminder(value: unknown, index: number, space: SpaceId): Reminder {
+  const item = record(value, `reminders[${index}]`);
+  if (item.space !== space) {
+    throw new Error(`reminders[${index}].space does not match archive space`);
+  }
+  const status = text(item.status, `reminders[${index}].status`) as Reminder["status"];
+  if (!["scheduled", "completed", "cancelled"].includes(status)) {
+    throw new Error(`reminders[${index}].status is invalid`);
+  }
+  const repeatEveryMs = item.repeatEveryMs === undefined
+    ? undefined
+    : finiteNumber(item.repeatEveryMs, `reminders[${index}].repeatEveryMs`);
+  if (repeatEveryMs !== undefined && repeatEveryMs < 60_000) {
+    throw new Error(`reminders[${index}].repeatEveryMs is invalid`);
+  }
+  const untilConfirmed = boolean(item.untilConfirmed, `reminders[${index}].untilConfirmed`);
+  if (untilConfirmed && repeatEveryMs === undefined) {
+    throw new Error(`reminders[${index}] requires repeatEveryMs`);
+  }
+  return {
+    id: nonemptyText(item.id, `reminders[${index}].id`),
+    title: nonemptyText(item.title, `reminders[${index}].title`),
+    space,
+    chatId: nonemptyText(item.chatId, `reminders[${index}].chatId`),
+    creatorId: nonemptyText(item.creatorId, `reminders[${index}].creatorId`),
+    triggerAt: finiteNumber(item.triggerAt, `reminders[${index}].triggerAt`),
+    nextTriggerAt: finiteNumber(item.nextTriggerAt, `reminders[${index}].nextTriggerAt`),
+    repeatEveryMs,
+    untilConfirmed,
+    status,
+    sourceMessageId: optionalText(item.sourceMessageId, `reminders[${index}].sourceMessageId`),
+    lastNotifiedAt: item.lastNotifiedAt === undefined
+      ? undefined
+      : finiteNumber(item.lastNotifiedAt, `reminders[${index}].lastNotifiedAt`),
+    completedAt: item.completedAt === undefined
+      ? undefined
+      : finiteNumber(item.completedAt, `reminders[${index}].completedAt`),
+    cancelledAt: item.cancelledAt === undefined
+      ? undefined
+      : finiteNumber(item.cancelledAt, `reminders[${index}].cancelledAt`),
+    createdAt: finiteNumber(item.createdAt, `reminders[${index}].createdAt`),
+    updatedAt: finiteNumber(item.updatedAt, `reminders[${index}].updatedAt`),
+  };
+}
+
 /** Validate and normalize untrusted JSON before any restore writes occur. */
 export function parseSpaceArchive(value: unknown): SpaceArchive {
   const root = record(value, "archive");
@@ -274,7 +322,13 @@ export function parseSpaceArchive(value: unknown): SpaceArchive {
     replyInThread: meta.replyInThread === undefined ? undefined : boolean(meta.replyInThread, "space.replyInThread"),
     mentionsOnly: meta.mentionsOnly === undefined ? undefined : boolean(meta.mentionsOnly, "space.mentionsOnly"),
   };
-  if (!Array.isArray(root.pages) || !Array.isArray(root.raw) || !Array.isArray(root.retractions) || !Array.isArray(root.tasks)) {
+  if (
+    !Array.isArray(root.pages)
+    || !Array.isArray(root.raw)
+    || !Array.isArray(root.retractions)
+    || !Array.isArray(root.tasks)
+    || (root.reminders !== undefined && !Array.isArray(root.reminders))
+  ) {
     throw new Error("archive collections must be arrays");
   }
   const agent = root.agent === undefined ? undefined : parseAgent(root.agent);
@@ -294,10 +348,14 @@ export function parseSpaceArchive(value: unknown): SpaceArchive {
     };
   });
   const tasks = root.tasks.map((item, index) => parseTask(item, index, id));
+  const reminders = (root.reminders ?? []).map(
+    (item: unknown, index: number) => parseReminder(item, index, id),
+  );
   assertUnique(pages, (page) => page.slug, "page slug");
   assertUnique(raw, (entry) => entry.id, "raw id");
   assertUnique(retractions, (entry) => `${entry.chatId}\0${entry.messageId}`, "retraction");
   assertUnique(tasks, (task) => task.id, "task id");
+  assertUnique(reminders, (reminder) => reminder.id, "reminder id");
   return {
     format: SPACE_ARCHIVE_FORMAT,
     version: SPACE_ARCHIVE_VERSION,
@@ -310,5 +368,6 @@ export function parseSpaceArchive(value: unknown): SpaceArchive {
     raw,
     retractions,
     tasks,
+    reminders,
   };
 }

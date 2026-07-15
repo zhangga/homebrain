@@ -55,6 +55,13 @@ describe("space data governance", () => {
     // Markdown is authoritative; simulate a missing/stale rebuildable index.
     source.registry.store(SPACE).index().deletePage(page.slug);
     source.tasks.create({ name: "每日报告", space: SPACE, topic: "项目进展" });
+    source.reminders.create({
+      title: "提交每日报告",
+      space: SPACE,
+      chatId: "oc_governance",
+      creatorId: "ou_owner",
+      triggerAt: 1_800_000_000_000,
+    });
     await source.remember({
       space: SPACE,
       source: "message",
@@ -82,6 +89,7 @@ describe("space data governance", () => {
           expect.objectContaining({ chatId: "oc_governance", messageId: "om_retracted" }),
         ],
         tasks: [expect.objectContaining({ name: "每日报告", space: SPACE })],
+        reminders: [expect.objectContaining({ title: "提交每日报告", space: SPACE })],
       }),
     );
     source.close();
@@ -92,9 +100,11 @@ describe("space data governance", () => {
     expect(restored.registry.get(SPACE)).toEqual(archive.space);
     expect(restored.agentForSpace(SPACE)).toEqual(archive.agent);
     expect(restored.tasks.list()).toEqual(archive.tasks);
+    expect(restored.reminders.list()).toEqual(archive.reminders);
     const roundTrip = await restored.exportSpace(SPACE);
     expect(roundTrip.raw).toEqual(archive.raw);
     expect(roundTrip.retractions).toEqual(archive.retractions);
+    expect(roundTrip.reminders).toEqual(archive.reminders);
     restored.close();
   });
 
@@ -122,6 +132,13 @@ describe("space data governance", () => {
       contentHash: "deleted",
     });
     engine.tasks.create({ name: "空间任务", space: SPACE, topic: "x" });
+    engine.reminders.create({
+      title: "空间提醒",
+      space: SPACE,
+      chatId: "oc_governance",
+      creatorId: "ou_owner",
+      triggerAt: Date.now() + 3600_000,
+    });
     const backup = await engine.exportSpace(SPACE);
 
     expect(await engine.deleteSpace(SPACE)).toEqual({
@@ -130,10 +147,12 @@ describe("space data governance", () => {
       pagesDeleted: 1,
       rawDeleted: 1,
       tasksDeleted: 1,
+      remindersDeleted: 1,
     });
     expect(engine.registry.has(SPACE)).toBe(false);
     expect(await engine.getPage(SPACE, "concepts/deleted")).toBeNull();
     expect(engine.tasks.list()).toEqual([]);
+    expect(engine.reminders.list()).toEqual([]);
     expect(engine.agents.has(agent.id)).toBe(true);
     expect(await engine.deleteSpace(SPACE)).toEqual({
       status: "not_found",
@@ -141,11 +160,13 @@ describe("space data governance", () => {
       pagesDeleted: 0,
       rawDeleted: 0,
       tasksDeleted: 0,
+      remindersDeleted: 0,
     });
 
     await engine.restoreSpace(backup);
     expect(await engine.getPage(SPACE, "concepts/deleted")).not.toBeNull();
     expect(engine.tasks.list()).toEqual(backup.tasks);
+    expect(engine.reminders.list()).toEqual(backup.reminders);
     engine.close();
   });
 

@@ -1397,4 +1397,26 @@ describe("management backend (read-write)", () => {
     expect([302, 303]).toContain(res.status);
     expect(engine.tasks.has(task.id)).toBe(false);
   });
+
+  test("reminders: list and administrative controls reflect durable reminder state", async () => {
+    const reminder = engine.reminders.create({
+      title: "去茶饼斋",
+      space: SPACE,
+      chatId: "oc_web",
+      creatorId: "ou_me",
+      triggerAt: Date.now() + 3600_000,
+    })!;
+
+    const page = await (await app.request("/reminders")).text();
+    expect(page).toContain("提醒");
+    expect(page).toContain("去茶饼斋");
+    expect(page).toContain("标记完成");
+    expect(page).toContain("取消提醒");
+
+    const response = await app.request(`/reminders/${encodeURIComponent(reminder.id)}/complete`, {
+      method: "POST",
+    });
+    expect([302, 303]).toContain(response.status);
+    expect(engine.reminders.get(reminder.id)?.status).toBe("completed");
+  });
 });

@@ -19,6 +19,7 @@ export interface SystemHealthSources {
   connectorHealth: () => ConnectorHealth;
   dreamSchedulerHealth: () => RuntimeLoopHealth | undefined;
   taskSchedulerHealth: () => RuntimeLoopHealth | undefined;
+  reminderSchedulerHealth?: () => RuntimeLoopHealth | undefined;
   serviceHealth?: () => RuntimeServiceStatus;
   detectProviders?: () => Promise<DetectedProvider[]>;
   requiredProviderIds?: () => string[];
@@ -213,12 +214,24 @@ export function createSystemHealthReporter(
       details: { tasks },
     };
 
+    const reminders = (core.details?.reminders as Array<Record<string, unknown>> | undefined) ?? [];
+    const scheduledReminders = reminders.filter((reminder) => reminder.status === "scheduled");
+    components.reminders = {
+      status: "ok",
+      summary: `${scheduledReminders.length} 个待提醒，${reminders.length} 个提醒记录`,
+      details: { reminders },
+    };
+
     const dreamLoop = probeLoopComponent("Dream Cycle 调度器", sources.dreamSchedulerHealth);
     const taskLoop = probeLoopComponent("任务调度器", sources.taskSchedulerHealth);
     const dreamHealth = dreamLoop.health;
     const taskHealth = taskLoop.health;
     components.dreamScheduler = dreamLoop.component;
     components.taskScheduler = taskLoop.component;
+    const reminderLoop = sources.reminderSchedulerHealth
+      ? probeLoopComponent("提醒调度器", sources.reminderSchedulerHealth)
+      : undefined;
+    if (reminderLoop) components.reminderScheduler = reminderLoop.component;
 
     if (sources.serviceHealth) {
       try {
@@ -246,7 +259,11 @@ export function createSystemHealthReporter(
       dreamHealth?.started === true &&
       dreamHealth.lastStatus !== "error" &&
       taskHealth?.started === true &&
-      taskHealth.lastStatus !== "error";
+      taskHealth.lastStatus !== "error" &&
+      (!reminderLoop || (
+        reminderLoop.health?.started === true
+        && reminderLoop.health.lastStatus !== "error"
+      ));
     const statuses = Object.values(components).map((component) => component.status);
     const status = !ready || statuses.includes("down")
       ? "down"

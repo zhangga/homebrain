@@ -16,7 +16,7 @@ import type {
   LarkProvisioningSession,
   LarkSetupStatus,
 } from "@homebrain/shared";
-import type { SpaceMeta, Agent, Task } from "@homebrain/core";
+import type { SpaceMeta, Agent, Task, Reminder } from "@homebrain/core";
 import { AGENT_PERMISSIONS, TASK_CADENCES } from "@homebrain/core";
 import { codexReasoningEffortsForModel, type DetectedProvider } from "@homebrain/llm";
 import type { FeishuRuntimeStatus } from "./integrations.ts";
@@ -644,6 +644,52 @@ export function tasksView(
         </form>
       </div>
     </div>`;
+}
+
+// ---- Reminders ------------------------------------------------------------
+
+const REMINDER_STATUS_LABELS: Record<Reminder["status"], string> = {
+  scheduled: "待提醒",
+  completed: "已完成",
+  cancelled: "已取消",
+};
+
+export function remindersView(
+  reminders: Reminder[],
+  flashMsg?: string,
+): HtmlEscapedString | Promise<HtmlEscapedString> {
+  const rows = reminders.map((reminder) => {
+    const controls = reminder.status === "scheduled"
+      ? html`<div class="actions">
+          <form method="post" action="/reminders/${encodeURIComponent(reminder.id)}/complete" class="inline-form">
+            <button type="submit" class="secondary">标记完成</button>
+          </form>
+          <form method="post" action="/reminders/${encodeURIComponent(reminder.id)}/cancel" class="inline-form"
+            onsubmit="return confirm('取消该提醒？')">
+            <button type="submit" class="danger">取消提醒</button>
+          </form>
+        </div>`
+      : "";
+    return html`<tr>
+      <td><strong>${reminder.title}</strong><div class="muted">${reminder.id}</div></td>
+      <td>${fmtTime(reminder.nextTriggerAt)}</td>
+      <td><span class="badge ${reminder.status === "scheduled" ? "knowledge" : "general"}">${REMINDER_STATUS_LABELS[reminder.status]}</span>
+        ${reminder.untilConfirmed && reminder.repeatEveryMs
+          ? html`<div class="muted">每 ${Math.round(reminder.repeatEveryMs / 3600_000)} 小时，直到确认</div>`
+          : ""}</td>
+      <td>${reminder.space}<div class="muted">创建者：${reminder.creatorId}</div></td>
+      <td>${controls}</td>
+    </tr>`;
+  });
+  return html`<h1>提醒</h1>
+    <p class="subtitle">通过飞书对机器人说“明天上午 9 点提醒我……”即可创建。这里显示持久化状态并提供管理员控制。</p>
+    ${flash(flashMsg)}
+    ${rows.length > 0
+      ? html`<table>
+          <tr><th>内容</th><th>下次提醒</th><th>状态</th><th>空间</th><th>操作</th></tr>
+          ${rows}
+        </table>`
+      : html`<div class="empty">还没有提醒。</div>`}`;
 }
 
 // ---- Integrations (mew: Lark bot + Lark groups) ----------------------------
