@@ -11,6 +11,8 @@ export interface LarkSetupPort {
   configure(input: LarkSetupInput): Promise<LarkSetupStatus>;
   startAutomatic?(brand: "feishu" | "lark"): Promise<LarkProvisioningSession>;
   provisioningStatus?(): LarkProvisioningSession;
+  /** Read-only verification that a chat belongs to an external group. */
+  chatIsExternal?(chatId: string): Promise<boolean>;
 }
 
 export interface FeishuRuntimeStatus {

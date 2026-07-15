@@ -34,6 +34,54 @@ async function waitForProvisioningUrl(
 }
 
 describe("LarkCliSetup", () => {
+  test("detects external chats through the read-only bot API", async () => {
+    const calls: LarkSetupCommand[] = [];
+    const setup = new LarkCliSetup({
+      runner: {
+        async run(command) {
+          calls.push(command);
+          return {
+            code: 0,
+            stdout: JSON.stringify({ ok: true, data: { external: true } }),
+            stderr: "",
+          };
+        },
+      },
+    });
+
+    expect(await setup.chatIsExternal(" oc_external ")).toBeTrue();
+    expect(calls).toEqual([{
+      argv: [
+        "lark-cli",
+        "im",
+        "chats",
+        "get",
+        "--chat-id",
+        "oc_external",
+        "--as",
+        "bot",
+        "--json",
+      ],
+      timeoutMs: 15_000,
+    }]);
+  });
+
+  test("fails closed when external chat status cannot be trusted", async () => {
+    let calls = 0;
+    const setup = new LarkCliSetup({
+      runner: {
+        async run() {
+          calls += 1;
+          return { code: 1, stdout: "not-json", stderr: "private diagnostic" };
+        },
+      },
+    });
+
+    expect(await setup.chatIsExternal("oc_unknown")).toBeFalse();
+    expect(await setup.chatIsExternal("  ")).toBeFalse();
+    expect(calls).toBe(1);
+  });
+
   test("creates through the official SDK and hands credentials to lark-cli through stdin", async () => {
     const secret = "sdk-secret-never-rendered";
     let resolveRegistration!: (result: LarkAppRegistrationResult) => void;

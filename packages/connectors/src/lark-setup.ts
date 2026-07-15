@@ -274,6 +274,34 @@ export class LarkCliSetup {
     return { ...this.provisioning };
   }
 
+  async chatIsExternal(chatId: string): Promise<boolean> {
+    const normalizedChatId = chatId.trim();
+    if (!normalizedChatId) return false;
+    try {
+      const result = await this.runner.run({
+        argv: [
+          this.larkBin,
+          "im",
+          "chats",
+          "get",
+          "--chat-id",
+          normalizedChatId,
+          "--as",
+          "bot",
+          "--json",
+        ],
+        timeoutMs: 15_000,
+      });
+      if (result.code !== 0) return false;
+      const parsed = JSON.parse(result.stdout) as unknown;
+      if (!isRecord(parsed)) return false;
+      const root = isRecord(parsed.data) ? parsed.data : parsed;
+      return root.external === true;
+    } catch {
+      return false;
+    }
+  }
+
   private async verifyRequiredEvents(): Promise<{
     ready: boolean;
     repairUrl?: string;
