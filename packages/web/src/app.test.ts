@@ -54,7 +54,7 @@ beforeEach(async () => {
     ],
     providerModels: async () => ({
       claude: ["sonnet", "opus"],
-      codex: ["gpt-5.5", "gpt-5.4", "gpt-5.3-codex-spark"],
+      codex: ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5"],
       "trae-cli": ["openrouter-3o"],
     }),
   });
@@ -802,6 +802,30 @@ describe("management backend (read-write)", () => {
     // the agent editor renders the saved instruction
     const view = await (await app.request(`/agents/${encodeURIComponent(agents[0]!.id)}`)).text();
     expect(view).toContain("简洁作答");
+  });
+
+  test("creating a Codex agent persists its exact model and reasoning effort", async () => {
+    const form = new URLSearchParams({
+      name: "深度助手",
+      provider: "codex",
+      model: "gpt-5.6-sol",
+      reasoningEffort: "high",
+    });
+    const response = await app.request("/agents", {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: form.toString(),
+    });
+
+    expect([302, 303]).toContain(response.status);
+    const agent = engine.agents.list().find((item) => item.name === "深度助手");
+    expect(agent?.model).toBe("gpt-5.6-sol");
+    expect(agent?.reasoningEffort).toBe("high");
+
+    const view = await (await app.request(`/agents/${encodeURIComponent(agent!.id)}`)).text();
+    expect(view).toContain('name="reasoningEffort"');
+    expect(view).toContain('value="high" selected');
+    expect(view).toContain("仅 Codex");
   });
 
   test("agents page shows detected providers; unavailable ones are disabled", async () => {

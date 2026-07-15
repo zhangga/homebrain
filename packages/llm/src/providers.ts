@@ -24,6 +24,10 @@ const log = logger.child("providers");
 /** Stable provider ids. "gateway" is the built-in network provider (elsewhere). */
 export type ProviderId = "gateway" | "claude" | "codex" | "trae-cli";
 
+/** Reasoning levels currently exposed by the GPT-5.6 family in Codex. */
+export const CODEX_REASONING_EFFORTS = ["none", "low", "medium", "high", "xhigh", "max"] as const;
+export type CodexReasoningEffort = (typeof CODEX_REASONING_EFFORTS)[number];
+
 /**
  * The default local CLI used when an agent doesn't specify one. "gateway" is no
  * longer a user-selectable provider (the internal API is only used by the claude
@@ -54,6 +58,7 @@ export interface RunInput {
   prompt: string;
   system?: string;
   model?: string;
+  reasoningEffort?: CodexReasoningEffort;
 }
 
 export interface DetectedProvider {
@@ -98,7 +103,7 @@ const KNOWN: CliSpec[] = [
     versionArgs: ["--version"],
     // Curated from OpenAI's current model catalog (CLIs expose no list command).
     models: [
-      "gpt-5.6",
+      "gpt-5.6-sol",
       "gpt-5.6-terra",
       "gpt-5.6-luna",
       "gpt-5.5",
@@ -106,9 +111,11 @@ const KNOWN: CliSpec[] = [
       "gpt-5.4-mini",
       "gpt-5.3-codex-spark",
     ],
-    buildRun: ({ prompt, model }) => {
+    buildRun: ({ prompt, model, reasoningEffort }) => {
       // Read-only sandbox + never ask for approval: pure Q&A, no side effects.
-      const args = ["exec", "--sandbox", "read-only", prompt];
+      const args: string[] = [];
+      if (reasoningEffort) args.push("-c", `model_reasoning_effort="${reasoningEffort}"`);
+      args.push("exec", "--sandbox", "read-only", prompt);
       if (model) args.push("-m", model);
       return args;
     },

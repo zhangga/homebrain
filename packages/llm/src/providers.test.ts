@@ -27,6 +27,15 @@ describe("provider detection", () => {
       expect(await runProvider("codex", { prompt: "hello" }, 500)).toBe(
         '-c cli_auth_credentials_store="keyring" exec --sandbox read-only hello',
       );
+      expect(
+        await runProvider(
+          "codex",
+          { prompt: "hello", model: "gpt-5.6-sol", reasoningEffort: "high" },
+          500,
+        ),
+      ).toBe(
+        '-c cli_auth_credentials_store="keyring" -c model_reasoning_effort="high" exec --sandbox read-only hello -m gpt-5.6-sol',
+      );
     } finally {
       for (const key of keys) {
         const value = previous[key];
@@ -73,7 +82,7 @@ describe("provider detection", () => {
     expect(m["trae-cli"]).toContain("openrouter-3o");
     // codex list mirrors mew's menu
     expect(m.codex?.slice(0, 3)).toEqual([
-      "gpt-5.6",
+      "gpt-5.6-sol",
       "gpt-5.6-terra",
       "gpt-5.6-luna",
     ]);

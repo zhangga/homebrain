@@ -799,7 +799,10 @@ describe("orchestrator trunk (cli connector, no feishu)", () => {
         }
         // intent classification (also JSON) -> a question
         if (/JSON Schema/.test(input.prompt) && /intent/.test(input.prompt)) {
-          sawCliClassification = id === "codex" && input.model === "gpt-5.4-mini";
+          sawCliClassification =
+            id === "codex" &&
+            input.model === "gpt-5.6-sol" &&
+            input.reasoningEffort === "high";
           return JSON.stringify({ intent: "question" });
         }
         return "ok";
@@ -824,7 +827,8 @@ describe("orchestrator trunk (cli connector, no feishu)", () => {
       {
         name: "海盗",
         instruction: "像海盗一样说话，Arrr。",
-        model: "gpt-5.4-mini",
+        model: "gpt-5.6-sol",
+        reasoningEffort: "high",
         provider: "codex",
       },
     );

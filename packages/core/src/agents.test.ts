@@ -36,6 +36,20 @@ describe("AgentStore", () => {
     expect(a.model).toBe("");
   });
 
+  test("Codex reasoning effort is normalized and survives a reload", () => {
+    const store = new AgentStore(dir);
+    const agent = store.create({
+      name: "深度助手",
+      provider: "codex",
+      model: "gpt-5.6-sol",
+      reasoningEffort: "high",
+    });
+
+    expect(agent.reasoningEffort).toBe("high");
+    expect(new AgentStore(dir).get(agent.id)?.reasoningEffort).toBe("high");
+    expect(store.create({ name: "无效配置", reasoningEffort: "extreme" }).reasoningEffort).toBe("");
+  });
+
   test("reserved task-execution fields: defaults, parsing, and update", () => {
     const store = new AgentStore(dir);
     const a = store.create({ name: "runner", skills: "code-review, web-search\nsummarize" });
@@ -112,6 +126,34 @@ describe("AgentStore", () => {
     // migration is persisted back to disk (no more "gateway")
     const onDisk = JSON.parse(readFileSync(path, "utf8"));
     expect(onDisk.agents.agent_old.provider).toBe("claude");
+  });
+
+  test("the GPT-5.6 alias is migrated to the explicit Sol model id", () => {
+    const path = join(dir, "config", "agents.json");
+    require("node:fs").mkdirSync(join(dir, "config"), { recursive: true });
+    require("node:fs").writeFileSync(
+      path,
+      JSON.stringify({
+        agents: {
+          agent_sol: {
+            id: "agent_sol",
+            name: "旧 Sol 助手",
+            instruction: "",
+            model: "gpt-5.6",
+            provider: "codex",
+            permission: "read-only",
+            skills: [],
+            createdAt: 1,
+            updatedAt: 1,
+          },
+        },
+      }),
+      "utf8",
+    );
+
+    const store = new AgentStore(dir);
+    expect(store.get("agent_sol")?.model).toBe("gpt-5.6-sol");
+    expect(JSON.parse(readFileSync(path, "utf8")).agents.agent_sol.model).toBe("gpt-5.6-sol");
   });
 
   test("remove deletes and persists", () => {

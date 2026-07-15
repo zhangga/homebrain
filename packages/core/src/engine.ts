@@ -205,8 +205,9 @@ export class KnowledgeEngine implements Knowledge {
     const cfg = config();
     const provider = agent?.provider || cfg.defaultProvider;
     const model = agent?.model || cfg.defaultModel || undefined;
+    const reasoningEffort = provider === "codex" ? agent?.reasoningEffort || undefined : undefined;
     if (!isCliProvider(provider)) throw new NoProviderError(space);
-    return makeCliClient(provider as ProviderId, model, this.runProvider, timeoutMs);
+    return makeCliClient(provider as ProviderId, model, this.runProvider, timeoutMs, reasoningEffort);
   }
 
   async remember(entry: RawEntry): Promise<string> {

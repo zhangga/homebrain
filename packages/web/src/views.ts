@@ -18,7 +18,7 @@ import type {
 } from "@homebrain/shared";
 import type { SpaceMeta, Agent, Task } from "@homebrain/core";
 import { AGENT_PERMISSIONS, TASK_CADENCES } from "@homebrain/core";
-import type { DetectedProvider } from "@homebrain/llm";
+import { CODEX_REASONING_EFFORTS, type DetectedProvider } from "@homebrain/llm";
 import type { FeishuRuntimeStatus } from "./integrations.ts";
 import type { FeishuExternalSharingStatus } from "./external-sharing.ts";
 import {
@@ -335,6 +335,7 @@ export function agentsView(
   const nameVal = editing?.name ?? "";
   const instrVal = editing?.instruction ?? "";
   const modelVal = editing?.model ?? "";
+  const reasoningEffortVal = editing?.reasoningEffort ?? "";
   const providerVal = editing?.provider ?? providers.find((p) => p.available)?.id ?? "claude";
   const visVal = editing?.visibility ?? "Team";
   // Reserved task-execution fields (not consumed by ask/dream yet).
@@ -342,6 +343,14 @@ export function agentsView(
   const permVal = editing?.permission ?? "read-only";
   const skillsVal = (editing?.skills ?? []).join(", ");
   const permLabels: Record<string, string> = { "read-only": "只读", write: "可写", full: "完全访问" };
+  const reasoningEffortLabels: Record<string, string> = {
+    none: "无（None）",
+    low: "低（Low）",
+    medium: "中（Medium）",
+    high: "高（High）",
+    xhigh: "超高（Extra High）",
+    max: "最大（Max）",
+  };
 
   // Provider dropdown: only local CLIs, selectable when detected as runnable,
   // else greyed with the reason. (The internal API is used by the claude CLI
@@ -374,7 +383,8 @@ export function agentsView(
   var CATALOG = ${catalogJson};
   var prov = document.getElementById('agent-provider');
   var model = document.getElementById('agent-model');
-  if (!prov || !model) return;
+  var reasoning = document.getElementById('agent-reasoning-effort');
+  if (!prov || !model || !reasoning) return;
   prov.addEventListener('change', function(){
     var list = CATALOG[prov.value] || [];
     var cur = model.value;
@@ -388,7 +398,9 @@ export function agentsView(
       if (m === cur) o.selected = true;
       model.appendChild(o);
     });
+    reasoning.disabled = prov.value !== 'codex';
   });
+  reasoning.disabled = prov.value !== 'codex';
 })();
 </script>`);
 
@@ -429,6 +441,15 @@ export function agentsView(
               <label>Model <span class="hint">随 Provider 变化</span></label>
               <select name="model" id="agent-model">
                 ${modelOpts}
+              </select>
+            </div>
+            <div class="field">
+              <label>推理强度 <span class="hint">仅 Codex；级别越高通常越慢</span></label>
+              <select name="reasoningEffort" id="agent-reasoning-effort" ${providerVal === "codex" ? "" : "disabled"}>
+                <option value="" ${reasoningEffortVal === "" ? "selected" : ""}>默认（继承 Codex 配置）</option>
+                ${CODEX_REASONING_EFFORTS.map(
+                  (effort) => html`<option value="${effort}" ${effort === reasoningEffortVal ? "selected" : ""}>${reasoningEffortLabels[effort] ?? effort}</option>`,
+                )}
               </select>
             </div>
             <div class="field">
