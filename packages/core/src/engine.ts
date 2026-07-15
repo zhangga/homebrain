@@ -45,6 +45,17 @@ import { SpaceRegistry } from "./registry.ts";
 import { AgentStore, type Agent } from "./agents.ts";
 import { TaskStore, type Task } from "./tasks.ts";
 import { ReminderStore, type Reminder } from "./reminders.ts";
+import {
+  LearningPlanStore,
+  type LearningPlan,
+  type LearningSession,
+  type LearningSource,
+} from "./learning.ts";
+import {
+  cleanLearningSource,
+  nextLearningSegment,
+  type LearningSegment,
+} from "./learning-content.ts";
 import { runDreamCycle } from "./dream.ts";
 import { refreshDigest } from "./digest.ts";
 import { ask as askImpl } from "./ask.ts";
@@ -88,8 +99,32 @@ export interface RunTaskOptions {
   distill?: boolean;
 }
 
+export interface CreateLearningPlanFromMessageInput {
+  space: SpaceId;
+  chatId: string;
+  messageId: string;
+  creatorId: string;
+  name: string;
+  hour?: number;
+  dailyCharacters?: number;
+}
+
+export interface LearningAnswerResult {
+  plan: LearningPlan;
+  session: LearningSession;
+  feedback: string;
+  rawId: string;
+}
+
+export type LearningDelivery = (
+  plan: LearningPlan,
+  source: LearningSource,
+  session: LearningSession,
+) => void | Promise<void>;
+
 /** How long a research task may run before the CLI is killed (much longer than Q&A). */
 const TASK_TIMEOUT_MS = 300_000;
+const LEARNING_TIMEOUT_MS = 300_000;
 
 /** Build the research prompt handed to the agent CLI for a task. */
 function researchPrompt(topic: string): string {
@@ -103,6 +138,42 @@ function researchPrompt(topic: string): string {
     "- 用中文输出，条理清晰（可用小标题/要点）。",
     "- 聚焦事实、结论、关键信息，避免空泛。",
     "- 不要执行任何命令或修改文件，只需给出研究内容文本。",
+  ].join("\n");
+}
+
+function learningGuidePrompt(plan: LearningPlan, segment: LearningSegment): string {
+  return [
+    "你是一位严谨、耐心的中文阅读教练。只能依据下面的今日原文进行导读，不要补写书中没有的事实。",
+    `学习计划：${plan.name}`,
+    `今日范围：${segment.title}`,
+    "",
+    "## 今日原文",
+    segment.text,
+    "",
+    "请输出 Markdown，并严格包含：",
+    "## 今日目标",
+    "## 阅读提示",
+    "## 重点概念",
+    "## 思考题",
+    "思考题给出 2—3 个；不要重复粘贴今日原文。",
+  ].join("\n");
+}
+
+function learningFeedbackPrompt(session: LearningSession, reply: string): string {
+  return [
+    "你是一位阅读教练。依据今日原文、导读和学习者回答给出具体反馈；不知道的内容不要猜。",
+    "## 今日原文",
+    session.excerpt,
+    "## 今日导读",
+    session.guide,
+    "## 学习者回答",
+    reply,
+    "",
+    "请输出 Markdown，并严格包含：",
+    "## 回应点评",
+    "## 需要澄清",
+    "## 今日总结",
+    "## 下一步",
   ].join("\n");
 }
 
@@ -146,6 +217,7 @@ export class KnowledgeEngine implements Knowledge {
   readonly agents: AgentStore;
   readonly tasks: TaskStore;
   readonly reminders: ReminderStore;
+  readonly learning: LearningPlanStore;
   readonly serializer: Serializer;
   private dataDir: string;
   private llm?: LlmClient;
@@ -154,6 +226,7 @@ export class KnowledgeEngine implements Knowledge {
   private dreamCycles = new Map<SpaceId, DreamCycleHealth>();
   private runningTaskCounts = new Map<string, number>();
   private deliveringReminderCounts = new Map<string, number>();
+  private deliveringLearningCounts = new Map<string, number>();
 
   constructor(opts: EngineOptions = {}) {
     this.dataDir = opts.dataDir ?? config().dataDir;
@@ -161,6 +234,7 @@ export class KnowledgeEngine implements Knowledge {
     this.agents = new AgentStore(this.dataDir);
     this.tasks = new TaskStore(this.dataDir);
     this.reminders = new ReminderStore(this.dataDir);
+    this.learning = new LearningPlanStore(this.dataDir);
     this.serializer = opts.serializer ?? new Serializer();
     this.llm = opts.llm;
     const providerRunner = opts.runProvider ?? runLocalProvider;
@@ -247,6 +321,160 @@ export class KnowledgeEngine implements Knowledge {
       log.debug("remembered raw entry", { space: entry.space, source: entry.source, id });
       return id;
     });
+  }
+
+  createLearningPlanFromMessage(input: CreateLearningPlanFromMessageInput): LearningPlan {
+    if (!this.registry.has(input.space)) {
+      throw new Error("没有找到可阅读的书籍内容");
+    }
+    const candidates = this.registry
+      .store(input.space)
+      .index()
+      .findRawsByMessageId(input.messageId, input.chatId)
+      .map((raw) => ({ raw, content: cleanLearningSource(raw.content) }))
+      .filter(({ content }) => content.length > 0)
+      .sort((a, b) => b.content.length - a.content.length);
+    const selected = candidates[0];
+    if (!selected) throw new Error("没有找到可阅读的书籍内容");
+
+    const attachmentTitle = selected.raw.attachments
+      ?.map((attachment) => attachment.name?.trim())
+      .find(Boolean);
+    const headingTitle = selected.content.match(/^#{1,3}\s+([^\n]+)/mu)?.[1]?.trim();
+    const sourceTitle = attachmentTitle || headingTitle || input.name.trim();
+    return this.learning.create({
+      name: input.name,
+      space: input.space,
+      creatorId: input.creatorId,
+      chatId: input.chatId,
+      sourceTitle,
+      sourceContent: selected.content,
+      sourceRawIds: [selected.raw.id],
+      sourceMessageId: input.messageId,
+      hour: input.hour,
+      dailyCharacters: input.dailyCharacters,
+    });
+  }
+
+  async prepareLearningSession(planId: string, now = Date.now()): Promise<LearningSession> {
+    const plan = this.learning.get(planId);
+    if (!plan) throw new Error(`unknown learning plan: ${planId}`);
+    const current = this.learning.currentSession(planId);
+    if (current && ["prepared", "awaiting_reply"].includes(current.status)) return current;
+    if (plan.status !== "active") throw new Error(`learning plan is not active: ${planId}`);
+    const source = this.learning.source(planId);
+    if (!source) throw new Error(`learning source is missing: ${planId}`);
+    const segment = nextLearningSegment(source.content, plan.cursor, plan.dailyCharacters);
+    if (!segment) throw new Error(`learning source is complete: ${planId}`);
+
+    const agent = this.agentForSpace(plan.space);
+    const response = await this.llmClientForSpace(plan.space, LEARNING_TIMEOUT_MS).complete({
+      system: agent?.instruction || undefined,
+      prompt: learningGuidePrompt(plan, segment),
+      model: agent?.model || undefined,
+      purpose: "distill",
+      space: plan.space,
+    });
+    const guide = response.text.trim();
+    if (!guide) throw new Error("learning lesson produced empty output");
+    const prepared = this.learning.prepareSession(planId, {
+      startOffset: segment.startOffset,
+      endOffset: segment.endOffset,
+      sectionTitle: segment.title,
+      excerpt: segment.text,
+      guide,
+      preparedAt: now,
+    });
+    if (!prepared) throw new Error(`learning plan changed while preparing: ${planId}`);
+    return prepared;
+  }
+
+  async deliverLearningSession(
+    planId: string,
+    deliveredAt: number,
+    deliver: LearningDelivery,
+  ): Promise<boolean> {
+    const plan = this.learning.get(planId);
+    if (!plan || plan.status !== "active") return false;
+    const existing = this.learning.currentSession(planId);
+    if (existing?.status === "awaiting_reply") return false;
+    this.deliveringLearningCounts.set(
+      planId,
+      (this.deliveringLearningCounts.get(planId) ?? 0) + 1,
+    );
+    try {
+      const session = await this.prepareLearningSession(planId, deliveredAt);
+      if (session.status !== "prepared") return false;
+      const source = this.learning.source(planId);
+      if (!source) throw new Error(`learning source is missing: ${planId}`);
+      await deliver(
+        { ...plan },
+        { ...source, rawIds: [...source.rawIds] },
+        { ...session },
+      );
+      return Boolean(this.learning.markDelivered(session.id, deliveredAt));
+    } finally {
+      const remaining = (this.deliveringLearningCounts.get(planId) ?? 1) - 1;
+      if (remaining > 0) this.deliveringLearningCounts.set(planId, remaining);
+      else this.deliveringLearningCounts.delete(planId);
+    }
+  }
+
+  async answerLearningSession(
+    planId: string,
+    actorId: string,
+    reply: string,
+    now = Date.now(),
+  ): Promise<LearningAnswerResult> {
+    const plan = this.learning.get(planId);
+    if (!plan) throw new Error(`unknown learning plan: ${planId}`);
+    if (plan.creatorId !== actorId) {
+      throw new Error("只有学习计划创建者可以提交回答");
+    }
+    const learnerReply = reply.trim();
+    if (!learnerReply) throw new Error("学习回答不能为空");
+    const session = this.learning.currentSession(planId);
+    if (!session || session.status !== "awaiting_reply") {
+      throw new Error("当前没有等待回答的课程");
+    }
+
+    const agent = this.agentForSpace(plan.space);
+    const response = await this.llmClientForSpace(plan.space, LEARNING_TIMEOUT_MS).complete({
+      system: agent?.instruction || undefined,
+      prompt: learningFeedbackPrompt(session, learnerReply),
+      model: agent?.model || undefined,
+      purpose: "distill",
+      space: plan.space,
+    });
+    const feedback = response.text.trim();
+    if (!feedback) throw new Error("learning feedback produced empty output");
+    const completed = this.learning.completeSession(session.id, {
+      learnerReply,
+      feedback,
+      completedAt: now,
+    });
+    if (!completed) throw new Error(`learning session changed while answering: ${session.id}`);
+    const rawId = await this.remember({
+      space: plan.space,
+      source: "learning",
+      author: actorId,
+      chatId: plan.chatId,
+      content: [
+        `# 学习记录：${plan.name} · 第 ${session.sequence} 课`,
+        `阅读范围：${session.sectionTitle}`,
+        "",
+        "## 我的回答",
+        learnerReply,
+        "",
+        feedback,
+      ].join("\n"),
+    });
+    return {
+      plan: this.learning.get(planId)!,
+      session: completed,
+      feedback,
+      rawId,
+    };
   }
 
   async retractMessage(space: SpaceId, request: RetractionRequest): Promise<RetractionResult> {

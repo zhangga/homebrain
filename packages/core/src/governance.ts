@@ -74,7 +74,7 @@ const PAGE_TYPES: PageType[] = [
   "source",
   "analysis",
 ];
-const RAW_SOURCES: RawSource[] = ["message", "doc", "manual", "task"];
+const RAW_SOURCES: RawSource[] = ["message", "doc", "manual", "task", "learning"];
 const ATTACHMENT_KINDS: Attachment["kind"][] = ["image", "pdf", "audio", "file"];
 
 function record(value: unknown, label: string): Record<string, unknown> {

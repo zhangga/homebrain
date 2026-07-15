@@ -16,7 +16,7 @@ export type SpaceId = `personal/${string}` | `team/${string}`;
 export type SpaceKind = "personal" | "team";
 
 /** Where a raw entry originated. */
-export type RawSource = "message" | "doc" | "manual" | "task";
+export type RawSource = "message" | "doc" | "manual" | "task" | "learning";
 
 /** A single attachment reference captured but (in MVP) not distilled. */
 export interface Attachment {
