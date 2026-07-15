@@ -26,6 +26,18 @@ async function waitForProvisioningState(
   throw new Error(`Provisioning did not reach ${state}`);
 }
 
+async function waitForProvisioningUrl(
+  setup: LarkCliSetup,
+  url: string,
+): Promise<ReturnType<LarkCliSetup["provisioningStatus"]>> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const session = setup.provisioningStatus();
+    if (session.verificationUrl === url) return session;
+    await Bun.sleep(1);
+  }
+  throw new Error(`Provisioning did not expose ${url}`);
+}
+
 describe("LarkCliSetup", () => {
   test("creates through the official SDK and hands credentials to lark-cli through stdin", async () => {
     const secret = "sdk-secret-never-rendered";
@@ -50,6 +62,9 @@ describe("LarkCliSetup", () => {
         calls.push(command);
         if (command.argv.includes("config")) {
           return { code: 0, stdout: "configured", stderr: "" };
+        }
+        if (command.argv.includes("event")) {
+          return { code: 0, stdout: "", stderr: "reason: timeout" };
         }
         return {
           code: 0,
@@ -104,8 +119,143 @@ describe("LarkCliSetup", () => {
       timeoutMs: 30_000,
     });
     expect(calls[0]?.argv.join(" ")).not.toContain(secret);
+    expect(calls.slice(2).map((call) => call.argv)).toEqual([
+      [
+        "lark-cli",
+        "event",
+        "consume",
+        "im.message.receive_v1",
+        "--as",
+        "bot",
+        "--timeout",
+        "1s",
+      ],
+      [
+        "lark-cli",
+        "event",
+        "consume",
+        "im.chat.member.bot.added_v1",
+        "--as",
+        "bot",
+        "--timeout",
+        "1s",
+      ],
+    ]);
     expect(ready.message).toBe("飞书机器人已连接");
     expect(JSON.stringify(ready)).not.toContain(secret);
+  });
+
+  test("keeps creation active on the official repair page until missing events are authorized", async () => {
+    const rawDiagnostic = "private-cli-diagnostic-must-not-render";
+    const repairUrl = "https://open.feishu.cn/page/launcher?clientID=cli_sdk&addons=SAFE";
+    let resolveRegistration!: (result: LarkAppRegistrationResult) => void;
+    const registration = new Promise<LarkAppRegistrationResult>((resolve) => {
+      resolveRegistration = resolve;
+    });
+    const registrar: LarkAppRegistrar = {
+      register(input) {
+        input.onVerificationUrl({
+          url: "https://open.feishu.cn/page/launcher?user_code=CREATE",
+          expiresInSeconds: 600,
+        });
+        return registration;
+      },
+    };
+    let botAddedAttempts = 0;
+    let resolveRepairedProbe!: (result: {
+      code: number;
+      stdout: string;
+      stderr: string;
+    }) => void;
+    const repairedProbe = new Promise<{
+      code: number;
+      stdout: string;
+      stderr: string;
+    }>((resolve) => {
+      resolveRepairedProbe = resolve;
+    });
+    const runner: LarkSetupCommandRunner = {
+      async run(command) {
+        if (command.argv.includes("config")) {
+          return { code: 0, stdout: "configured", stderr: "" };
+        }
+        if (command.argv.includes("auth")) {
+          return {
+            code: 0,
+            stdout: JSON.stringify({
+              appId: "cli_sdk",
+              brand: "feishu",
+              identities: {
+                bot: {
+                  status: "ready",
+                  available: true,
+                  verified: true,
+                  openId: "ou_sdk",
+                  appName: "Homebrain",
+                },
+              },
+            }),
+            stderr: "",
+          };
+        }
+        if (command.argv.includes("im.message.receive_v1")) {
+          return { code: 0, stdout: "", stderr: "reason: timeout" };
+        }
+        botAddedAttempts += 1;
+        if (botAddedAttempts === 1) {
+          return {
+            code: 2,
+            stdout: "",
+            stderr: `${rawDiagnostic}\n{\"hint\":\"subscribe by scanning: ${repairUrl}\"}`,
+          };
+        }
+        return repairedProbe;
+      },
+    };
+    const setup = new LarkCliSetup({
+      runner,
+      registrar,
+      eventVerificationPollMs: 1,
+    });
+
+    await setup.startAutomatic("feishu");
+    resolveRegistration({
+      appId: "cli_sdk",
+      appSecret: "secret",
+      brand: "feishu",
+    });
+
+    const repair = await waitForProvisioningUrl(setup, repairUrl);
+    expect(repair.state).toBe("waiting_for_user");
+    expect(repair.message).toBe("请在飞书确认完整权限和事件订阅");
+    expect(JSON.stringify(repair)).not.toContain(rawDiagnostic);
+
+    resolveRepairedProbe({ code: 0, stdout: "", stderr: "reason: timeout" });
+    const ready = await waitForProvisioningState(setup, "ready");
+    expect(ready.message).toBe("飞书机器人已连接");
+    expect(botAddedAttempts).toBe(2);
+  });
+
+  test("rejects an untrusted SDK verification URL without exposing it", async () => {
+    const untrustedUrl = "https://attacker.example/page/launcher?token=private";
+    let aborted = false;
+    const registrar: LarkAppRegistrar = {
+      register(input) {
+        input.signal.addEventListener("abort", () => {
+          aborted = true;
+        });
+        input.onVerificationUrl({ url: untrustedUrl, expiresInSeconds: 600 });
+        return new Promise<LarkAppRegistrationResult>(() => {});
+      },
+    };
+    const setup = new LarkCliSetup({ registrar, urlWaitMs: 1 });
+
+    const session = await setup.startAutomatic("feishu");
+
+    expect(session.state).toBe("failed");
+    expect(session.verificationUrl).toBeUndefined();
+    expect(JSON.stringify(session)).not.toContain("attacker.example");
+    expect(aborted).toBeTrue();
   });
 
   test("starts one-click app provisioning and exposes only the verification URL", async () => {

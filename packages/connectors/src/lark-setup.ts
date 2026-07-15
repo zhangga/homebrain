@@ -50,6 +50,7 @@ export interface LarkCliSetupOptions {
   provisioningSpawner?: LarkProvisioningSpawner;
   urlWaitMs?: number;
   provisioningTtlMs?: number;
+  eventVerificationPollMs?: number;
 }
 
 const NO_NOTIFIER_ENV = {
@@ -65,6 +66,11 @@ const PROVISIONING_TTL_MS = 10 * 60_000;
 const STREAM_CAPTURE_LIMIT_BYTES = 4 * 1024;
 const FAILED_MESSAGE = "飞书应用创建未完成，请重试";
 const EXPIRED_MESSAGE = "飞书应用创建已过期，请重试";
+const INCOMPLETE_AUTHORIZATION_MESSAGE = "飞书授权未完整生效，请在当前创建流程中补齐";
+const REQUIRED_EVENT_KEYS = [
+  "im.message.receive_v1",
+  "im.chat.member.bot.added_v1",
+] as const;
 
 const bunLarkProvisioningSpawner: LarkProvisioningSpawner = {
   spawn(argv) {
@@ -111,6 +117,7 @@ export class LarkCliSetup {
   private readonly provisioningSpawner?: LarkProvisioningSpawner;
   private readonly urlWaitMs: number;
   private readonly provisioningTtlMs: number;
+  private readonly eventVerificationPollMs: number;
   private provisioningGeneration = 0;
   private provisioningProcess?: LarkProvisioningProcess;
   private provisioningAbort?: AbortController;
@@ -127,6 +134,7 @@ export class LarkCliSetup {
     this.provisioningSpawner = opts.provisioningSpawner;
     this.urlWaitMs = opts.urlWaitMs ?? URL_WAIT_MS;
     this.provisioningTtlMs = opts.provisioningTtlMs ?? PROVISIONING_TTL_MS;
+    this.eventVerificationPollMs = opts.eventVerificationPollMs ?? 3_000;
   }
 
   async startAutomatic(brand: "feishu" | "lark"): Promise<LarkProvisioningSession> {
@@ -185,7 +193,9 @@ export class LarkCliSetup {
       brand,
       signal: controller.signal,
       onVerificationUrl: ({ url, expiresInSeconds }) => {
+        const verificationUrl = exactVerificationUrl(url);
         if (
+          !verificationUrl ||
           this.provisioningGeneration !== generation ||
           this.provisioning.state !== "starting"
         ) {
@@ -194,7 +204,7 @@ export class LarkCliSetup {
         this.provisioning = {
           ...this.provisioning,
           state: "waiting_for_user",
-          verificationUrl: url,
+          verificationUrl,
           expiresAt: Math.min(
             this.provisioning.expiresAt ?? Number.POSITIVE_INFINITY,
             Date.now() + expiresInSeconds * 1000,
@@ -217,17 +227,54 @@ export class LarkCliSetup {
         brand: result.brand,
       });
       if (this.provisioningGeneration !== generation) return;
-      this.provisioning = status.state === "ready" && status.verified
-        ? {
-            ...this.provisioning,
-            state: "ready",
-            message: "飞书机器人已连接",
-          }
-        : {
-            ...this.provisioning,
-            state: "failed",
-            message: FAILED_MESSAGE,
-          };
+      const eventVerification = status.state === "ready" && status.verified
+        ? await this.verifyRequiredEvents()
+        : { ready: false };
+      if (this.provisioningGeneration !== generation) return;
+      if (status.state === "ready" && status.verified && eventVerification.ready) {
+        this.provisioning = {
+          ...this.provisioning,
+          state: "ready",
+          message: "飞书机器人已连接",
+        };
+        return;
+      }
+      if (
+        status.state === "ready" &&
+        status.verified &&
+        eventVerification.repairUrl
+      ) {
+        this.provisioning = {
+          ...this.provisioning,
+          state: "waiting_for_user",
+          verificationUrl: eventVerification.repairUrl,
+          message: "请在飞书确认完整权限和事件订阅",
+        };
+        const repaired = await this.pollRequiredEventsUntilReady(
+          generation,
+          controller.signal,
+        );
+        if (this.provisioningGeneration !== generation || controller.signal.aborted) return;
+        this.provisioning = repaired
+          ? {
+              ...this.provisioning,
+              state: "ready",
+              message: "飞书机器人已连接",
+            }
+          : {
+              ...this.provisioning,
+              state: "failed",
+              message: INCOMPLETE_AUTHORIZATION_MESSAGE,
+            };
+        return;
+      }
+      this.provisioning = {
+        ...this.provisioning,
+        state: "failed",
+        message: status.state === "ready" && status.verified
+          ? INCOMPLETE_AUTHORIZATION_MESSAGE
+          : FAILED_MESSAGE,
+      };
     }).catch(() => {
       if (
         this.provisioningGeneration === generation &&
@@ -466,6 +513,56 @@ export class LarkCliSetup {
     return { ...this.provisioning };
   }
 
+  private async verifyRequiredEvents(): Promise<{
+    ready: boolean;
+    repairUrl?: string;
+  }> {
+    for (const key of REQUIRED_EVENT_KEYS) {
+      let result: LarkSetupCommandResult;
+      try {
+        result = await this.runner.run({
+          argv: [
+            this.larkBin,
+            "event",
+            "consume",
+            key,
+            "--as",
+            "bot",
+            "--timeout",
+            "1s",
+          ],
+          timeoutMs: 5_000,
+        });
+      } catch {
+        return { ready: false };
+      }
+      if (result.code !== 0) {
+        const repairUrl = `${result.stdout}\n${result.stderr}`.match(VERIFICATION_URL)?.[0];
+        return { ready: false, ...(repairUrl ? { repairUrl } : {}) };
+      }
+    }
+    return { ready: true };
+  }
+
+  private async pollRequiredEventsUntilReady(
+    generation: number,
+    signal: AbortSignal,
+  ): Promise<boolean> {
+    while (this.provisioningGeneration === generation && !signal.aborted) {
+      await Bun.sleep(this.eventVerificationPollMs);
+      if (this.provisioningGeneration !== generation || signal.aborted) return false;
+      const verification = await this.verifyRequiredEvents();
+      if (verification.ready) return true;
+      if (verification.repairUrl) {
+        this.provisioning = {
+          ...this.provisioning,
+          verificationUrl: verification.repairUrl,
+        };
+      }
+    }
+    return false;
+  }
+
   async status(): Promise<LarkSetupStatus> {
     let result: LarkSetupCommandResult;
     try {
@@ -564,6 +661,11 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function stringValue(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function exactVerificationUrl(value: string): string | undefined {
+  const match = value.match(VERIFICATION_URL)?.[0];
+  return match === value ? match : undefined;
 }
 
 function safelyKill(proc: LarkProvisioningProcess): void {
