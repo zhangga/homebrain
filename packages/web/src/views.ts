@@ -600,7 +600,7 @@ function feishuProvisioningControl(
   const active = isFeishuProvisioningActive(provisioning.state);
   if (active) {
     return html`<div class="integration-actions">
-      <span class="muted">${provisioning.state === "verifying" ? "正在验证机器人…" : "等待飞书确认，请在飞书页面完成授权"}</span>
+      <span class="muted">${provisioning.state === "verifying" ? "正在验证机器人和授权…" : provisioning.message}</span>
       ${url ? html`<a class="btn" href="${url}" target="_blank" rel="noreferrer">打开飞书并确认</a>` : ""}
       ${feishuProvisioningPollScript()}
     </div>`;
@@ -680,7 +680,7 @@ export function integrationsView(
               <label class="switch"><input type="checkbox" name="replyInThread" ${(g.replyInThread ?? true) ? "checked" : ""} /><span class="slider"></span></label>
             </div>
             <div class="toggle-row">
-              <div><strong>@ mentions only</strong><div class="hint">推荐开启；一键创建后即可使用。关闭后需要企业批准“接收群内全部消息”敏感权限。</div></div>
+              <div><strong>@ mentions only</strong><div class="hint">推荐开启；敏感权限已在创建时申请。若企业尚未批准，关闭后可能无法收到全部消息。</div></div>
               <label class="switch"><input type="checkbox" name="mentionsOnly" ${(g.mentionsOnly ?? true) ? "checked" : ""} /><span class="slider"></span></label>
             </div>
             <div class="actions">
@@ -721,7 +721,7 @@ export function integrationsView(
         <div class="integration-actions">${runtimeBadge}${runtimeRecovery}</div>
       </div>
       <div class="integration-detail">
-        <div class="muted">使用官方一键创建时，飞书会自动配置所需权限和事件订阅；手动连接已有应用前，请确认该应用已开通所需权限，并核对消息与机器人入群事件订阅。默认接收私聊和群内 @ 机器人的消息。</div>
+        <div class="muted">首次确认会申请完整权限：消息收发、群消息读取、附件、表情、群信息和两条事件订阅。企业管理员可能需要在这次确认中批准敏感权限；无需事后进入开放平台补配置。手动连接已有应用时仍需自行确认权限。</div>
       </div>
     </section>
 

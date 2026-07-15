@@ -116,7 +116,12 @@ describe("guided setup view", () => {
     expect(body.indexOf("一键创建飞书机器人")).toBeLessThan(body.indexOf("手动输入 App ID"));
     expect(body).toContain('action="/setup/feishu/automatic"');
     expect(body).toContain("通过飞书官方流程创建专属机器人");
-    expect(body).toContain("自动配置机器人权限和事件订阅");
+    expect(body).toContain("首次确认会一次申请");
+    expect(body).toContain("群消息读取");
+    expect(body).toContain("附件与表情");
+    expect(body).toContain("接收消息和机器人入群事件");
+    expect(body).toContain("企业管理员可能需要在这次创建确认中批准");
+    expect(body).toContain("创建完成后不需要进入开放平台逐项配置");
     expect(body).toContain("请先确认应用已开通所需权限，并核对消息与机器人入群事件订阅");
     expect(body).toContain('<select name="brand">');
     expect(body).toContain('<option value="feishu">飞书</option>');
@@ -143,6 +148,21 @@ describe("guided setup view", () => {
     });
     expect(body).toContain("https://open.feishu.cn/page/launcher?user_code=safe");
     expect(body).toContain("/setup/feishu/session");
+  });
+
+  test("incomplete authorization stays inside the same creation flow", () => {
+    const body = render("feishu", {
+      provisioning: {
+        state: "waiting_for_user",
+        brand: "feishu",
+        verificationUrl: "https://open.feishu.cn/page/launcher?clientID=cli_safe&addons=SAFE",
+        message: "请在飞书确认完整权限和事件订阅",
+      },
+    });
+
+    expect(body).toContain("请在飞书确认完整权限和事件订阅");
+    expect(body).toContain("打开飞书并确认");
+    expect(body).not.toContain("进入飞书开放平台");
   });
 
   test("activation and invitation are written in user language", () => {

@@ -193,10 +193,11 @@ bun run packages/app/src/repl.ts       # 启动横幅列出全部命令
 1. 普通用户双击 `Homebrain.app`；源码开发者运行 `bun start`。全新数据目录会自动进入 `/setup`。
 2. 应用包用户点击“安装并连接 ChatGPT”即可完成 Codex 下载、校验与 OpenAI 官方登录；源码运行会提供
    已检测到的 Codex、Claude Code 或 TRAE CLI，并把手动安装命令留在高级路径。
-3. 点击“一键创建飞书机器人”，在飞书官方页面确认。飞书会创建企业自建应用，并自动预置机器人能力、
-   私聊与群内 @ 消息权限、消息发送/资源/表情权限，以及 Homebrain 使用的两条事件订阅。App Secret
-   只写入 `lark-cli` 的系统钥匙串，不进入 Homebrain 设置、页面或日志。
-4. 如果企业启用了自建应用审核，由飞书管理员批准本次安装；不需要用户进入开放平台手工创建应用或逐项配置权限。
+3. 点击“一键创建飞书机器人”，在飞书官方页面确认。Homebrain 通过官方 Node SDK 显式提交完整授权清单，
+   一次申请私聊、群内 @、群内全部消息、消息读取/发送、附件、表情、群信息、机器人进群权限和两条事件订阅。
+   App Secret 只通过 stdin 写入 `lark-cli` 的系统钥匙串，不进入 Homebrain 设置、页面或日志。
+4. `im:message.group_msg` 是敏感权限；如果企业启用了自建应用审核，管理员会在这次创建确认中批准。
+   不需要用户创建完成后再进入开放平台逐项补权限或事件。
 5. LaunchAgent 托管时点击“激活消息监听”安全重启；源码运行时重启 `bun start`。
 6. 把机器人加入目标群，@机器人发送第一条测试消息。Homebrain 会按 `chat_id` 自动建立群知识空间。
 
@@ -204,8 +205,10 @@ bun run packages/app/src/repl.ts       # 启动横幅列出全部命令
 `lark-cli config init --app-secret-stdin`，不会写入 `data/config/settings.json`、页面或日志。后续可从
 “飞书连接”重新进入引导、验证现有配置、调整群聊 Agent 与回复方式。
 
-一键创建使用飞书官方智能体应用权限预设，默认覆盖私聊、群内 @、发送消息、附件下载、表情反应和事件长连接。
-若关闭群的 `@ mentions only`，还需要企业额外批准敏感权限 `im:message.group_msg`；这不是默认零配置路径。
+一键创建使用飞书官方智能体应用模板，并通过 `addons` 显式叠加 Homebrain 的全部运行时权限和事件。
+敏感权限 `im:message.group_msg` 也在首次确认中申请；若企业要求审核，需在创建阶段由管理员批准。
+Homebrain 只有在 `im.message.receive_v1` 和 `im.chat.member.bot.added_v1` 都通过有界监听验证后才显示创建完成。
+若飞书仍漏配事件，创建页会直接给出官方增量授权链接并持续复检，不要求用户进入开发者后台操作。
 已有应用仍可在“更多设置”中通过 App ID / App Secret 接入。
 Provider 自身的登录授权仍由对应 CLI 管理。
 
@@ -279,12 +282,21 @@ bun run service uninstall            # 保留 data 与日志
 
 ## 飞书权限边界
 
-一键创建会自动预置 `im.message.receive_v1`（接收消息）和 `im.chat.member.bot.added_v1`（机器人入群）
-事件订阅。用户仍需在飞书官方页面确认；如果企业启用了自建应用审核，还需要飞书管理员批准本次安装。
+一键创建在首次飞书确认页显式申请以下 Homebrain 运行时能力：
+
+- 消息接收：`im:message.p2p_msg:readonly`、`im:message.group_at_msg:readonly`、
+  `im:message.group_at_msg.include_bot:readonly`、`im:message.group_msg`；
+- 消息处理：`im:message:readonly`、`im:message:send_as_bot`、`im:resource`、
+  `im:message.reactions:write_only`；
+- 群与机器人：`im:chat:read`、`im:chat.members:bot_access`、`application:bot.basic_info:read`；
+- 文档只读同步：`drive:drive.metadata:readonly`、`docx:document:readonly`、`wiki:node:read`；
+- 事件订阅：`im.message.receive_v1` 和 `im.chat.member.bot.added_v1`。
+
+用户仍需在飞书官方页面确认；如果企业启用了自建应用审核，管理员会在这次创建流程中批准本次安装。
 机器人加入群聊或收到私聊后会自动创建空间，文档同步所用的 user 身份 token 到期时会在下次 API 调用时自动刷新。
 
-群内非 @ 消息的静默收录需要敏感权限 `im:message.group_msg`，不属于默认零配置路径。请仅在确有需要时关闭
-`@ mentions only`，并由企业管理员额外批准该权限。
+群内非 @ 消息的静默收录使用敏感权限 `im:message.group_msg`。该权限已经放进首次创建确认页；请仅在确有需要时
+关闭 `@ mentions only`。如果管理员在创建阶段未批准，请保持 @ 模式；非 @ 消息不会被飞书推送给机器人。
 
 ## 实施状态
 

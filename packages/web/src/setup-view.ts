@@ -286,7 +286,7 @@ function feishuStep(input: SetupViewInput): HtmlEscapedString | Promise<HtmlEsca
         <div class="actions"><button class="primary-action">一键创建飞书机器人</button></div>
       </form>`;
   return html`<div class="eyebrow">02 · Feishu</div><h1 class="setup-title">让记忆住进飞书</h1>
-    <p class="lede">Homebrain 会通过飞书官方流程创建专属机器人，自动配置机器人权限和事件订阅。你只需要在飞书页面确认，凭据由系统钥匙串保管。</p>
+    <p class="lede">Homebrain 会通过飞书官方流程创建专属机器人。首次确认会一次申请消息收发、群消息读取、附件与表情、群信息，以及接收消息和机器人入群事件。企业管理员可能需要在这次创建确认中批准“接收群内全部消息”敏感权限；创建完成后不需要进入开放平台逐项配置。凭据由系统钥匙串保管。</p>
     ${failure}${primary}
     <details><summary>手动输入 App ID</summary>
       <p class="muted">仅用于接入已经存在的企业自建应用。请先确认应用已开通所需权限，并核对消息与机器人入群事件订阅。</p>

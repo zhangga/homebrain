@@ -191,7 +191,7 @@ describe("web backend (read-only)", () => {
     expect(page).toContain("请在飞书页面完成授权");
     expect(page).toContain("打开飞书并确认");
     expect(page).toContain("SAFE");
-    expect(page).toContain("使用官方一键创建时，飞书会自动配置所需权限和事件订阅");
+    expect(page).toContain("首次确认会申请完整权限");
     expect(page).toContain("/setup/feishu/session");
     expect(page).not.toContain("never-render-this-secret");
   });
@@ -798,7 +798,8 @@ describe("management backend (read-write)", () => {
     expect(listing).toContain("已连接群聊");
     expect(listing).toContain(SPACE); // the seeded team space
     expect(listing).toContain('action="/integrations/groups/team%2Foc_web"');
-    expect(listing).toContain("关闭后需要企业批准“接收群内全部消息”敏感权限");
+    expect(listing).toContain("敏感权限已在创建时申请");
+    expect(listing).toContain("若企业尚未批准");
 
     const form = new URLSearchParams({
       name: "研发群",
@@ -844,6 +845,11 @@ describe("management backend (read-write)", () => {
     expect(page).toContain('name="returnTo" value="/integrations"');
     expect(page.indexOf("一键创建并连接")).toBeLessThan(page.indexOf("手动连接已有应用"));
     expect(page).toContain("飞书群聊");
+    expect(page).toContain("首次确认会申请完整权限");
+    expect(page).toContain("群消息读取、附件、表情");
+    expect(page).toContain("两条事件订阅");
+    expect(page).toContain("无需事后进入开放平台补配置");
+    expect(page).toContain("企业管理员可能需要在这次确认中批准敏感权限");
   });
 
   test("manual existing-app setup offers Lark and preserves that brand when configuring", async () => {
@@ -1053,8 +1059,8 @@ describe("management backend (read-write)", () => {
     const page = await (await setupApp.request("/integrations")).text();
 
     expect(page).toContain("消息监听已就绪");
-    expect(page).toContain("使用官方一键创建时，飞书会自动配置所需权限和事件订阅");
-    expect(page).toContain("手动连接已有应用前，请确认该应用已开通所需权限");
+    expect(page).toContain("首次确认会申请完整权限");
+    expect(page).toContain("手动连接已有应用时仍需自行确认权限");
     expect(page).toContain("若一键创建未完成，请回到上方重试");
     expect(page).toContain("只有手动应用缺少配置时，才需要在对应开发者后台补齐权限和事件订阅");
     expect(page).not.toContain("权限和事件订阅会由飞书自动配置");
