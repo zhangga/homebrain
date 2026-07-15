@@ -448,12 +448,6 @@ export class KnowledgeEngine implements Knowledge {
     });
     const feedback = response.text.trim();
     if (!feedback) throw new Error("learning feedback produced empty output");
-    const completed = this.learning.completeSession(session.id, {
-      learnerReply,
-      feedback,
-      completedAt: now,
-    });
-    if (!completed) throw new Error(`learning session changed while answering: ${session.id}`);
     const rawId = await this.remember({
       space: plan.space,
       source: "learning",
@@ -469,12 +463,41 @@ export class KnowledgeEngine implements Knowledge {
         feedback,
       ].join("\n"),
     });
+    let completed: LearningSession | undefined;
+    try {
+      completed = this.learning.completeSession(session.id, {
+        learnerReply,
+        feedback,
+        completedAt: now,
+      });
+    } catch (error) {
+      await this.removeRawAfterFailedLearningAnswer(plan.space, rawId);
+      throw error;
+    }
+    if (!completed) {
+      await this.removeRawAfterFailedLearningAnswer(plan.space, rawId);
+      throw new Error(`learning session changed while answering: ${session.id}`);
+    }
     return {
       plan: this.learning.get(planId)!,
       session: completed,
       feedback,
       rawId,
     };
+  }
+
+  private async removeRawAfterFailedLearningAnswer(space: SpaceId, rawId: string): Promise<void> {
+    try {
+      await this.serializer.run(space, async () => {
+        if (this.registry.has(space)) this.registry.store(space).index().deleteRaw(rawId);
+      });
+    } catch (error) {
+      log.warn("failed to roll back incomplete learning record", {
+        space,
+        rawId,
+        err: String(error),
+      });
+    }
   }
 
   async retractMessage(space: SpaceId, request: RetractionRequest): Promise<RetractionResult> {
@@ -787,7 +810,13 @@ export class KnowledgeEngine implements Knowledge {
     for (const meta of this.registry.list()) {
       const deleted = await this.serializer.run(meta.id, async () => {
         if (!this.registry.has(meta.id)) return 0;
-        return this.registry.store(meta.id).index().deleteExpiredRawMessages(cutoff);
+        const protectedRawIds = new Set(
+          this.learning.exportBySpace(meta.id).sources.flatMap((source) => source.rawIds),
+        );
+        return this.registry
+          .store(meta.id)
+          .index()
+          .deleteExpiredRawMessages(cutoff, protectedRawIds);
       });
       if (deleted === 0) continue;
       report.bySpace[meta.id] = deleted;

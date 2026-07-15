@@ -381,11 +381,17 @@ export class SpaceIndex {
   }
 
   /** Delete expired message bodies only after they have been distilled/handled. */
-  deleteExpiredRawMessages(cutoff: number): number {
-    const result = this.db
-      .query(`DELETE FROM raw WHERE source = 'message' AND ingested = 1 AND created < ?`)
-      .run(cutoff);
-    return result.changes;
+  deleteExpiredRawMessages(cutoff: number, protectedIds: ReadonlySet<string> = new Set()): number {
+    const candidates = this.db
+      .query(`SELECT id FROM raw WHERE source = 'message' AND ingested = 1 AND created < ?`)
+      .all(cutoff) as Array<{ id: string }>;
+    let deleted = 0;
+    const remove = this.db.transaction((ids: string[]) => {
+      const statement = this.db.query(`DELETE FROM raw WHERE id = ?`);
+      for (const id of ids) deleted += statement.run(id).changes;
+    });
+    remove(candidates.map(({ id }) => id).filter((id) => !protectedIds.has(id)));
+    return deleted;
   }
 
   // ---- maintenance ---------------------------------------------------------

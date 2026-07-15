@@ -279,6 +279,55 @@ describe("space data governance", () => {
     engine.close();
   });
 
+  test("raw retention preserves provenance needed to authorize later source retraction", async () => {
+    const engine = new KnowledgeEngine({ dataDir: tempDir("ha-learning-retention-") });
+    const now = 1_800_000_000_000;
+    const rawId = "old-learning-source";
+    await engine.restoreSpace({
+      format: "homeagent.space",
+      version: 1,
+      exportedAt: now,
+      space: { id: SPACE, createdAt: now - 50 * 86_400_000 },
+      purpose: "purpose",
+      schema: "schema",
+      pages: [],
+      raw: [{
+        id: rawId,
+        space: SPACE,
+        source: "message",
+        author: "ou_owner",
+        chatId: "oc_governance",
+        messageId: "om_book",
+        content: "book content",
+        attachments: [],
+        createdAt: now - 40 * 86_400_000,
+        ingested: true,
+      }],
+      retractions: [],
+      tasks: [],
+    });
+    const plan = engine.learning.create({
+      name: "retained",
+      space: SPACE,
+      creatorId: "ou_owner",
+      chatId: "oc_governance",
+      sourceTitle: "book.md",
+      sourceContent: "book content",
+      sourceRawIds: [rawId],
+      sourceMessageId: "om_book",
+    });
+
+    expect((await engine.pruneRawMessages(30, now)).deleted).toBe(0);
+    expect(engine.registry.store(SPACE).index().getRaw(rawId)).not.toBeNull();
+    expect((await engine.retractMessage(SPACE, {
+      chatId: "oc_governance",
+      messageId: "om_book",
+      requestedBy: "ou_owner",
+    })).status).toBe("retracted");
+    expect(engine.learning.get(plan.id)).toBeUndefined();
+    engine.close();
+  });
+
   test("restore rejects duplicate archive identities before creating a space", async () => {
     const engine = new KnowledgeEngine({ dataDir: tempDir("hb-duplicate-restore-") });
     const now = Date.now();
@@ -458,6 +507,36 @@ describe("space data governance", () => {
     await expect(target.restoreSpace(archive)).rejects.toThrow("learning plan sourceId");
     expect(target.registry.has(SPACE)).toBe(false);
     expect(target.learning.list()).toEqual([]);
+    target.close();
+  });
+
+  test("restore rejects an oversized learning source before creating a space", async () => {
+    const source = new KnowledgeEngine({ dataDir: tempDir("ha-learning-large-source-") });
+    source.ensureSpace(SPACE);
+    source.learning.create({
+      name: "large",
+      space: SPACE,
+      creatorId: "ou_owner",
+      chatId: "oc_governance",
+      sourceTitle: "book.md",
+      sourceContent: "x",
+      sourceRawIds: ["raw_book"],
+      sourceMessageId: "om_book",
+    });
+    const archive = await source.exportSpace(SPACE);
+    source.close();
+    archive.learning.sources[0] = {
+      ...archive.learning.sources[0]!,
+      content: "x".repeat(2_000_001),
+    };
+    archive.learning.plans[0] = {
+      ...archive.learning.plans[0]!,
+      sourceLength: 2_000_001,
+    };
+    const target = new KnowledgeEngine({ dataDir: tempDir("ha-learning-large-target-") });
+
+    await expect(target.restoreSpace(archive)).rejects.toThrow("exceeds 2000000 characters");
+    expect(target.registry.has(SPACE)).toBe(false);
     target.close();
   });
 

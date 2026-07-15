@@ -22,6 +22,7 @@ import type {
   LearningSession,
   LearningSource,
 } from "./learning.ts";
+import { MAX_LEARNING_SOURCE_CHARACTERS } from "./learning.ts";
 import type { SpaceMeta } from "./types.ts";
 
 export const SPACE_ARCHIVE_FORMAT = "homeagent.space" as const;
@@ -320,10 +321,16 @@ function parseReminder(value: unknown, index: number, space: SpaceId): Reminder 
 
 function parseLearningSource(value: unknown, index: number): LearningSource {
   const item = record(value, `learning.sources[${index}]`);
+  const content = nonemptyText(item.content, `learning.sources[${index}].content`);
+  if (content.length > MAX_LEARNING_SOURCE_CHARACTERS) {
+    throw new Error(
+      `learning.sources[${index}].content exceeds ${MAX_LEARNING_SOURCE_CHARACTERS} characters`,
+    );
+  }
   return {
     id: nonemptyText(item.id, `learning.sources[${index}].id`),
     title: nonemptyText(item.title, `learning.sources[${index}].title`),
-    content: nonemptyText(item.content, `learning.sources[${index}].content`),
+    content,
     rawIds: strings(item.rawIds, `learning.sources[${index}].rawIds`),
     messageId: nonemptyText(item.messageId, `learning.sources[${index}].messageId`),
     createdAt: finiteNumber(item.createdAt, `learning.sources[${index}].createdAt`),
@@ -448,6 +455,7 @@ function parseLearningArchive(
   assertUnique(sources, (source) => source.id, "learning source id");
   assertUnique(sessions, (session) => session.id, "learning session id");
   assertUnique(sessions, (session) => `${session.planId}\0${session.sequence}`, "learning session sequence");
+  assertUnique(plans, (plan) => plan.sourceId, "learning plan sourceId");
   const sourceById = new Map(sources.map((source) => [source.id, source]));
   const planById = new Map(plans.map((plan) => [plan.id, plan]));
   const sessionById = new Map(sessions.map((session) => [session.id, session]));
@@ -470,6 +478,10 @@ function parseLearningArchive(
     if (session.endOffset > plan.sourceLength) {
       throw new Error(`learning session exceeds source length: ${session.id}`);
     }
+  }
+  const referencedSourceIds = new Set(plans.map((plan) => plan.sourceId));
+  if (sources.some((source) => !referencedSourceIds.has(source.id))) {
+    throw new Error("learning source is not referenced by a plan");
   }
   return { plans, sources, sessions };
 }

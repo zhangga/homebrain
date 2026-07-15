@@ -724,17 +724,25 @@ const LEARNING_SESSION_LABELS: Record<LearningSession["status"], string> = {
 export function learningView(
   plans: LearningPlan[],
   selected: LearningPlan | null,
-  source?: LearningSource,
+  sources: Record<string, LearningSource>,
   sessions: LearningSession[] = [],
   flashMsg?: string,
 ): HtmlEscapedString | Promise<HtmlEscapedString> {
   const listItems = plans.map((plan) => {
     const progress = Math.min(100, Math.floor((plan.cursor / plan.sourceLength) * 100));
+    const sourceTitle = sources[plan.id]?.title ?? "来源已不可用";
     return html`<a class="item ${selected?.id === plan.id ? "active" : ""}" href="/learning/${encodeURIComponent(plan.id)}">
       <div class="name"><span class="dot" style="${plan.status === "active" ? "" : "background:#cbd5e1"}"></span>${plan.name}</div>
-      <div class="sub">${LEARNING_STATUS_LABELS[plan.status]} · ${progress}% · 每天 ${plan.hour}:00</div>
+      <div class="sub">${sourceTitle} · ${LEARNING_STATUS_LABELS[plan.status]} · ${progress}% · 每天 ${plan.hour}:00</div>
     </a>`;
   });
+  const source = selected ? sources[selected.id] : undefined;
+  const currentSession = selected?.currentSessionId
+    ? sessions.find((session) => session.id === selected.currentSessionId)
+    : undefined;
+  const sessionHistory = sessions.filter(
+    (session) => session.status === "completed" || session.status === "skipped",
+  );
 
   const detail = selected
     ? html`<div>
@@ -746,6 +754,8 @@ export function learningView(
             <div class="field"><label>状态</label><div>${LEARNING_STATUS_LABELS[selected.status]}</div></div>
             <div class="field"><label>空间</label><div>${selected.space}</div></div>
             <div class="field"><label>创建者</label><div>${selected.creatorId}</div></div>
+            <div class="field"><label>投递聊天</label><div>${selected.chatId}</div></div>
+            <div class="field"><label>当前课程</label><div>${currentSession ? LEARNING_SESSION_LABELS[currentSession.status] : "无"}</div></div>
             <div class="field">
               <label>每天几点 <span class="hint">北京时间，0–23</span></label>
               <input type="number" min="0" max="23" name="hour" value="${selected.hour}" required />
@@ -767,10 +777,10 @@ export function learningView(
           </div>
         </form>
         <h2>课程记录</h2>
-        ${sessions.length > 0
+        ${sessionHistory.length > 0
           ? html`<table>
               <tr><th>课次</th><th>阅读范围</th><th>状态</th><th>时间</th></tr>
-              ${sessions.map((session) => html`<tr>
+              ${sessionHistory.map((session) => html`<tr>
                 <td>第 ${session.sequence} 课</td>
                 <td>${session.sectionTitle}<div class="muted">${session.startOffset}–${session.endOffset} 字</div></td>
                 <td>${LEARNING_SESSION_LABELS[session.status]}</td>
@@ -789,7 +799,7 @@ export function learningView(
     <p class="subtitle">Agent 每天按固定进度带读原文、提出思考题，并根据你的回答给出反馈。</p>
     ${plans.length > 0
       ? html`<div class="split"><div class="listcol">${listItems}</div>${detail}</div>`
-      : html`${flash(flashMsg)}<div class="empty">还没有学习计划。请先在飞书里回复一本书并发送 <code>/learn new &lt;书名&gt;</code>。</div>`}`;
+      : html`${flash(flashMsg)}<div class="empty">在飞书中回复一本已导入的书，发送 /learn new &lt;书名&gt; 创建计划。</div>`}`;
 }
 
 // ---- Integrations (mew: Lark bot + Lark groups) ----------------------------

@@ -40,6 +40,19 @@ describe("learning content", () => {
     expect(nextLearningSegment(source, first.endOffset, 60)?.title).toBe("第一章");
   });
 
+  test("stops before an ATX heading even when it follows a single newline", () => {
+    const firstChapter = `# 第一章\n${"甲".repeat(80)}`;
+    const source = `${firstChapter}\n# 第二章\n乙乙乙`;
+
+    const first = nextLearningSegment(source, 0, 60)!;
+    const second = nextLearningSegment(source, first.endOffset, 60)!;
+
+    expect(first.endOffset).toBe(firstChapter.length + 1);
+    expect(first.text).not.toContain("第二章");
+    expect(second.text.startsWith("# 第二章")).toBe(true);
+    expect(second.title).toBe("第二章");
+  });
+
   test("returns null after all non-whitespace content is consumed", () => {
     expect(nextLearningSegment("短文  \n", 2, 100)).toBeNull();
   });

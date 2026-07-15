@@ -100,7 +100,7 @@ export async function handleLearningCommand(
     const name = command.arg.trim();
     if (!name) return "请指定书名：`/learn new <书名>`。";
     if (!context.sourceMessageId) {
-      return "请回复包含书籍附件或飞书文档的原消息，再发送 `/learn new <书名>`。";
+      return "请回复包含书籍附件或飞书文档的原消息，再发送 /learn new <书名>。";
     }
     try {
       engine.createLearningPlanFromMessage({

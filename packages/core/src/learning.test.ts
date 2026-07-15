@@ -158,6 +158,41 @@ describe("LearningPlanStore", () => {
     }));
   });
 
+  test("completing or skipping the current lesson does not implicitly resume a paused plan", () => {
+    const store = new LearningPlanStore(dir);
+    const completedPlan = createPlan(store);
+    const completedSession = store.prepareSession(completedPlan.id, {
+      startOffset: 0,
+      endOffset: 4,
+      sectionTitle: "第一章",
+      excerpt: "正文内容",
+      guide: "导读",
+      preparedAt: NOW,
+    })!;
+    store.markDelivered(completedSession.id, NOW + 1);
+    store.pause(completedPlan.id, "ou_me", NOW + 2);
+    store.completeSession(completedSession.id, {
+      learnerReply: "我的理解",
+      feedback: "理解正确",
+      completedAt: NOW + 3,
+    });
+    expect(store.get(completedPlan.id)?.status).toBe("paused");
+
+    const skippedPlan = createPlan(store);
+    const skippedSession = store.prepareSession(skippedPlan.id, {
+      startOffset: 0,
+      endOffset: 4,
+      sectionTitle: "第一章",
+      excerpt: "正文内容",
+      guide: "导读",
+      preparedAt: NOW + 4,
+    })!;
+    store.markDelivered(skippedSession.id, NOW + 5);
+    store.pause(skippedPlan.id, "ou_me", NOW + 6);
+    store.skipCurrent(skippedPlan.id, "ou_me", NOW + 7);
+    expect(store.get(skippedPlan.id)?.status).toBe("paused");
+  });
+
   test("keeps visible state unchanged when durable persistence fails", () => {
     const store = new LearningPlanStore(dir);
     const plan = createPlan(store);
@@ -204,6 +239,27 @@ describe("LearningPlanStore", () => {
     expect(restored.restore(archive).map((item) => item.id)).toEqual([plan.id]);
     expect(restored.source(plan.id)?.content).toBe("正文内容共八字");
     expect(restored.currentSession(plan.id)?.id).toBe(session.id);
+  });
+
+  test("rejects a restore graph whose current session belongs to another plan", () => {
+    const source = new LearningPlanStore(join(dir, "source"));
+    const first = createPlan(source);
+    const second = createPlan(source);
+    const session = source.prepareSession(second.id, {
+      startOffset: 0,
+      endOffset: 4,
+      sectionTitle: "第一章",
+      excerpt: "正文内容",
+      guide: "导读",
+      preparedAt: NOW,
+    })!;
+    const archive = source.exportBySpace("personal/ou_me");
+    archive.plans[0] = { ...archive.plans[0]!, currentSessionId: session.id };
+
+    const target = new LearningPlanStore(join(dir, "target"));
+    expect(() => target.restore(archive)).toThrow("current session");
+    expect(target.list()).toEqual([]);
+    expect(source.get(first.id)).toBeDefined();
   });
 
   test("removes source snapshots and sessions by provenance, owner, or space", () => {

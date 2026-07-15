@@ -1404,6 +1404,8 @@ describe("management backend (read-write)", () => {
   });
 
   test("learning: nav, list, detail, and administrative controls reflect durable state", async () => {
+    const empty = await (await app.request("/learning")).text();
+    expect(empty).toContain("在飞书中回复一本已导入的书，发送 /learn new &lt;书名&gt; 创建计划。");
     const plan = engine.learning.create({
       name: "读《原则》",
       space: SPACE,
@@ -1416,15 +1418,28 @@ describe("management backend (read-write)", () => {
       hour: 8,
       dailyCharacters: 800,
     }, 1);
+    const session = engine.learning.prepareSession(plan.id, {
+      startOffset: 0,
+      endOffset: plan.sourceLength,
+      sectionTitle: "第一章",
+      excerpt: "# 第一章\n\n书籍正文",
+      guide: "## 思考题\n为什么？",
+      preparedAt: 2,
+    })!;
+    engine.learning.markDelivered(session.id, 3);
 
     const list = await (await app.request("/learning")).text();
     expect(list).toContain("学习计划");
     expect(list).toContain("读《原则》");
+    expect(list).toContain("principles.md");
+    expect(list).toContain("0%");
     expect(list).toContain('href="/learning"');
 
     const detail = await (await app.request(`/learning/${encodeURIComponent(plan.id)}`)).text();
     expect(detail).toContain("principles.md");
     expect(detail).toContain("ou_reader");
+    expect(detail).toContain("oc_web");
+    expect(detail).toContain("等待回答");
     expect(detail).toContain('name="dailyCharacters"');
     expect(detail).not.toContain('name="actorId"');
 
@@ -1438,6 +1453,14 @@ describe("management backend (read-write)", () => {
       hour: 10,
       dailyCharacters: 1200,
     }));
+
+    const malformed = await app.request(`/learning/${encodeURIComponent(plan.id)}`, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ hour: "not-a-number", dailyCharacters: "1200" }).toString(),
+    });
+    expect(malformed.headers.get("location")).toContain("%E4%BF%9D%E5%AD%98%E5%A4%B1%E8%B4%A5");
+    expect(engine.learning.get(plan.id)?.hour).toBe(10);
 
     await app.request(`/learning/${encodeURIComponent(plan.id)}/pause`, { method: "POST" });
     expect(engine.learning.get(plan.id)?.status).toBe("paused");

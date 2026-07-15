@@ -16,6 +16,7 @@ import { isSpaceId, type SpaceId } from "@homeagent/shared";
 
 export type LearningPlanStatus = "active" | "paused" | "completed";
 export type LearningSessionStatus = "prepared" | "awaiting_reply" | "completed" | "skipped";
+export const MAX_LEARNING_SOURCE_CHARACTERS = 2_000_000;
 
 export interface LearningSource {
   id: string;
@@ -115,6 +116,7 @@ function validSource(value: unknown): value is LearningSource {
   return typeof source.id === "string" && source.id.length > 0
     && typeof source.title === "string" && source.title.length > 0
     && typeof source.content === "string" && source.content.length > 0
+    && source.content.length <= MAX_LEARNING_SOURCE_CHARACTERS
     && Array.isArray(source.rawIds) && source.rawIds.every((id) => typeof id === "string")
     && typeof source.messageId === "string" && source.messageId.length > 0
     && finite(source.createdAt);
@@ -129,10 +131,12 @@ function validPlan(value: unknown): value is LearningPlan {
     && typeof plan.creatorId === "string" && plan.creatorId.length > 0
     && typeof plan.chatId === "string" && plan.chatId.length > 0
     && typeof plan.sourceId === "string" && plan.sourceId.length > 0
-    && finite(plan.sourceLength) && plan.sourceLength > 0
-    && finite(plan.hour) && plan.hour >= 0 && plan.hour <= 23
-    && finite(plan.dailyCharacters) && plan.dailyCharacters >= 500 && plan.dailyCharacters <= 8000
-    && finite(plan.cursor) && plan.cursor >= 0 && plan.cursor <= plan.sourceLength
+    && finite(plan.sourceLength) && Number.isInteger(plan.sourceLength) && plan.sourceLength > 0
+    && finite(plan.hour) && Number.isInteger(plan.hour) && plan.hour >= 0 && plan.hour <= 23
+    && finite(plan.dailyCharacters) && Number.isInteger(plan.dailyCharacters)
+    && plan.dailyCharacters >= 500 && plan.dailyCharacters <= 8000
+    && finite(plan.cursor) && Number.isInteger(plan.cursor)
+    && plan.cursor >= 0 && plan.cursor <= plan.sourceLength
     && ["active", "paused", "completed"].includes(plan.status ?? "")
     && (plan.currentSessionId === undefined || typeof plan.currentSessionId === "string")
     && (plan.lastDeliveredAt === undefined || finite(plan.lastDeliveredAt))
@@ -145,9 +149,10 @@ function validSession(value: unknown): value is LearningSession {
   const session = value as Partial<LearningSession>;
   return typeof session.id === "string" && session.id.length > 0
     && typeof session.planId === "string" && session.planId.length > 0
-    && finite(session.sequence) && session.sequence >= 1
-    && finite(session.startOffset) && session.startOffset >= 0
-    && finite(session.endOffset) && session.endOffset > session.startOffset
+    && finite(session.sequence) && Number.isInteger(session.sequence) && session.sequence >= 1
+    && finite(session.startOffset) && Number.isInteger(session.startOffset) && session.startOffset >= 0
+    && finite(session.endOffset) && Number.isInteger(session.endOffset)
+    && session.endOffset > session.startOffset
     && typeof session.sectionTitle === "string" && session.sectionTitle.length > 0
     && typeof session.excerpt === "string" && session.excerpt.length > 0
     && typeof session.guide === "string" && session.guide.length > 0
@@ -182,8 +187,9 @@ export class LearningPlanStore {
       }
       for (const [id, plan] of Object.entries(parsed.plans ?? {})) {
         if (
-          validPlan(plan) && plan.id === id && this.sources.has(plan.sourceId)
-          && (!plan.currentSessionId || this.sessions.has(plan.currentSessionId))
+          validPlan(plan) && plan.id === id
+          && this.sources.get(plan.sourceId)?.content.length === plan.sourceLength
+          && (!plan.currentSessionId || this.sessions.get(plan.currentSessionId)?.planId === plan.id)
         ) {
           this.plans.set(id, { ...plan });
         }
@@ -276,7 +282,8 @@ export class LearningPlanStore {
     const rawIds = [...new Set(input.sourceRawIds.map((id) => id.trim()).filter(Boolean))];
     if (
       !name || !isSpaceId(input.space) || !creatorId || !chatId || !sourceTitle
-      || !sourceContent || !sourceMessageId || rawIds.length === 0
+      || !sourceContent || sourceContent.length > MAX_LEARNING_SOURCE_CHARACTERS
+      || !sourceMessageId || rawIds.length === 0
     ) {
       throw new Error("invalid learning plan input");
     }
@@ -406,10 +413,7 @@ export class LearningPlanStore {
     updatedSession.feedback = feedback;
     updatedSession.completedAt = input.completedAt;
     const updatedPlan = candidatePlans.get(updatedSession.planId)!;
-    updatedPlan.cursor = updatedSession.endOffset;
-    updatedPlan.currentSessionId = undefined;
-    updatedPlan.status = updatedPlan.cursor >= updatedPlan.sourceLength ? "completed" : "active";
-    updatedPlan.updatedAt = input.completedAt;
+    advancePlan(updatedPlan, updatedSession, input.completedAt);
     this.persist(candidatePlans, this.sources, candidateSessions);
     this.plans = candidatePlans;
     this.sessions = candidateSessions;
@@ -494,10 +498,7 @@ export class LearningPlanStore {
     updatedSession.status = "skipped";
     updatedSession.completedAt = completedAt;
     const updatedPlan = candidatePlans.get(planId)!;
-    updatedPlan.cursor = updatedSession.endOffset;
-    updatedPlan.currentSessionId = undefined;
-    updatedPlan.status = updatedPlan.cursor >= updatedPlan.sourceLength ? "completed" : "active";
-    updatedPlan.updatedAt = completedAt;
+    advancePlan(updatedPlan, updatedSession, completedAt);
     this.persist(candidatePlans, this.sources, candidateSessions);
     this.plans = candidatePlans;
     this.sessions = candidateSessions;
@@ -589,8 +590,34 @@ export class LearningPlanStore {
       ) throw new Error(`invalid or duplicate learning plan: ${plan.id}`);
       incomingPlanIds.add(plan.id);
     }
-    if (archive.sessions.some((session) => !incomingPlanIds.has(session.planId))) {
-      throw new Error("learning session references an unknown plan");
+    const sourceById = new Map(archive.sources.map((source) => [source.id, source]));
+    const sessionById = new Map(archive.sessions.map((session) => [session.id, session]));
+    const referencedSourceIds = new Set<string>();
+    for (const plan of archive.plans) {
+      const source = sourceById.get(plan.sourceId)!;
+      if (referencedSourceIds.has(plan.sourceId)) {
+        throw new Error(`learning source is referenced by multiple plans: ${plan.sourceId}`);
+      }
+      referencedSourceIds.add(plan.sourceId);
+      if (source.content.length !== plan.sourceLength) {
+        throw new Error(`learning source length does not match plan: ${plan.id}`);
+      }
+      if (plan.currentSessionId) {
+        const current = sessionById.get(plan.currentSessionId);
+        if (current?.planId !== plan.id) {
+          throw new Error(`learning current session does not belong to plan: ${plan.id}`);
+        }
+      }
+    }
+    if (archive.sources.some((source) => !referencedSourceIds.has(source.id))) {
+      throw new Error("learning source is not referenced by a plan");
+    }
+    for (const session of archive.sessions) {
+      const plan = archive.plans.find((candidate) => candidate.id === session.planId);
+      if (!plan) throw new Error("learning session references an unknown plan");
+      if (session.endOffset > plan.sourceLength) {
+        throw new Error(`learning session exceeds source length: ${session.id}`);
+      }
     }
   }
 
@@ -618,4 +645,12 @@ export class LearningPlanStore {
     this.sessions = candidateSessions;
     return restored;
   }
+}
+
+function advancePlan(plan: LearningPlan, session: LearningSession, completedAt: number): void {
+  const wasPaused = plan.status === "paused";
+  plan.cursor = session.endOffset;
+  plan.currentSessionId = undefined;
+  plan.status = plan.cursor >= plan.sourceLength ? "completed" : wasPaused ? "paused" : "active";
+  plan.updatedAt = completedAt;
 }

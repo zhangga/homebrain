@@ -1200,6 +1200,68 @@ describe("orchestrator trunk (cli connector, no feishu)", () => {
     expect(engine.registry.store("team/oc_team").index().countRaw()).toBe(1);
   });
 
+  test("/learn new without a replied source gives guidance and creates nothing", async () => {
+    await orch.start();
+    await connector.sendP2P("/learn new 原则");
+
+    expect(connector.sent.at(-1)?.markdown).toContain("请回复包含书籍附件或飞书文档的原消息");
+    expect(engine.learning.list()).toEqual([]);
+    expect(engine.registry.store("personal/ou_me").index().countRaw()).toBe(0);
+  });
+
+  test("another group member cannot control or answer an owned learning plan", async () => {
+    engine.ensureSpace("team/oc_team", { chatId: "oc_team" });
+    const plan = engine.learning.create({
+      name: "原则",
+      space: "team/oc_team",
+      creatorId: "ou_owner",
+      chatId: "oc_team",
+      sourceTitle: "原则",
+      sourceContent: "# 第一章\n\n书籍正文",
+      sourceRawIds: ["raw_book"],
+      sourceMessageId: "om_book",
+    }, 1);
+    const session = engine.learning.prepareSession(plan.id, {
+      startOffset: 0,
+      endOffset: plan.sourceLength,
+      sectionTitle: "第一章",
+      excerpt: "# 第一章\n\n书籍正文",
+      guide: "## 思考题\n为什么？",
+      preparedAt: 2,
+    })!;
+    engine.learning.markDelivered(session.id, 3);
+    await orch.start();
+
+    await connector.inject({
+      kind: "message",
+      eventId: "learning-other-control",
+      chatType: "group",
+      chatId: "oc_team",
+      senderId: "ou_other",
+      text: "/learn pause 1",
+      messageId: "om_other_control",
+      mentionsBot: false,
+      createdAt: Date.now(),
+    });
+    await connector.inject({
+      kind: "message",
+      eventId: "learning-other-answer",
+      chatType: "group",
+      chatId: "oc_team",
+      senderId: "ou_other",
+      text: "学习回答：我的理解",
+      messageId: "om_other_answer",
+      mentionsBot: true,
+      createdAt: Date.now(),
+    });
+
+    expect(connector.sent.at(-2)?.markdown).toContain("没找到你的学习计划");
+    expect(connector.sent.at(-1)?.markdown).toContain("当前没有等待你回答的学习课程");
+    expect(engine.learning.get(plan.id)?.status).toBe("active");
+    expect(engine.learning.currentSession(plan.id)?.status).toBe("awaiting_reply");
+    expect(engine.registry.store("team/oc_team").index().countRaw()).toBe(0);
+  });
+
   test("an explicit learning answer receives feedback and is not captured as ordinary knowledge", async () => {
     const plan = engine.learning.create({
       name: "原则",
@@ -1229,5 +1291,36 @@ describe("orchestrator trunk (cli connector, no feishu)", () => {
     const raws = engine.registry.store("personal/ou_me").index().listRaw({});
     expect(raws).toHaveLength(1);
     expect(raws[0]).toEqual(expect.objectContaining({ source: "learning" }));
+  });
+
+  test("a normal question remains ordinary conversation while a lesson awaits", async () => {
+    engine.ensureSpace("personal/ou_me", { chatId: "oc_dm" });
+    const plan = engine.learning.create({
+      name: "原则",
+      space: "personal/ou_me",
+      creatorId: "ou_me",
+      chatId: "oc_dm",
+      sourceTitle: "原则",
+      sourceContent: "# 第一章\n\n书籍正文",
+      sourceRawIds: ["raw_book"],
+      sourceMessageId: "om_book",
+    }, 1);
+    const session = engine.learning.prepareSession(plan.id, {
+      startOffset: 0,
+      endOffset: plan.sourceLength,
+      sectionTitle: "第一章",
+      excerpt: "# 第一章\n\n书籍正文",
+      guide: "## 思考题\n为什么？",
+      preparedAt: 2,
+    })!;
+    engine.learning.markDelivered(session.id, 3);
+
+    await orch.start();
+    await connector.sendP2P("这章还有例子吗？");
+
+    expect(connector.sent.at(-1)?.markdown).not.toContain("已记录「原则」");
+    expect(engine.learning.currentSession(plan.id)?.status).toBe("awaiting_reply");
+    expect(engine.registry.store("personal/ou_me").index().listRaw({}))
+      .toEqual([expect.objectContaining({ source: "message", content: "这章还有例子吗？" })]);
   });
 });

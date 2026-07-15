@@ -51,13 +51,15 @@ export function nextLearningSegment(
 
   if (targetEnd < source.length) {
     const tail = source.slice(targetEnd, hardEnd);
-    const boundary = tail.match(/\n(?:[ \t]*\n)+[ \t]*/u);
-    if (boundary?.index !== undefined) {
-      endOffset = skipWhitespace(
-        source,
-        targetEnd + boundary.index + boundary[0].length,
-      );
-    }
+    const paragraph = tail.match(/\n(?:[ \t]*\n)+[ \t]*/u);
+    const heading = tail.match(/\n(?=#{1,3}\s)/u);
+    const boundaries = [
+      paragraph?.index === undefined
+        ? undefined
+        : skipWhitespace(source, targetEnd + paragraph.index + paragraph[0].length),
+      heading?.index === undefined ? undefined : targetEnd + heading.index + 1,
+    ].filter((offset): offset is number => offset !== undefined);
+    if (boundaries.length > 0) endOffset = Math.min(...boundaries);
   }
 
   const text = source.slice(startOffset, endOffset).trim();

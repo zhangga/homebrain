@@ -169,4 +169,28 @@ describe("guided learning engine", () => {
       content: expect.stringContaining("## 我的回答\n作者强调原则"),
     }));
   });
+
+  test("does not advance progress when the completed learning record cannot be captured", async () => {
+    const plan = engine.learning.create({
+      name: "读原则",
+      space: SPACE,
+      creatorId: "ou_me",
+      chatId: "oc_p2p",
+      sourceTitle: "原则",
+      sourceContent: "# 第一章\n\n短正文",
+      sourceRawIds: ["raw_book"],
+      sourceMessageId: "om_book",
+    }, NOW);
+    llm.queueText("## 今日目标\n理解第一章");
+    await engine.deliverLearningSession(plan.id, NOW + 1, async () => {});
+    llm.queueText("## 回应点评\n理解正确\n\n## 今日总结\n掌握重点");
+    Object.defineProperty(engine, "remember", {
+      value: async () => { throw new Error("capture unavailable"); },
+    });
+
+    await expect(engine.answerLearningSession(plan.id, "ou_me", "我的理解", NOW + 2))
+      .rejects.toThrow("capture unavailable");
+    expect(engine.learning.get(plan.id)?.cursor).toBe(0);
+    expect(engine.learning.currentSession(plan.id)?.status).toBe("awaiting_reply");
+  });
 });

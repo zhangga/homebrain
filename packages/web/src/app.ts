@@ -992,11 +992,18 @@ export function createWebApp(opts: WebOptions): Hono {
 
   app.get("/learning", async (c) => {
     const ok = c.req.query("ok") ?? undefined;
+    const plans = engine.learning.list();
+    const sources = Object.fromEntries(
+      plans.flatMap((plan) => {
+        const source = engine.learning.source(plan.id);
+        return source ? [[plan.id, source] as const] : [];
+      }),
+    );
     return c.html(
       await layout(
         "学习计划",
         [{ label: "学习计划" }],
-        await learningView(engine.learning.list(), null, undefined, [], ok),
+        await learningView(plans, null, sources, [], ok),
         "learning",
       ),
     );
@@ -1007,14 +1014,21 @@ export function createWebApp(opts: WebOptions): Hono {
     const plan = engine.learning.get(id);
     if (!plan) return c.notFound();
     const ok = c.req.query("ok") ?? undefined;
+    const plans = engine.learning.list();
+    const sources = Object.fromEntries(
+      plans.flatMap((candidate) => {
+        const source = engine.learning.source(candidate.id);
+        return source ? [[candidate.id, source] as const] : [];
+      }),
+    );
     return c.html(
       await layout(
         plan.name,
         [{ label: "学习计划", href: "/learning" }, { label: plan.name }],
         await learningView(
-          engine.learning.list(),
+          plans,
           plan,
-          engine.learning.source(id),
+          sources,
           engine.learning.sessionsForPlan(id),
           ok,
         ),
@@ -1027,9 +1041,21 @@ export function createWebApp(opts: WebOptions): Hono {
     const id = decodeURIComponent(c.req.param("id"));
     if (!engine.learning.has(id)) return c.notFound();
     const body = await c.req.parseBody();
+    const hourText = str(body, "hour").trim();
+    const dailyCharactersText = str(body, "dailyCharacters").trim();
+    const hour = Number(hourText);
+    const dailyCharacters = Number(dailyCharactersText);
+    if (
+      !hourText || !dailyCharactersText
+      || !Number.isFinite(hour) || !Number.isFinite(dailyCharacters)
+    ) {
+      return c.redirect(
+        `/learning/${encodeURIComponent(id)}?ok=${encodeURIComponent("保存失败：请输入有效数字")}`,
+      );
+    }
     engine.learning.update(id, undefined, {
-      hour: Number(str(body, "hour")),
-      dailyCharacters: Number(str(body, "dailyCharacters")),
+      hour,
+      dailyCharacters,
     });
     return c.redirect(`/learning/${encodeURIComponent(id)}?ok=${encodeURIComponent("已保存")}`);
   });
