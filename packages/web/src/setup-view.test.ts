@@ -115,6 +115,7 @@ describe("guided setup view", () => {
     const body = render("feishu");
     expect(body.indexOf("一键创建飞书机器人")).toBeLessThan(body.indexOf("手动输入 App ID"));
     expect(body).toContain('action="/setup/feishu/automatic"');
+    expect(body).toContain("自动配置机器人权限和事件订阅");
   });
 
   test("waiting provisioning renders the safe URL and polling", () => {
@@ -144,10 +145,11 @@ describe("guided setup view", () => {
       lark: { state: "ready", verified: true, botName: "小脑", botOpenId: "ou_bot", message: "ready" },
       runtime: { ready: false, consumers: [{ key: "im.message.receive_v1", state: "failed", lastError: "raw secret" }] },
     });
-    expect(permissionFailure).toContain("还差飞书平台确认");
+    expect(permissionFailure).toContain("连接还没有通过企业确认");
+    expect(permissionFailure).toContain("飞书管理员批准");
+    expect(permissionFailure).not.toContain("进入飞书开放平台手动创建");
     expect(permissionFailure).not.toContain("raw secret");
     expect(permissionFailure).toContain('action="/setup/restart"');
-    expect(permissionFailure).toContain("我已完成，重启并检查");
 
     const invite = render("invite", {
       lark: { state: "ready", verified: true, botName: "小脑", botOpenId: "ou_bot", message: "ready" },

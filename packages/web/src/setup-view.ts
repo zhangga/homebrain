@@ -293,7 +293,7 @@ function feishuStep(input: SetupViewInput): HtmlEscapedString | Promise<HtmlEsca
         <div class="actions"><button class="primary-action">一键创建飞书机器人</button></div>
       </form>`;
   return html`<div class="eyebrow">02 · Feishu</div><h1 class="setup-title">让记忆住进飞书</h1>
-    <p class="lede">Homebrain 会为你创建一个专属机器人。你只需要在飞书页面确认，凭据会由系统钥匙串保管。</p>
+    <p class="lede">Homebrain 会通过飞书官方流程创建专属机器人，自动配置机器人权限和事件订阅。你只需要在飞书页面确认，凭据由系统钥匙串保管。</p>
     ${failure}${primary}
     <details><summary>手动输入 App ID</summary>
       <p class="muted">仅用于接入已经存在的企业自建应用。</p>
@@ -316,23 +316,26 @@ function consumerLabel(key: string): string {
 function activateStep(input: SetupViewInput): HtmlEscapedString | Promise<HtmlEscapedString> {
   const failed = input.runtime.consumers.some((consumer) => consumer.state === "failed");
   const rows = input.runtime.consumers.length
-    ? input.runtime.consumers.map((consumer) => html`<div class="status-row"><span>${consumerLabel(consumer.key)}</span><span>${consumer.state === "ready" ? "已就绪" : consumer.state === "failed" ? "需要完成飞书平台配置" : "正在连接"}</span></div>`)
+    ? input.runtime.consumers.map((consumer) => html`<div class="status-row"><span>${consumerLabel(consumer.key)}</span><span>${consumer.state === "ready" ? "已就绪" : consumer.state === "failed" ? "等待企业确认" : "正在连接"}</span></div>`)
     : html`<div class="status-row"><span>飞书消息连接</span><span>等待服务重启</span></div>`;
+  const approvalNotice = html`<div class="waiting">
+    <strong>连接还没有通过企业确认</strong>
+    <span class="muted">应用已经创建；如果企业设置了应用审核，请让飞书管理员批准本次机器人安装，然后重新检查。</span>
+  </div>`;
   const action = input.restartRequired
     ? input.restartable
       ? html`<form method="post" action="/setup/restart" class="actions"><button class="primary-action">激活消息监听</button></form>`
       : html`<div class="waiting"><strong>需要重启 Homebrain</strong><span class="muted">请在启动它的终端按 Ctrl+C，然后重新运行 bun start。</span></div>`
     : failed
       ? input.restartable
-        ? html`<div class="waiting"><strong>还差飞书平台确认</strong><span class="muted">请在飞书开放平台启用机器人、批准消息权限和事件订阅，并发布应用版本。</span></div>
-            <form method="post" action="/setup/restart" class="actions"><button class="primary-action">我已完成，重启并检查</button></form>`
-        : html`<div class="waiting"><strong>完成飞书配置后请重启 Homebrain</strong><span class="muted">请在飞书开放平台启用机器人、批准消息权限和事件订阅并发布应用版本，然后在终端重启 bun start。</span></div>`
+        ? html`${approvalNotice}<form method="post" action="/setup/restart" class="actions"><button class="primary-action">重新检查连接</button></form>`
+        : approvalNotice
       : html`<div class="waiting"><strong>正在建立消息连接…</strong><span class="muted">通常只需几秒，不需要再次重启。</span></div>
           <script>setTimeout(function () { location.reload(); }, 2000);</script>`;
   return html`<div class="eyebrow">03 · Activate</div><h1 class="setup-title">让机器人开始接收消息</h1>
     <p class="lede">机器人身份已经确认。最后重启一次后台服务，让新的消息通道正式接管。</p>
     <div class="status-list">${rows}</div>${action}
-    <details><summary>如果重启后仍未就绪</summary><p class="muted">飞书管理员可能仍需批准消息权限或发布应用版本。Homebrain 会保留当前进度，不必重新创建机器人。</p></details>`;
+    <details><summary>如果重启后仍未就绪</summary><p class="muted">确认扫码账号有创建企业自建应用的权限，并检查企业管理员是否有待审批的应用授权。Homebrain 会保留当前进度，不必重新创建机器人。</p></details>`;
 }
 
 function inviteStep(input: SetupViewInput): HtmlEscapedString | Promise<HtmlEscapedString> {
