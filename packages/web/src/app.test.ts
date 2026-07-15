@@ -171,7 +171,7 @@ describe("web backend (read-only)", () => {
       detectProviders: async () => [],
       providerModels: async () => ({}),
       larkSetup: {
-        status: async () => ({ state: "unconfigured", verified: false, message: "missing" }),
+        status: async () => ({ state: "unconfigured", verified: false, message: "never-render-this-secret" }),
         configure: async () => { throw new Error("unused"); },
         startAutomatic: async () => { starts += 1; return session; },
         provisioningStatus: () => session,
@@ -189,6 +189,11 @@ describe("web backend (read-only)", () => {
     expect(starts).toBe(1);
     const page = await (await setupApp.request("/integrations")).text();
     expect(page).toContain("请在飞书页面完成授权");
+    expect(page).toContain("打开飞书并确认");
+    expect(page).toContain("SAFE");
+    expect(page).toContain("权限和事件订阅会由飞书自动配置");
+    expect(page).toContain("/setup/feishu/session");
+    expect(page).not.toContain("never-render-this-secret");
   });
 
   test("recovers the verified bot identity after an automatic session is lost on restart", async () => {
@@ -789,9 +794,11 @@ describe("management backend (read-write)", () => {
     const agent = engine.agents.create({ name: "群助手", model: "" });
     const listing = await (await app.request("/integrations")).text();
     expect(listing).toContain("飞书连接");
-    expect(listing).toContain('href="/setup"');
-    expect(listing).toContain("绑定群聊并测试");
+    expect(listing).toContain('action="/setup/feishu/automatic"');
+    expect(listing).toContain("已连接群聊");
     expect(listing).toContain(SPACE); // the seeded team space
+    expect(listing).toContain('action="/integrations/groups/team%2Foc_web"');
+    expect(listing).toContain("关闭后需要企业批准“接收群内全部消息”敏感权限");
 
     const form = new URLSearchParams({
       name: "研发群",
@@ -810,6 +817,33 @@ describe("management backend (read-write)", () => {
     expect(meta?.agentId).toBe(agent.id);
     expect(meta?.replyInThread).toBe(true);
     expect(meta?.mentionsOnly).toBe(false);
+  });
+
+  test("integration page makes official one-click creation the primary bot action", async () => {
+    const idle = {
+      state: "idle" as const,
+      brand: "feishu" as const,
+      message: "尚未开始创建飞书应用",
+    };
+    const setupApp = createWebApp({
+      engine,
+      detectProviders: async () => [],
+      providerModels: async () => ({}),
+      larkSetup: {
+        status: async () => ({ state: "unconfigured", verified: false, message: "missing" }),
+        configure: async () => { throw new Error("unused"); },
+        startAutomatic: async () => idle,
+        provisioningStatus: () => idle,
+      },
+    });
+
+    const page = await (await setupApp.request("/integrations")).text();
+    expect(page).toContain("飞书机器人");
+    expect(page).toContain("一键创建并连接");
+    expect(page).toContain('action="/setup/feishu/automatic"');
+    expect(page).toContain('name="returnTo" value="/integrations"');
+    expect(page.indexOf("一键创建并连接")).toBeLessThan(page.indexOf("手动连接已有应用"));
+    expect(page).toContain("飞书群聊");
   });
 
   test("integration setup verifies app credentials and discovers the bot identity", async () => {
@@ -864,7 +898,7 @@ describe("management backend (read-write)", () => {
     expect(JSON.stringify(readSettings(dir))).not.toContain("top-secret-value");
 
     const page = await (await setupApp.request("/integrations")).text();
-    expect(page).toContain("连接已验证");
+    expect(page).toContain("创建并切换机器人");
     expect(page).toContain("新机器人");
     expect(page).toContain("ou_new");
     expect(page).not.toContain("top-secret-value");
@@ -945,10 +979,10 @@ describe("management backend (read-write)", () => {
 
     const page = await (await setupApp.request("/integrations")).text();
 
-    expect(page).toContain("事件监听已就绪");
-    expect(page).toContain("im.message.receive_v1");
-    expect(page).toContain("im.chat.member.bot.added_v1");
-    expect(page).toContain("im:message:readonly");
+    expect(page).toContain("消息监听已就绪");
+    expect(page).toContain("权限和事件订阅会由飞书自动配置");
+    expect(page).not.toContain("im.message.receive_v1");
+    expect(page).not.toContain("im.chat.member.bot.added_v1");
   });
 
   test("integration setup keeps a restart warning until the active connector uses the new identity", async () => {
@@ -982,10 +1016,9 @@ describe("management backend (read-write)", () => {
 
     const page = await (await setupApp.request("/integrations")).text();
 
-    expect(page).toContain("需要重启");
-    expect(page).toContain("当前消费者仍属于启动时应用");
-    expect(page).toContain("应用可用范围");
-    expect(page).not.toContain("事件监听已就绪");
+    expect(page).toContain("重启后生效");
+    expect(page).toContain("创建并切换机器人");
+    expect(page).not.toContain("消息监听已就绪");
   });
 
   test("settings POST persists default provider/model + config and reflects it back", async () => {

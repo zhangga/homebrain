@@ -53,6 +53,14 @@ const STYLE = `
   .card { background:var(--card); border:1px solid var(--border); border-radius:10px; padding:16px 18px; margin-bottom:14px; }
   .row { display:flex; align-items:center; justify-content:space-between; gap:16px; }
   .row + .row { border-top:1px solid var(--border); padding-top:14px; margin-top:14px; }
+  .integration-card { padding:0; overflow:hidden; }
+  .integration-row { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:24px; align-items:center; padding:18px 20px; }
+  .integration-row + .integration-row { border-top:1px solid var(--border); }
+  .connection-pill { min-width:220px; display:flex; align-items:center; justify-content:space-between; gap:12px;
+    padding:9px 12px; border:1px solid var(--border); border-radius:8px; background:#fff; color:#374151; font-size:13px; }
+  .connection-pill .dot { flex:0 0 auto; margin-right:0; }
+  .integration-actions { display:flex; align-items:center; justify-content:flex-end; flex-wrap:wrap; gap:8px; }
+  .integration-detail { padding:0 20px 18px; }
   .muted { color:var(--muted); font-size:13px; }
   .tag { display:inline-block; background:var(--accent-soft); color:var(--accent); border-radius:5px; padding:1px 8px; font-size:12px; margin-right:4px; }
   .dot { display:inline-block; width:8px; height:8px; border-radius:50%; background:var(--ok); margin-right:6px; vertical-align:middle; }
@@ -101,6 +109,11 @@ const STYLE = `
   .switch input:checked + .slider { background:var(--accent); }
   .switch input:checked + .slider:before { transform:translateX(18px); }
   .toggle-row { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:8px 0; }
+  @media (max-width:720px) {
+    .integration-row { grid-template-columns:1fr; gap:12px; }
+    .integration-actions { justify-content:flex-start; }
+    .connection-pill { min-width:0; width:100%; }
+  }
 `;
 
 export interface Crumb {
