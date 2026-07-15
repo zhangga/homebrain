@@ -1,7 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
   LarkCliSetup,
-  type LarkProvisioningProcess,
   type LarkSetupCommand,
   type LarkSetupCommandRunner,
 } from "./lark-setup.ts";
@@ -9,10 +8,6 @@ import type {
   LarkAppRegistrar,
   LarkAppRegistrationResult,
 } from "./lark-app-registration.ts";
-
-async function* chunks(...values: string[]): AsyncGenerator<Uint8Array> {
-  for (const value of values) yield new TextEncoder().encode(value);
-}
 
 async function waitForProvisioningState(
   setup: LarkCliSetup,
@@ -258,289 +253,64 @@ describe("LarkCliSetup", () => {
     expect(aborted).toBeTrue();
   });
 
-  test("starts one-click app provisioning and exposes only the verification URL", async () => {
-    let spawned: string[] | undefined;
-    let spawnCount = 0;
-    let resolveExit!: (code: number) => void;
-    const exited = new Promise<number>((resolve) => {
-      resolveExit = resolve;
-    });
-    const process: LarkProvisioningProcess = {
-      stdout: chunks(""),
-      stderr: chunks(
-        "Open the link below to configure app:\n",
-        "https://open.feishu.cn/page/cli?user_code=SAFE-CODE&from=cli\n",
-      ),
-      exited,
-      kill: () => resolveExit(143),
+  test("maps an expired SDK authorization to a safe expired session", async () => {
+    const secretDiagnostic = "expired-device-code-must-not-render";
+    const registrar: LarkAppRegistrar = {
+      async register(input) {
+        input.onVerificationUrl({
+          url: "https://open.feishu.cn/page/launcher?user_code=EXPIRE",
+          expiresInSeconds: 600,
+        });
+        throw { code: "expired_token", description: secretDiagnostic };
+      },
     };
-    const setup = new LarkCliSetup({
-      provisioningSpawner: {
-        spawn(argv) {
-          spawnCount += 1;
-          spawned = argv;
-          return process;
-        },
-      },
-    });
+    const setup = new LarkCliSetup({ registrar });
 
-    const session = await setup.startAutomatic("feishu");
-    const duplicate = await setup.startAutomatic("feishu");
+    await setup.startAutomatic("feishu");
+    const session = await waitForProvisioningState(setup, "expired");
 
-    expect(spawned).toEqual([
-      "lark-cli",
-      "config",
-      "init",
-      "--new",
-      "--brand",
-      "feishu",
-      "--lang",
-      "zh",
-    ]);
-    expect(session.state).toBe("waiting_for_user");
-    expect(session.verificationUrl).toStartWith("https://open.feishu.cn/page/cli?");
-    expect(JSON.stringify(session)).not.toContain("SAFE-CODE\n");
-    expect(duplicate.startedAt).toBe(session.startedAt);
-    expect(spawnCount).toBe(1);
-    process.kill();
-  });
-
-  test("recognizes a verification URL split across chunks while both streams are active", async () => {
-    let resolveExit!: (code: number) => void;
-    const exited = new Promise<number>((resolve) => {
-      resolveExit = resolve;
-    });
-    const setup = new LarkCliSetup({
-      urlWaitMs: 200,
-      provisioningSpawner: {
-        spawn: () => ({
-          stdout: chunks(
-            "https://open.feishu.cn/page/",
-            "cli?user_code=SPLIT-CODE\n",
-          ),
-          stderr: chunks("interleaved diagnostic output\n"),
-          exited,
-          kill: () => resolveExit(143),
-        }),
-      },
-    });
-
-    const session = await setup.startAutomatic("feishu");
-
-    expect(session.state).toBe("waiting_for_user");
-    expect(session.verificationUrl).toBe(
-      "https://open.feishu.cn/page/cli?user_code=SPLIT-CODE",
-    );
-    resolveExit(143);
-  });
-
-  test("recognizes a Feishu launcher provisioning URL split across chunks", async () => {
-    let resolveExit!: (code: number) => void;
-    const exited = new Promise<number>((resolve) => {
-      resolveExit = resolve;
-    });
-    const setup = new LarkCliSetup({
-      urlWaitMs: 200,
-      provisioningSpawner: {
-        spawn: () => ({
-          stdout: chunks(
-            "Open the provisioning page:\nhttps://open.feishu.cn/page/laun",
-            "cher?app_id=cli_launcher&source=lark-cli\n",
-          ),
-          stderr: chunks(""),
-          exited,
-          kill: () => resolveExit(143),
-        }),
-      },
-    });
-
-    const session = await setup.startAutomatic("feishu");
-
-    expect(session.state).toBe("waiting_for_user");
-    expect(session.verificationUrl).toBe(
-      "https://open.feishu.cn/page/launcher?app_id=cli_launcher&source=lark-cli",
-    );
-    resolveExit(143);
-  });
-
-  test(
-    "rejects an untrusted URL without surfacing child-process output",
-    async () => {
-      const secret = "never-render-this-token";
-      const setup = new LarkCliSetup({
-        provisioningSpawner: {
-          spawn: () => ({
-            stdout: chunks(""),
-            stderr: chunks(`https://attacker.example/page/cli?token=${secret}\n`),
-            exited: Promise.resolve(1),
-            kill: () => {},
-          }),
-        },
-      });
-
-      const session = await setup.startAutomatic("feishu");
-
-      expect(session.state).toBe("failed");
-      expect(session.verificationUrl).toBeUndefined();
-      expect(session.message).toBe("飞书应用创建未完成，请重试");
-      expect(JSON.stringify(session)).not.toContain(secret);
-    },
-    200,
-  );
-
-  test(
-    "fails safely when lark-cli does not emit a verification URL",
-    async () => {
-      let killed = false;
-      const setup = new LarkCliSetup({
-        urlWaitMs: 5,
-        provisioningSpawner: {
-          spawn: () => ({
-            stdout: chunks("waiting without a URL"),
-            stderr: chunks(""),
-            exited: new Promise<number>(() => {}),
-            kill: () => {
-              killed = true;
-            },
-          }),
-        },
-      });
-
-      const session = await setup.startAutomatic("feishu");
-
-      expect(session.state).toBe("failed");
-      expect(session.verificationUrl).toBeUndefined();
-      expect(session.message).toBe("飞书应用创建未完成，请重试");
-      expect(killed).toBeTrue();
-    },
-    200,
-  );
-
-  test("maps an expired authorization to a safe expired session", async () => {
-    const secret = "hidden-device-code";
-    const setup = new LarkCliSetup({
-      provisioningSpawner: {
-        spawn: () => ({
-          stdout: chunks(""),
-          stderr: chunks(`Authorization timed out for ${secret}\n`),
-          exited: Promise.resolve(1),
-          kill: () => {},
-        }),
-      },
-    });
-
-    const session = await setup.startAutomatic("feishu");
-
-    expect(session.state).toBe("expired");
     expect(session.message).toBe("飞书应用创建已过期，请重试");
-    expect(JSON.stringify(session)).not.toContain(secret);
+    expect(JSON.stringify(session)).not.toContain(secretDiagnostic);
   });
 
-  test("expires and stops a provisioning process that outlives the session", async () => {
-    let killed = false;
-    let resolveExit!: (code: number) => void;
-    const exited = new Promise<number>((resolve) => {
-      resolveExit = resolve;
-    });
-    const setup = new LarkCliSetup({
-      provisioningTtlMs: 5,
-      provisioningSpawner: {
-        spawn: () => ({
-          stdout: chunks("https://open.feishu.cn/page/cli?user_code=WAIT\n"),
-          stderr: chunks(""),
-          exited,
-          kill: () => {
-            killed = true;
-            resolveExit(143);
-          },
-        }),
+  test("expires and aborts an SDK registration that outlives the session", async () => {
+    let aborted = false;
+    const registrar: LarkAppRegistrar = {
+      register(input) {
+        input.signal.addEventListener("abort", () => {
+          aborted = true;
+        });
+        input.onVerificationUrl({
+          url: "https://open.feishu.cn/page/launcher?user_code=WAIT",
+          expiresInSeconds: 600,
+        });
+        return new Promise<LarkAppRegistrationResult>(() => {});
       },
-    });
+    };
+    const setup = new LarkCliSetup({ registrar, provisioningTtlMs: 5 });
 
     const waiting = await setup.startAutomatic("feishu");
     expect(waiting.state).toBe("waiting_for_user");
-    await Bun.sleep(10);
-    const expired = setup.provisioningStatus();
-    expect(expired.state).toBe("expired");
+    const expired = await waitForProvisioningState(setup, "expired");
+
     expect(expired.message).toBe("飞书应用创建已过期，请重试");
-    expect(killed).toBeTrue();
+    expect(aborted).toBeTrue();
   });
 
-  test("maps process startup failures to the fixed public error", async () => {
-    const secret = "private-spawn-detail";
-    const setup = new LarkCliSetup({
-      provisioningSpawner: {
-        spawn: () => {
-          throw new Error(`spawn failed: ${secret}`);
-        },
+  test("maps SDK startup failures to the fixed public error", async () => {
+    const secret = "private-sdk-detail";
+    const registrar: LarkAppRegistrar = {
+      async register() {
+        throw new Error(`registration failed: ${secret}`);
       },
-    });
+    };
+    const setup = new LarkCliSetup({ registrar });
 
     const session = await setup.startAutomatic("feishu");
 
     expect(session.state).toBe("failed");
     expect(session.message).toBe("飞书应用创建未完成，请重试");
     expect(JSON.stringify(session)).not.toContain(secret);
-  });
-
-  test("becomes ready only after the created bot identity is verified", async () => {
-    let resolveExit!: (code: number) => void;
-    const exited = new Promise<number>((resolve) => {
-      resolveExit = resolve;
-    });
-    let resolveStatus!: (result: {
-      code: number;
-      stdout: string;
-      stderr: string;
-    }) => void;
-    const statusResult = new Promise<{
-      code: number;
-      stdout: string;
-      stderr: string;
-    }>((resolve) => {
-      resolveStatus = resolve;
-    });
-    const runner: LarkSetupCommandRunner = {
-      run: () => statusResult,
-    };
-    const setup = new LarkCliSetup({
-      runner,
-      provisioningSpawner: {
-        spawn: () => ({
-          stdout: chunks("https://open.feishu.cn/page/cli?user_code=VERIFY\n"),
-          stderr: chunks(""),
-          exited,
-          kill: () => resolveExit(143),
-        }),
-      },
-    });
-
-    const waiting = await setup.startAutomatic("feishu");
-    expect(waiting.state).toBe("waiting_for_user");
-    resolveExit(0);
-    const verifying = await waitForProvisioningState(setup, "verifying");
-    expect(verifying.message).toBe("正在验证飞书机器人");
-
-    resolveStatus({
-      code: 0,
-      stdout: JSON.stringify({
-        appId: "cli_created",
-        brand: "feishu",
-        identities: {
-          bot: {
-            status: "ready",
-            available: true,
-            verified: true,
-            openId: "ou_created",
-            appName: "Homebrain",
-          },
-        },
-      }),
-      stderr: "",
-    });
-    const ready = await waitForProvisioningState(setup, "ready");
-    expect(ready.verificationUrl).toBe(waiting.verificationUrl);
-    expect(ready.message).toBe("飞书机器人已连接");
   });
 
   test("configures through stdin and returns the verified bot identity", async () => {
