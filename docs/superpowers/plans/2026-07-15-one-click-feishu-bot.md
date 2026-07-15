@@ -347,8 +347,10 @@ expect(page).toContain("打开飞书并确认");
 expect(page).toContain("SAFE");
 expect(page).toContain("权限和事件订阅会由飞书自动配置");
 expect(page).toContain("/setup/feishu/session");
-expect(page).not.toContain("App Secret");
+expect(page).not.toContain("never-render-this-secret");
 ```
+
+The literal `App Secret` field label remains available under “更多设置” for users who connect an existing app; the security assertion targets secret values, not that label.
 
 - [ ] **Step 2: Run the UI tests to verify they fail**
 
