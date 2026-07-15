@@ -62,6 +62,25 @@ describe("space data governance", () => {
       creatorId: "ou_owner",
       triggerAt: 1_800_000_000_000,
     });
+    const learningPlan = source.learning.create({
+      name: "读《原则》",
+      space: SPACE,
+      creatorId: "ou_owner",
+      chatId: "oc_governance",
+      sourceTitle: "principles.md",
+      sourceContent: "# 第一章\n\n项目原则正文",
+      sourceRawIds: [rawId],
+      sourceMessageId: "om_keep",
+    }, 1_700_000_200_000);
+    const learningSession = source.learning.prepareSession(learningPlan.id, {
+      startOffset: 0,
+      endOffset: learningPlan.sourceLength,
+      sectionTitle: "第一章",
+      excerpt: "# 第一章\n\n项目原则正文",
+      guide: "## 今日目标\n理解原则",
+      preparedAt: 1_700_000_300_000,
+    })!;
+    source.learning.markDelivered(learningSession.id, 1_700_000_400_000);
     await source.remember({
       space: SPACE,
       source: "message",
@@ -80,7 +99,7 @@ describe("space data governance", () => {
     expect(archive).toEqual(
       expect.objectContaining({
         format: "homeagent.space",
-        version: 1,
+        version: 2,
         space: expect.objectContaining({ id: SPACE, name: "治理群", agentId: agent.id }),
         agent: expect.objectContaining({ id: agent.id, name: "治理助手" }),
         pages: [expect.objectContaining({ slug: page.slug, title: page.title })],
@@ -90,6 +109,11 @@ describe("space data governance", () => {
         ],
         tasks: [expect.objectContaining({ name: "每日报告", space: SPACE })],
         reminders: [expect.objectContaining({ title: "提交每日报告", space: SPACE })],
+        learning: {
+          plans: [expect.objectContaining({ id: learningPlan.id, name: "读《原则》" })],
+          sources: [expect.objectContaining({ title: "principles.md", rawIds: [rawId] })],
+          sessions: [expect.objectContaining({ id: learningSession.id, status: "awaiting_reply" })],
+        },
       }),
     );
     source.close();
@@ -101,10 +125,12 @@ describe("space data governance", () => {
     expect(restored.agentForSpace(SPACE)).toEqual(archive.agent);
     expect(restored.tasks.list()).toEqual(archive.tasks);
     expect(restored.reminders.list()).toEqual(archive.reminders);
+    expect(restored.learning.exportBySpace(SPACE)).toEqual(archive.learning);
     const roundTrip = await restored.exportSpace(SPACE);
     expect(roundTrip.raw).toEqual(archive.raw);
     expect(roundTrip.retractions).toEqual(archive.retractions);
     expect(roundTrip.reminders).toEqual(archive.reminders);
+    expect(roundTrip.learning).toEqual(archive.learning);
     restored.close();
   });
 
@@ -118,6 +144,19 @@ describe("space data governance", () => {
 
     expect(parsed.format).toBe("homeagent.space");
     expect(parsed.space.id).toBe(SPACE);
+  });
+
+  test("accepts version 1 archives by supplying an empty learning graph", async () => {
+    const engine = new KnowledgeEngine({ dataDir: tempDir("ha-v1-archive-") });
+    engine.ensureSpace(SPACE);
+    const archive = await engine.exportSpace(SPACE);
+    engine.close();
+
+    const { learning: _learning, ...withoutLearning } = archive;
+    const parsed = parseSpaceArchive({ ...withoutLearning, version: 1 });
+
+    expect(parsed.version).toBe(2);
+    expect(parsed.learning).toEqual({ plans: [], sources: [], sessions: [] });
   });
 
   test("deleting a space removes its knowledge and tasks but keeps shared agents", async () => {
@@ -151,6 +190,16 @@ describe("space data governance", () => {
       creatorId: "ou_owner",
       triggerAt: Date.now() + 3600_000,
     });
+    const learningPlan = engine.learning.create({
+      name: "空间学习",
+      space: SPACE,
+      creatorId: "ou_owner",
+      chatId: "oc_governance",
+      sourceTitle: "book.md",
+      sourceContent: "书籍正文",
+      sourceRawIds: [rawId],
+      sourceMessageId: "om_book",
+    });
     const backup = await engine.exportSpace(SPACE);
 
     expect(await engine.deleteSpace(SPACE)).toEqual({
@@ -160,11 +209,13 @@ describe("space data governance", () => {
       rawDeleted: 1,
       tasksDeleted: 1,
       remindersDeleted: 1,
+      learningPlansDeleted: 1,
     });
     expect(engine.registry.has(SPACE)).toBe(false);
     expect(await engine.getPage(SPACE, "concepts/deleted")).toBeNull();
     expect(engine.tasks.list()).toEqual([]);
     expect(engine.reminders.list()).toEqual([]);
+    expect(engine.learning.get(learningPlan.id)).toBeUndefined();
     expect(engine.agents.has(agent.id)).toBe(true);
     expect(await engine.deleteSpace(SPACE)).toEqual({
       status: "not_found",
@@ -173,12 +224,14 @@ describe("space data governance", () => {
       rawDeleted: 0,
       tasksDeleted: 0,
       remindersDeleted: 0,
+      learningPlansDeleted: 0,
     });
 
     await engine.restoreSpace(backup);
     expect(await engine.getPage(SPACE, "concepts/deleted")).not.toBeNull();
     expect(engine.tasks.list()).toEqual(backup.tasks);
     expect(engine.reminders.list()).toEqual(backup.reminders);
+    expect(engine.learning.exportBySpace(SPACE)).toEqual(backup.learning);
     engine.close();
   });
 
@@ -333,6 +386,16 @@ describe("space data governance", () => {
     const engine = new KnowledgeEngine({ dataDir: tempDir("hb-delete-rollback-") });
     engine.ensureSpace(SPACE);
     const task = engine.tasks.create({ name: "keep", space: SPACE, topic: "topic" })!;
+    const learningPlan = engine.learning.create({
+      name: "keep learning",
+      space: SPACE,
+      creatorId: "ou_owner",
+      chatId: "oc_governance",
+      sourceTitle: "book.md",
+      sourceContent: "book content",
+      sourceRawIds: ["raw_book"],
+      sourceMessageId: "om_book",
+    });
     engine.registry.remove = () => {
       throw new Error("workspace removal failed");
     };
@@ -341,7 +404,61 @@ describe("space data governance", () => {
 
     expect(engine.registry.has(SPACE)).toBe(true);
     expect(engine.tasks.get(task.id)).toEqual(task);
+    expect(engine.learning.get(learningPlan.id)).toEqual(learningPlan);
     engine.close();
+  });
+
+  test("retracting the source message removes learning snapshots derived from it", async () => {
+    const engine = new KnowledgeEngine({ dataDir: tempDir("ha-learning-retraction-") });
+    const rawId = await engine.remember({
+      space: SPACE,
+      source: "message",
+      author: "ou_owner",
+      chatId: "oc_governance",
+      messageId: "om_book",
+      content: "# 附件：book.md\n\n书籍正文",
+    });
+    const plan = engine.createLearningPlanFromMessage({
+      space: SPACE,
+      chatId: "oc_governance",
+      messageId: "om_book",
+      creatorId: "ou_owner",
+      name: "读书",
+    });
+
+    await engine.retractMessage(SPACE, {
+      chatId: "oc_governance",
+      messageId: "om_book",
+      requestedBy: "ou_owner",
+    });
+
+    expect(engine.learning.get(plan.id)).toBeUndefined();
+    expect(engine.registry.store(SPACE).index().getRaw(rawId)).toBeNull();
+    engine.close();
+  });
+
+  test("restore validates the complete learning graph before creating a space", async () => {
+    const source = new KnowledgeEngine({ dataDir: tempDir("ha-learning-invalid-source-") });
+    source.ensureSpace(SPACE);
+    source.learning.create({
+      name: "invalid",
+      space: SPACE,
+      creatorId: "ou_owner",
+      chatId: "oc_governance",
+      sourceTitle: "book.md",
+      sourceContent: "book content",
+      sourceRawIds: ["raw_book"],
+      sourceMessageId: "om_book",
+    });
+    const archive = await source.exportSpace(SPACE);
+    source.close();
+    archive.learning.plans[0] = { ...archive.learning.plans[0]!, sourceId: "missing" };
+    const target = new KnowledgeEngine({ dataDir: tempDir("ha-learning-invalid-target-") });
+
+    await expect(target.restoreSpace(archive)).rejects.toThrow("learning plan sourceId");
+    expect(target.registry.has(SPACE)).toBe(false);
+    expect(target.learning.list()).toEqual([]);
+    target.close();
   });
 
   test("restore rejects task hours outside the scheduler domain", async () => {

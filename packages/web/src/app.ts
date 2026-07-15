@@ -663,6 +663,7 @@ export function createWebApp(opts: WebOptions): Hono {
         raw: index.countRaw(),
         pending: index.countRaw(true),
         tasks: engine.tasks.list().filter((task) => task.space === meta.id).length,
+        learning: engine.learning.listBySpace(meta.id).length,
       };
     });
     return c.html(
@@ -692,7 +693,7 @@ export function createWebApp(opts: WebOptions): Hono {
     try {
       const result = await engine.deleteSpace(space);
       const message = result.status === "deleted"
-        ? `已删除 ${space}：${result.pagesDeleted} 个知识页、${result.rawDeleted} 条原始记录、${result.tasksDeleted} 个任务、${result.remindersDeleted} 个提醒`
+        ? `已删除 ${space}：${result.pagesDeleted} 个知识页、${result.rawDeleted} 条原始记录、${result.tasksDeleted} 个任务、${result.remindersDeleted} 个提醒、${result.learningPlansDeleted} 个学习计划`
         : `空间不存在：${space}`;
       return c.redirect(`/governance?ok=${encodeURIComponent(message)}`);
     } catch (err) {

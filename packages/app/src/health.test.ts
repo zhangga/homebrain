@@ -30,6 +30,16 @@ describe("system health reporter", () => {
       creatorId: "ou_private",
       triggerAt: 1_783_932_100_000,
     }, 1_783_932_000_000);
+    engine.learning.create({
+      name: "私密阅读计划",
+      space: "team/oc_health",
+      chatId: "oc_health_private",
+      creatorId: "ou_private",
+      sourceTitle: "private-book.md",
+      sourceContent: "private content",
+      sourceRawIds: ["raw_private"],
+      sourceMessageId: "om_private",
+    }, 1_783_932_000_000);
 
     const reportHealth = createSystemHealthReporter({
       engine,
@@ -45,6 +55,7 @@ describe("system health reporter", () => {
       dreamSchedulerHealth: () => loopHealth,
       taskSchedulerHealth: () => loopHealth,
       reminderSchedulerHealth: () => loopHealth,
+      learningSchedulerHealth: () => loopHealth,
       serviceHealth: () => ({
         managed: true,
         pid: 7788,
@@ -61,8 +72,10 @@ describe("system health reporter", () => {
     expect(snapshot.ready).toBe(true);
     expect(snapshot.status).toBe("ok");
     expect(snapshot.components.reminders?.summary).toBe("1 个待提醒，1 个提醒记录");
+    expect(snapshot.components.learning?.summary).toBe("1 个进行中，0 个等待回答");
     expect(JSON.stringify(snapshot)).not.toContain("私密体检预约");
     expect(JSON.stringify(snapshot)).not.toContain("oc_health_private");
+    expect(JSON.stringify(snapshot)).not.toContain("私密阅读计划");
     expect(snapshot.components).toEqual(
       expect.objectContaining({
         knowledge: expect.objectContaining({ status: "ok" }),
@@ -71,9 +84,11 @@ describe("system health reporter", () => {
         dreamCycles: expect.objectContaining({ status: "ok" }),
         tasks: expect.objectContaining({ status: "ok" }),
         reminders: expect.objectContaining({ status: "ok" }),
+        learning: expect.objectContaining({ status: "ok" }),
         dreamScheduler: expect.objectContaining({ status: "ok" }),
         taskScheduler: expect.objectContaining({ status: "ok" }),
         reminderScheduler: expect.objectContaining({ status: "ok" }),
+        learningScheduler: expect.objectContaining({ status: "ok" }),
         service: expect.objectContaining({
           status: "ok",
           details: expect.objectContaining({ managed: true, pid: 7788 }),

@@ -117,6 +117,30 @@ describe("LearningScheduler", () => {
     }));
   });
 
+  test("prevents deleting a space while a lesson is being delivered", async () => {
+    engine.ensureSpace("personal/ou_me", { chatId: "oc_p2p" });
+    seedPlan(engine);
+    llm.queueText("## 今日目标\n理解第一章");
+    let deliveryStarted!: () => void;
+    let releaseDelivery!: () => void;
+    const started = new Promise<void>((resolve) => { deliveryStarted = resolve; });
+    const released = new Promise<void>((resolve) => { releaseDelivery = resolve; });
+    const scheduler = new LearningScheduler(engine, {
+      notify: async () => {
+        deliveryStarted();
+        await released;
+      },
+    });
+
+    const tick = scheduler.tick("test", NOW);
+    await started;
+    await expect(engine.deleteSpace("personal/ou_me"))
+      .rejects.toThrow("space has delivering learning sessions");
+    releaseDelivery();
+    await tick;
+    expect((await engine.deleteSpace("personal/ou_me")).status).toBe("deleted");
+  });
+
   test("renders the source excerpt, guide, and explicit answer instruction", () => {
     const message = learningNotification(plan(), session());
     expect(message).toContain("📖 读原则 · 第 1 课");

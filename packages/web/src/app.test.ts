@@ -725,13 +725,18 @@ describe("management backend (read-write)", () => {
     const governanceBody = await governance.text();
     expect(governanceBody).toContain("数据治理");
     expect(governanceBody).toContain("原始消息保留");
+    expect(governanceBody).toContain("homeagent.space v1/v2");
 
     const exported = await app.request(`/spaces/${encodeURIComponent(SPACE)}/export`);
     expect(exported.status).toBe(200);
     expect(exported.headers.get("content-disposition")).toContain("attachment");
     const archiveText = await exported.text();
     expect(JSON.parse(archiveText)).toEqual(
-      expect.objectContaining({ format: "homeagent.space", version: 1 }),
+      expect.objectContaining({
+        format: "homeagent.space",
+        version: 2,
+        learning: { plans: [], sources: [], sessions: [] },
+      }),
     );
 
     const deleted = await app.request(`/spaces/${encodeURIComponent(SPACE)}/delete`, {

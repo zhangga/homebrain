@@ -528,6 +528,10 @@ export class KnowledgeEngine implements Knowledge {
         originalAuthor: matchingRawRecords[0]!.author!,
         retractedBy: request.requestedBy,
       });
+      // A learning plan contains a private snapshot of its source. Remove that
+      // graph before deleting the raw provenance so retraction cannot leave a
+      // second copy of the book behind.
+      this.learning.removeByRawIds(removedSourceIds);
       for (const rawRecord of matchingRawRecords) index.deleteRaw(rawRecord.id);
       index.markPending([...survivingSourceIds]);
       if (affectedPages.length > 0) refreshDigest(store);
@@ -600,6 +604,7 @@ export class KnowledgeEngine implements Knowledge {
         retractions: index.listMessageRetractions(),
         tasks: this.tasks.list().filter((task) => task.space === space),
         reminders: this.reminders.list().filter((reminder) => reminder.space === space),
+        learning: this.learning.exportBySpace(space),
       };
     });
   }
@@ -622,6 +627,10 @@ export class KnowledgeEngine implements Knowledge {
       if (taskConflict) throw new Error(`task id already exists: ${taskConflict.id}`);
       const reminderConflict = archive.reminders.find((reminder) => this.reminders.has(reminder.id));
       if (reminderConflict) throw new Error(`reminder id already exists: ${reminderConflict.id}`);
+      if (this.learning.listBySpace(space).length > 0) {
+        throw new Error(`space already has learning data: ${space}`);
+      }
+      this.learning.assertCanRestore(archive.learning);
       const existingAgent = archive.agent ? this.agents.get(archive.agent.id) : undefined;
       if (existingAgent && JSON.stringify(existingAgent) !== JSON.stringify(archive.agent)) {
         throw new Error(`agent id already exists with different data: ${archive.agent!.id}`);
@@ -629,6 +638,7 @@ export class KnowledgeEngine implements Knowledge {
       const taskIdsBefore = new Set(this.tasks.list().map((task) => task.id));
       const reminderIdsBefore = new Set(this.reminders.list().map((reminder) => reminder.id));
       const agentWasPresent = Boolean(existingAgent);
+      let learningRestored = false;
       try {
         if (archive.agent) this.agents.restore(archive.agent);
         const store = this.registry.ensure(space, { chatId: archive.space.chatId });
@@ -640,6 +650,8 @@ export class KnowledgeEngine implements Knowledge {
         for (const page of archive.pages) store.writePage(page);
         this.tasks.restore(archive.tasks);
         this.reminders.restore(archive.reminders);
+        this.learning.restore(archive.learning);
+        learningRestored = archive.learning.plans.length > 0;
         this.registry.restoreMeta({
           ...archive.space,
           agentId: archive.space.agentId,
@@ -653,6 +665,7 @@ export class KnowledgeEngine implements Knowledge {
             this.reminders.remove(reminder.id);
           }
         }
+        if (learningRestored) this.learning.removeBySpace(space);
         if (this.registry.has(space)) this.registry.remove(space);
         if (
           archive.agent
@@ -675,12 +688,14 @@ export class KnowledgeEngine implements Knowledge {
       rawDeleted: 0,
       tasksDeleted: 0,
       remindersDeleted: 0,
+      learningPlansDeleted: 0,
     });
     if (!this.registry.has(space)) return empty();
     return this.serializer.run(space, async () => {
       if (!this.registry.has(space)) return empty();
       const tasks = this.tasks.list().filter((task) => task.space === space);
       const reminders = this.reminders.list().filter((reminder) => reminder.space === space);
+      const learning = this.learning.listBySpace(space);
       if (tasks.some((task) => (this.runningTaskCounts.get(task.id) ?? 0) > 0)) {
         throw new Error(`space has running tasks: ${space}`);
       }
@@ -688,6 +703,9 @@ export class KnowledgeEngine implements Knowledge {
         (reminder) => (this.deliveringReminderCounts.get(reminder.id) ?? 0) > 0,
       )) {
         throw new Error(`space has delivering reminders: ${space}`);
+      }
+      if (learning.some((plan) => (this.deliveringLearningCounts.get(plan.id) ?? 0) > 0)) {
+        throw new Error(`space has delivering learning sessions: ${space}`);
       }
       if (this.dreamCycles.get(space)?.running) {
         throw new Error(`space has a running dream cycle: ${space}`);
@@ -697,15 +715,24 @@ export class KnowledgeEngine implements Knowledge {
       const rawDeleted = index.countRaw();
       let tasksDeleted = 0;
       let remindersDeleted = 0;
+      let learningPlansDeleted = 0;
+      const learningArchive = this.learning.exportBySpace(space);
       try {
         tasksDeleted = this.tasks.removeBySpace(space);
         remindersDeleted = this.reminders.removeBySpace(space);
+        learningPlansDeleted = this.learning.removeBySpace(space);
         this.registry.remove(space);
       } catch (err) {
         const missingTasks = tasks.filter((task) => !this.tasks.has(task.id));
         if (missingTasks.length > 0) this.tasks.restore(missingTasks);
         const missingReminders = reminders.filter((reminder) => !this.reminders.has(reminder.id));
         if (missingReminders.length > 0) this.reminders.restore(missingReminders);
+        if (
+          learningArchive.plans.length > 0
+          && learningArchive.plans.every((plan) => !this.learning.has(plan.id))
+        ) {
+          this.learning.restore(learningArchive);
+        }
         throw err;
       }
       this.dreamCycles.delete(space);
@@ -716,6 +743,7 @@ export class KnowledgeEngine implements Knowledge {
         rawDeleted,
         tasksDeleted,
         remindersDeleted,
+        learningPlansDeleted,
       };
     });
   }
@@ -904,6 +932,14 @@ export class KnowledgeEngine implements Knowledge {
       },
       { scheduled: 0, completed: 0, cancelled: 0 },
     );
+    const learningPlans = this.learning.list();
+    const learningCounts = learningPlans.reduce(
+      (counts, plan) => {
+        counts[plan.status] += 1;
+        return counts;
+      },
+      { active: 0, paused: 0, completed: 0 },
+    );
     return {
       ok,
       spaces: spaces.length,
@@ -930,6 +966,16 @@ export class KnowledgeEngine implements Knowledge {
           ...reminderCounts,
           delivering: reminders.filter(
             (reminder) => (this.deliveringReminderCounts.get(reminder.id) ?? 0) > 0,
+          ).length,
+        },
+        learning: {
+          total: learningPlans.length,
+          ...learningCounts,
+          delivering: learningPlans.filter(
+            (plan) => (this.deliveringLearningCounts.get(plan.id) ?? 0) > 0,
+          ).length,
+          awaitingReply: learningPlans.filter(
+            (plan) => this.learning.currentSession(plan.id)?.status === "awaiting_reply",
           ).length,
         },
         spaces: spaceDetails,

@@ -92,6 +92,7 @@ async function run(cfg: ReturnType<typeof config>, processLock: ProcessLock): Pr
     dreamSchedulerHealth: () => scheduler?.health(),
     taskSchedulerHealth: () => taskScheduler?.health(),
     reminderSchedulerHealth: () => reminderScheduler?.health(),
+    learningSchedulerHealth: () => learningScheduler?.health(),
     serviceHealth: () => runtimeServiceStatus({ startedAt: processLock.startedAt }),
   });
 

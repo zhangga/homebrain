@@ -213,8 +213,12 @@ export function healthView(
     feishu: "飞书事件消费者",
     dreamCycles: "Dream Cycle",
     tasks: "任务执行",
+    reminders: "提醒",
+    learning: "学习计划",
     dreamScheduler: "Dream Cycle 调度器",
     taskScheduler: "任务调度器",
+    reminderScheduler: "提醒调度器",
+    learningScheduler: "学习调度器",
     service: "后台服务",
   };
   const rows = Object.entries(snapshot.components).map(([key, component]) => {
@@ -267,6 +271,7 @@ export interface GovernanceSpaceSummary {
   raw: number;
   pending: number;
   tasks: number;
+  learning: number;
 }
 
 export function governanceView(
@@ -275,18 +280,19 @@ export function governanceView(
   flashMsg?: string,
 ): HtmlEscapedString | Promise<HtmlEscapedString> {
   const rows = spaces.length === 0
-    ? html`<tr><td colspan="6" class="empty">暂无空间</td></tr>`
-    : spaces.map(({ meta, pages, raw: rawCount, pending, tasks }) => html`<tr>
+    ? html`<tr><td colspan="7" class="empty">暂无空间</td></tr>`
+    : spaces.map(({ meta, pages, raw: rawCount, pending, tasks, learning }) => html`<tr>
         <td><strong>${meta.name || meta.id}</strong><div class="muted">${meta.id}</div></td>
         <td>${pages}</td>
         <td>${rawCount}</td>
         <td>${pending}</td>
         <td>${tasks}</td>
+        <td>${learning}</td>
         <td>
           <div class="actions">
             <a class="btn secondary" href="/spaces/${encodeURIComponent(meta.id)}/export">导出</a>
             <form method="post" action="/spaces/${encodeURIComponent(meta.id)}/delete" class="inline-form"
-              onsubmit="return confirm('永久删除该空间的知识、原始记录和任务？请先导出备份。后续新消息可能重新创建空空间。')">
+              onsubmit="return confirm('永久删除该空间的知识、原始记录、任务、提醒和学习计划？请先导出备份。后续新消息可能重新创建空空间。')">
               <button type="submit" class="danger">删除</button>
             </form>
           </div>
@@ -305,7 +311,7 @@ export function governanceView(
     </div>
     <div class="card">
       <h2 style="margin-top:0">恢复空间</h2>
-      <p class="muted">仅接受 homeagent.space v1 归档；已有同名空间不会被覆盖。</p>
+      <p class="muted">接受 homeagent.space v1/v2 归档；v2 包含学习计划，已有同名空间不会被覆盖。</p>
       <form method="post" action="/governance/restore" enctype="multipart/form-data" class="actions">
         <input type="file" name="archive" accept="application/json,.json" required />
         <button type="submit">上传并恢复</button>
@@ -313,7 +319,7 @@ export function governanceView(
     </div>
     <h2>空间数据</h2>
     <table>
-      <thead><tr><th>空间</th><th>知识页</th><th>原始记录</th><th>待提炼</th><th>任务</th><th>操作</th></tr></thead>
+      <thead><tr><th>空间</th><th>知识页</th><th>原始记录</th><th>待提炼</th><th>任务</th><th>学习计划</th><th>操作</th></tr></thead>
       <tbody>${rows}</tbody>
     </table>`;
 }

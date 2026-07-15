@@ -20,6 +20,7 @@ export interface SystemHealthSources {
   dreamSchedulerHealth: () => RuntimeLoopHealth | undefined;
   taskSchedulerHealth: () => RuntimeLoopHealth | undefined;
   reminderSchedulerHealth?: () => RuntimeLoopHealth | undefined;
+  learningSchedulerHealth?: () => RuntimeLoopHealth | undefined;
   serviceHealth?: () => RuntimeServiceStatus;
   detectProviders?: () => Promise<DetectedProvider[]>;
   requiredProviderIds?: () => string[];
@@ -223,6 +224,15 @@ export function createSystemHealthReporter(
       details: { counts: reminders },
     };
 
+    const learning = (core.details?.learning as Record<string, unknown> | undefined) ?? {};
+    const activeLearning = typeof learning.active === "number" ? learning.active : 0;
+    const awaitingLearning = typeof learning.awaitingReply === "number" ? learning.awaitingReply : 0;
+    components.learning = {
+      status: "ok",
+      summary: `${activeLearning} 个进行中，${awaitingLearning} 个等待回答`,
+      details: { counts: learning },
+    };
+
     const dreamLoop = probeLoopComponent("Dream Cycle 调度器", sources.dreamSchedulerHealth);
     const taskLoop = probeLoopComponent("任务调度器", sources.taskSchedulerHealth);
     const dreamHealth = dreamLoop.health;
@@ -233,6 +243,10 @@ export function createSystemHealthReporter(
       ? probeLoopComponent("提醒调度器", sources.reminderSchedulerHealth)
       : undefined;
     if (reminderLoop) components.reminderScheduler = reminderLoop.component;
+    const learningLoop = sources.learningSchedulerHealth
+      ? probeLoopComponent("学习调度器", sources.learningSchedulerHealth)
+      : undefined;
+    if (learningLoop) components.learningScheduler = learningLoop.component;
 
     if (sources.serviceHealth) {
       try {
@@ -264,6 +278,10 @@ export function createSystemHealthReporter(
       (!reminderLoop || (
         reminderLoop.health?.started === true
         && reminderLoop.health.lastStatus !== "error"
+      )) &&
+      (!learningLoop || (
+        learningLoop.health?.started === true
+        && learningLoop.health.lastStatus !== "error"
       ));
     const statuses = Object.values(components).map((component) => component.status);
     const status = !ready || statuses.includes("down")

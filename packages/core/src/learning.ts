@@ -564,7 +564,8 @@ export class LearningPlanStore {
     };
   }
 
-  restore(archive: LearningArchive): LearningPlan[] {
+  /** Validate graph integrity and global id conflicts without changing durable state. */
+  assertCanRestore(archive: LearningArchive): void {
     const incomingPlanIds = new Set<string>();
     const incomingSourceIds = new Set<string>();
     const incomingSessionIds = new Set<string>();
@@ -591,6 +592,10 @@ export class LearningPlanStore {
     if (archive.sessions.some((session) => !incomingPlanIds.has(session.planId))) {
       throw new Error("learning session references an unknown plan");
     }
+  }
+
+  restore(archive: LearningArchive): LearningPlan[] {
+    this.assertCanRestore(archive);
     if (archive.plans.length === 0) return [];
 
     const candidatePlans = new Map(this.plans);

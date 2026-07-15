@@ -16,11 +16,18 @@ import type { Agent } from "./agents.ts";
 import { AGENT_PERMISSIONS } from "./agents.ts";
 import { TASK_CADENCES, type Task } from "./tasks.ts";
 import type { Reminder } from "./reminders.ts";
+import type {
+  LearningArchive,
+  LearningPlan,
+  LearningSession,
+  LearningSource,
+} from "./learning.ts";
 import type { SpaceMeta } from "./types.ts";
 
 export const SPACE_ARCHIVE_FORMAT = "homeagent.space" as const;
 export const LEGACY_SPACE_ARCHIVE_FORMAT = "homebrain.space" as const;
-export const SPACE_ARCHIVE_VERSION = 1 as const;
+export const LEGACY_SPACE_ARCHIVE_VERSION = 1 as const;
+export const SPACE_ARCHIVE_VERSION = 2 as const;
 
 export interface MessageRetractionRecord {
   chatId: string;
@@ -33,7 +40,7 @@ export interface MessageRetractionRecord {
 /** Portable, versioned backup for one complete knowledge space. */
 export interface SpaceArchiveV1 {
   format: typeof SPACE_ARCHIVE_FORMAT;
-  version: typeof SPACE_ARCHIVE_VERSION;
+  version: typeof LEGACY_SPACE_ARCHIVE_VERSION;
   exportedAt: number;
   space: SpaceMeta;
   agent?: Agent;
@@ -46,7 +53,13 @@ export interface SpaceArchiveV1 {
   reminders: Reminder[];
 }
 
-export type SpaceArchive = SpaceArchiveV1;
+export interface SpaceArchiveV2 extends Omit<SpaceArchiveV1, "version"> {
+  version: typeof SPACE_ARCHIVE_VERSION;
+  learning: LearningArchive;
+}
+
+/** Current normalized archive shape returned by export and parsing. */
+export type SpaceArchive = SpaceArchiveV2;
 
 export interface SpaceDeleteResult {
   status: "deleted" | "not_found";
@@ -55,6 +68,7 @@ export interface SpaceDeleteResult {
   rawDeleted: number;
   tasksDeleted: number;
   remindersDeleted: number;
+  learningPlansDeleted: number;
 }
 
 export interface RawRetentionReport {
@@ -304,12 +318,169 @@ function parseReminder(value: unknown, index: number, space: SpaceId): Reminder 
   };
 }
 
+function parseLearningSource(value: unknown, index: number): LearningSource {
+  const item = record(value, `learning.sources[${index}]`);
+  return {
+    id: nonemptyText(item.id, `learning.sources[${index}].id`),
+    title: nonemptyText(item.title, `learning.sources[${index}].title`),
+    content: nonemptyText(item.content, `learning.sources[${index}].content`),
+    rawIds: strings(item.rawIds, `learning.sources[${index}].rawIds`),
+    messageId: nonemptyText(item.messageId, `learning.sources[${index}].messageId`),
+    createdAt: finiteNumber(item.createdAt, `learning.sources[${index}].createdAt`),
+  };
+}
+
+function parseLearningPlan(value: unknown, index: number, space: SpaceId): LearningPlan {
+  const item = record(value, `learning.plans[${index}]`);
+  if (item.space !== space) {
+    throw new Error(`learning.plans[${index}].space does not match archive space`);
+  }
+  const sourceLength = finiteNumber(item.sourceLength, `learning.plans[${index}].sourceLength`);
+  const hour = finiteNumber(item.hour, `learning.plans[${index}].hour`);
+  const dailyCharacters = finiteNumber(
+    item.dailyCharacters,
+    `learning.plans[${index}].dailyCharacters`,
+  );
+  const cursor = finiteNumber(item.cursor, `learning.plans[${index}].cursor`);
+  if (!Number.isInteger(sourceLength) || sourceLength <= 0) {
+    throw new Error(`learning.plans[${index}].sourceLength is invalid`);
+  }
+  if (!Number.isInteger(hour) || hour < 0 || hour > 23) {
+    throw new Error(`learning.plans[${index}].hour is invalid`);
+  }
+  if (!Number.isInteger(dailyCharacters) || dailyCharacters < 500 || dailyCharacters > 8000) {
+    throw new Error(`learning.plans[${index}].dailyCharacters is invalid`);
+  }
+  if (!Number.isInteger(cursor) || cursor < 0 || cursor > sourceLength) {
+    throw new Error(`learning.plans[${index}].cursor is invalid`);
+  }
+  const status = text(item.status, `learning.plans[${index}].status`) as LearningPlan["status"];
+  if (!["active", "paused", "completed"].includes(status)) {
+    throw new Error(`learning.plans[${index}].status is invalid`);
+  }
+  return {
+    id: nonemptyText(item.id, `learning.plans[${index}].id`),
+    name: nonemptyText(item.name, `learning.plans[${index}].name`),
+    space,
+    creatorId: nonemptyText(item.creatorId, `learning.plans[${index}].creatorId`),
+    chatId: nonemptyText(item.chatId, `learning.plans[${index}].chatId`),
+    sourceId: nonemptyText(item.sourceId, `learning.plans[${index}].sourceId`),
+    sourceLength,
+    hour,
+    dailyCharacters,
+    cursor,
+    status,
+    currentSessionId: optionalText(
+      item.currentSessionId,
+      `learning.plans[${index}].currentSessionId`,
+    ),
+    lastDeliveredAt: item.lastDeliveredAt === undefined
+      ? undefined
+      : finiteNumber(item.lastDeliveredAt, `learning.plans[${index}].lastDeliveredAt`),
+    createdAt: finiteNumber(item.createdAt, `learning.plans[${index}].createdAt`),
+    updatedAt: finiteNumber(item.updatedAt, `learning.plans[${index}].updatedAt`),
+  };
+}
+
+function parseLearningSession(value: unknown, index: number): LearningSession {
+  const item = record(value, `learning.sessions[${index}]`);
+  const sequence = finiteNumber(item.sequence, `learning.sessions[${index}].sequence`);
+  const startOffset = finiteNumber(item.startOffset, `learning.sessions[${index}].startOffset`);
+  const endOffset = finiteNumber(item.endOffset, `learning.sessions[${index}].endOffset`);
+  if (!Number.isInteger(sequence) || sequence < 1) {
+    throw new Error(`learning.sessions[${index}].sequence is invalid`);
+  }
+  if (
+    !Number.isInteger(startOffset) || !Number.isInteger(endOffset)
+    || startOffset < 0 || endOffset <= startOffset
+  ) {
+    throw new Error(`learning.sessions[${index}] offsets are invalid`);
+  }
+  const status = text(
+    item.status,
+    `learning.sessions[${index}].status`,
+  ) as LearningSession["status"];
+  if (!["prepared", "awaiting_reply", "completed", "skipped"].includes(status)) {
+    throw new Error(`learning.sessions[${index}].status is invalid`);
+  }
+  return {
+    id: nonemptyText(item.id, `learning.sessions[${index}].id`),
+    planId: nonemptyText(item.planId, `learning.sessions[${index}].planId`),
+    sequence,
+    startOffset,
+    endOffset,
+    sectionTitle: nonemptyText(item.sectionTitle, `learning.sessions[${index}].sectionTitle`),
+    excerpt: nonemptyText(item.excerpt, `learning.sessions[${index}].excerpt`),
+    guide: nonemptyText(item.guide, `learning.sessions[${index}].guide`),
+    status,
+    learnerReply: optionalText(item.learnerReply, `learning.sessions[${index}].learnerReply`),
+    feedback: optionalText(item.feedback, `learning.sessions[${index}].feedback`),
+    preparedAt: finiteNumber(item.preparedAt, `learning.sessions[${index}].preparedAt`),
+    deliveredAt: item.deliveredAt === undefined
+      ? undefined
+      : finiteNumber(item.deliveredAt, `learning.sessions[${index}].deliveredAt`),
+    completedAt: item.completedAt === undefined
+      ? undefined
+      : finiteNumber(item.completedAt, `learning.sessions[${index}].completedAt`),
+  };
+}
+
+function parseLearningArchive(
+  value: unknown,
+  version: number,
+  space: SpaceId,
+): LearningArchive {
+  if (version === LEGACY_SPACE_ARCHIVE_VERSION) {
+    return { plans: [], sources: [], sessions: [] };
+  }
+  const learning = record(value, "learning");
+  if (
+    !Array.isArray(learning.plans)
+    || !Array.isArray(learning.sources)
+    || !Array.isArray(learning.sessions)
+  ) {
+    throw new Error("learning collections must be arrays");
+  }
+  const plans = learning.plans.map((item, index) => parseLearningPlan(item, index, space));
+  const sources = learning.sources.map(parseLearningSource);
+  const sessions = learning.sessions.map(parseLearningSession);
+  assertUnique(plans, (plan) => plan.id, "learning plan id");
+  assertUnique(sources, (source) => source.id, "learning source id");
+  assertUnique(sessions, (session) => session.id, "learning session id");
+  assertUnique(sessions, (session) => `${session.planId}\0${session.sequence}`, "learning session sequence");
+  const sourceById = new Map(sources.map((source) => [source.id, source]));
+  const planById = new Map(plans.map((plan) => [plan.id, plan]));
+  const sessionById = new Map(sessions.map((session) => [session.id, session]));
+  for (const plan of plans) {
+    const source = sourceById.get(plan.sourceId);
+    if (!source) throw new Error(`learning plan sourceId is unknown: ${plan.sourceId}`);
+    if (plan.sourceLength !== source.content.length) {
+      throw new Error(`learning plan sourceLength does not match source: ${plan.id}`);
+    }
+    if (plan.currentSessionId) {
+      const session = sessionById.get(plan.currentSessionId);
+      if (!session || session.planId !== plan.id) {
+        throw new Error(`learning plan currentSessionId is invalid: ${plan.id}`);
+      }
+    }
+  }
+  for (const session of sessions) {
+    const plan = planById.get(session.planId);
+    if (!plan) throw new Error(`learning session planId is unknown: ${session.planId}`);
+    if (session.endOffset > plan.sourceLength) {
+      throw new Error(`learning session exceeds source length: ${session.id}`);
+    }
+  }
+  return { plans, sources, sessions };
+}
+
 /** Validate and normalize untrusted JSON before any restore writes occur. */
 export function parseSpaceArchive(value: unknown): SpaceArchive {
   const root = record(value, "archive");
+  const version = root.version;
   if (
     (root.format !== SPACE_ARCHIVE_FORMAT && root.format !== LEGACY_SPACE_ARCHIVE_FORMAT)
-    || root.version !== SPACE_ARCHIVE_VERSION
+    || (version !== LEGACY_SPACE_ARCHIVE_VERSION && version !== SPACE_ARCHIVE_VERSION)
   ) {
     throw new Error("unsupported space archive format or version");
   }
@@ -360,6 +531,7 @@ export function parseSpaceArchive(value: unknown): SpaceArchive {
   assertUnique(retractions, (entry) => `${entry.chatId}\0${entry.messageId}`, "retraction");
   assertUnique(tasks, (task) => task.id, "task id");
   assertUnique(reminders, (reminder) => reminder.id, "reminder id");
+  const learning = parseLearningArchive(root.learning, version, id);
   return {
     format: SPACE_ARCHIVE_FORMAT,
     version: SPACE_ARCHIVE_VERSION,
@@ -373,5 +545,6 @@ export function parseSpaceArchive(value: unknown): SpaceArchive {
     retractions,
     tasks,
     reminders,
+    learning,
   };
 }
