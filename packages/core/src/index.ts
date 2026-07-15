@@ -17,3 +17,4 @@ export * from "./dream.ts";
 export * from "./ask.ts";
 export * from "./testing.ts";
 export * from "./governance.ts";
+export * from "./learning-content.ts";
