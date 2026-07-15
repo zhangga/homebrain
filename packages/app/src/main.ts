@@ -21,6 +21,7 @@ import {
 import { createWebApp } from "@homeagent/web";
 import { Scheduler } from "./scheduler.ts";
 import { TaskScheduler } from "./task-scheduler.ts";
+import { LearningScheduler, learningNotification } from "./learning-scheduler.ts";
 import { ReminderScheduler } from "./reminder-scheduler.ts";
 import { createSystemHealthReporter } from "./health.ts";
 import { resolveRuntimePaths } from "./runtime-paths.ts";
@@ -83,6 +84,7 @@ async function run(cfg: ReturnType<typeof config>, processLock: ProcessLock): Pr
 
   let scheduler: Scheduler | undefined;
   let taskScheduler: TaskScheduler | undefined;
+  let learningScheduler: LearningScheduler | undefined;
   let reminderScheduler: ReminderScheduler | undefined;
   const reportHealth = createSystemHealthReporter({
     engine,
@@ -156,7 +158,17 @@ async function run(cfg: ReturnType<typeof config>, processLock: ProcessLock): Pr
   await taskScheduler.start();
   log.info("task scheduler started");
 
-  // 5. user reminder scheduler. Delivery state advances only after Feishu
+  // 5. guided-learning scheduler. A prepared lesson remains retryable until
+  // Feishu accepts it; an accepted lesson then waits for the learner's answer.
+  learningScheduler = new LearningScheduler(engine, {
+    notify: async (plan, _source, session) => {
+      await connector.notice(plan.chatId, learningNotification(plan, session));
+    },
+  });
+  await learningScheduler.start();
+  log.info("learning scheduler started");
+
+  // 6. user reminder scheduler. Delivery state advances only after Feishu
   // accepts the outbound message, so transient failures remain retryable.
   reminderScheduler = new ReminderScheduler(engine, {
     notify: async (reminder, message) => {
@@ -180,6 +192,7 @@ async function run(cfg: ReturnType<typeof config>, processLock: ProcessLock): Pr
     };
     contain("dream scheduler", () => scheduler.stop());
     contain("task scheduler", () => taskScheduler.stop());
+    contain("learning scheduler", () => learningScheduler.stop());
     contain("reminder scheduler", () => reminderScheduler.stop());
     contain("web server", () => server.stop(true));
     try {
