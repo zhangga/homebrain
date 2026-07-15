@@ -191,7 +191,7 @@ describe("web backend (read-only)", () => {
     expect(page).toContain("请在飞书页面完成授权");
     expect(page).toContain("打开飞书并确认");
     expect(page).toContain("SAFE");
-    expect(page).toContain("权限和事件订阅会由飞书自动配置");
+    expect(page).toContain("使用官方一键创建时，飞书会自动配置所需权限和事件订阅");
     expect(page).toContain("/setup/feishu/session");
     expect(page).not.toContain("never-render-this-secret");
   });
@@ -846,6 +846,50 @@ describe("management backend (read-write)", () => {
     expect(page).toContain("飞书群聊");
   });
 
+  test("manual existing-app setup offers Lark and preserves that brand when configuring", async () => {
+    const configured: { appId: string; appSecret: string; brand: string }[] = [];
+    const setupApp = createWebApp({
+      engine,
+      detectProviders: async () => [],
+      providerModels: async () => ({}),
+      larkSetup: {
+        status: async () => ({ state: "unconfigured", verified: false, message: "missing" }),
+        configure: async (input) => {
+          configured.push(input);
+          return {
+            state: "ready",
+            verified: true,
+            appId: input.appId,
+            brand: input.brand,
+            botName: "Lark Bot",
+            botOpenId: "ou_lark",
+            message: "Bot identity: ready",
+          };
+        },
+      },
+    });
+
+    const page = await (await setupApp.request("/integrations")).text();
+    expect(page).toContain('<select name="brand">');
+    expect(page).toContain('<option value="feishu">飞书</option>');
+    expect(page).toContain('<option value="lark">Lark</option>');
+
+    const response = await setupApp.request("/integrations/bot/setup", {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        appId: "cli_lark",
+        appSecret: "lark-secret",
+        brand: "lark",
+      }).toString(),
+    });
+
+    expect([302, 303]).toContain(response.status);
+    expect(configured).toEqual([
+      { appId: "cli_lark", appSecret: "lark-secret", brand: "lark" },
+    ]);
+  });
+
   test("integration page shows a safe retry after Feishu creation fails", async () => {
     const failed = {
       state: "failed" as const,
@@ -1009,7 +1053,11 @@ describe("management backend (read-write)", () => {
     const page = await (await setupApp.request("/integrations")).text();
 
     expect(page).toContain("消息监听已就绪");
-    expect(page).toContain("权限和事件订阅会由飞书自动配置");
+    expect(page).toContain("使用官方一键创建时，飞书会自动配置所需权限和事件订阅");
+    expect(page).toContain("手动连接已有应用前，请确认该应用已开通所需权限");
+    expect(page).toContain("若一键创建未完成，请回到上方重试");
+    expect(page).toContain("只有手动应用缺少配置时，才需要在对应开发者后台补齐权限和事件订阅");
+    expect(page).not.toContain("权限和事件订阅会由飞书自动配置");
     expect(page).not.toContain("im.message.receive_v1");
     expect(page).not.toContain("im.chat.member.bot.added_v1");
   });

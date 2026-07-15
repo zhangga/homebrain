@@ -115,7 +115,12 @@ describe("guided setup view", () => {
     const body = render("feishu");
     expect(body.indexOf("一键创建飞书机器人")).toBeLessThan(body.indexOf("手动输入 App ID"));
     expect(body).toContain('action="/setup/feishu/automatic"');
+    expect(body).toContain("通过飞书官方流程创建专属机器人");
     expect(body).toContain("自动配置机器人权限和事件订阅");
+    expect(body).toContain("请先确认应用已开通所需权限，并核对消息与机器人入群事件订阅");
+    expect(body).toContain('<select name="brand">');
+    expect(body).toContain('<option value="feishu">飞书</option>');
+    expect(body).toContain('<option value="lark">Lark</option>');
   });
 
   test("waiting provisioning renders the safe URL and polling", () => {

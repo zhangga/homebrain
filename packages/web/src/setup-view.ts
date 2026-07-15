@@ -5,6 +5,11 @@ import type { SpaceMeta } from "@homebrain/core";
 import type { CodexLoginSession, DetectedProvider } from "@homebrain/llm";
 import type { FeishuRuntimeStatus } from "./integrations.ts";
 import type { SetupSnapshot, SetupStep } from "./setup.ts";
+import {
+  feishuProvisioningPollScript,
+  isFeishuProvisioningActive,
+  isFeishuProvisioningFailure,
+} from "./feishu-provisioning-view.ts";
 import { safeLarkVerificationUrl } from "./verification-url.ts";
 
 export interface SetupViewInput {
@@ -265,29 +270,17 @@ function codexPollScript(): HtmlEscapedString | Promise<HtmlEscapedString> {
   </script>`;
 }
 
-function provisioningPollScript(): HtmlEscapedString | Promise<HtmlEscapedString> {
-  return html`<script>
-    (function poll() {
-      fetch("/setup/feishu/session", { cache: "no-store" }).then(function (response) { return response.json(); })
-        .then(function (session) {
-          if (["ready", "failed", "expired"].includes(session.state)) location.reload();
-          else setTimeout(poll, 1500);
-        }).catch(function () { setTimeout(poll, 2500); });
-    })();
-  </script>`;
-}
-
 function feishuStep(input: SetupViewInput): HtmlEscapedString | Promise<HtmlEscapedString> {
   const url = safeLarkVerificationUrl(input.provisioning.verificationUrl);
-  const waiting = ["starting", "waiting_for_user", "verifying"].includes(input.provisioning.state);
-  const failure = ["failed", "expired"].includes(input.provisioning.state)
+  const waiting = isFeishuProvisioningActive(input.provisioning.state);
+  const failure = isFeishuProvisioningFailure(input.provisioning.state)
     ? html`<div class="flash">${input.provisioning.message}</div>`
     : "";
   const primary = waiting
     ? html`<div class="waiting"><strong>${input.provisioning.state === "verifying" ? "正在确认机器人…" : "等待你在飞书确认"}</strong>
         <span class="muted">${input.provisioning.message}</span>
         ${url ? html`<div class="actions"><a class="button primary-action" href="${url}" target="_blank" rel="noreferrer">打开飞书并确认</a></div>` : ""}
-      </div>${provisioningPollScript()}`
+      </div>${feishuProvisioningPollScript()}`
     : html`<form method="post" action="/setup/feishu/automatic">
         <input type="hidden" name="brand" value="feishu" />
         <div class="actions"><button class="primary-action">一键创建飞书机器人</button></div>
@@ -296,12 +289,12 @@ function feishuStep(input: SetupViewInput): HtmlEscapedString | Promise<HtmlEsca
     <p class="lede">Homebrain 会通过飞书官方流程创建专属机器人，自动配置机器人权限和事件订阅。你只需要在飞书页面确认，凭据由系统钥匙串保管。</p>
     ${failure}${primary}
     <details><summary>手动输入 App ID</summary>
-      <p class="muted">仅用于接入已经存在的企业自建应用。</p>
+      <p class="muted">仅用于接入已经存在的企业自建应用。请先确认应用已开通所需权限，并核对消息与机器人入群事件订阅。</p>
       <form method="post" action="/integrations/bot/setup">
         <input type="hidden" name="returnTo" value="/setup" />
+        <div class="field"><label>应用平台</label><select name="brand"><option value="feishu">飞书</option><option value="lark">Lark</option></select></div>
         <div class="field"><label>App ID</label><input name="appId" required autocomplete="off" /></div>
         <div class="field"><label>App Secret</label><input type="password" name="appSecret" required autocomplete="new-password" /></div>
-        <input type="hidden" name="brand" value="feishu" />
         <div class="actions"><button class="secondary-action">验证已有应用</button></div>
       </form>
     </details>`;

@@ -20,6 +20,11 @@ import type { SpaceMeta, Agent, Task } from "@homebrain/core";
 import { AGENT_PERMISSIONS, TASK_CADENCES } from "@homebrain/core";
 import type { DetectedProvider } from "@homebrain/llm";
 import type { FeishuRuntimeStatus } from "./integrations.ts";
+import {
+  feishuProvisioningPollScript,
+  isFeishuProvisioningActive,
+  isFeishuProvisioningFailure,
+} from "./feishu-provisioning-view.ts";
 import { safeLarkVerificationUrl } from "./verification-url.ts";
 
 const SINGLETON = new Set(["index", "overview", "log", "glossary"]);
@@ -592,27 +597,17 @@ function feishuProvisioningControl(
   provisioning: LarkProvisioningSession,
 ): HtmlEscapedString | Promise<HtmlEscapedString> {
   const url = safeLarkVerificationUrl(provisioning.verificationUrl);
-  const active = ["starting", "waiting_for_user", "verifying"].includes(provisioning.state);
+  const active = isFeishuProvisioningActive(provisioning.state);
   if (active) {
     return html`<div class="integration-actions">
       <span class="muted">${provisioning.state === "verifying" ? "正在验证机器人…" : "等待飞书确认，请在飞书页面完成授权"}</span>
       ${url ? html`<a class="btn" href="${url}" target="_blank" rel="noreferrer">打开飞书并确认</a>` : ""}
-      <script>
-        (function poll() {
-          fetch("/setup/feishu/session", { cache:"no-store" })
-            .then(function (response) { return response.json(); })
-            .then(function (session) {
-              if (["ready", "failed", "expired"].includes(session.state)) location.reload();
-              else setTimeout(poll, 1500);
-            })
-            .catch(function () { setTimeout(poll, 2500); });
-        })();
-      </script>
+      ${feishuProvisioningPollScript()}
     </div>`;
   }
   const label = setup.state === "ready" && setup.verified ? "创建并切换机器人" : "一键创建并连接";
   return html`<form method="post" action="/setup/feishu/automatic" class="integration-actions">
-    ${["failed", "expired"].includes(provisioning.state)
+    ${isFeishuProvisioningFailure(provisioning.state)
       ? html`<span class="muted">${provisioning.message}</span>`
       : ""}
     <input type="hidden" name="brand" value="feishu" />
@@ -715,7 +710,7 @@ export function integrationsView(
         </span>
       </div>
       <div class="integration-detail">
-        <div class="muted">权限和事件订阅会由飞书自动配置；默认接收私聊和群内 @ 机器人的消息。</div>
+        <div class="muted">使用官方一键创建时，飞书会自动配置所需权限和事件订阅；手动连接已有应用前，请确认该应用已开通所需权限，并核对消息与机器人入群事件订阅。默认接收私聊和群内 @ 机器人的消息。</div>
       </div>
     </section>
 
@@ -724,8 +719,13 @@ export function integrationsView(
 
     <details class="card">
       <summary style="cursor:pointer;font-weight:600">更多设置</summary>
-      <div class="muted" style="margin:10px 0 14px">手动连接已有应用，或重新验证当前 lark-cli 配置。</div>
+      <div class="muted" style="margin:10px 0 6px">手动连接已有应用，或重新验证当前 lark-cli 配置。</div>
+      <div class="muted" style="margin:0 0 14px">若一键创建未完成，请回到上方重试；只有手动应用缺少配置时，才需要在对应开发者后台补齐权限和事件订阅。</div>
       <form method="post" action="/integrations/bot/setup" class="stack">
+        <div class="field">
+          <label>应用平台</label>
+          <select name="brand"><option value="feishu">飞书</option><option value="lark">Lark</option></select>
+        </div>
         <div class="grid2">
           <div class="field">
             <label>App ID</label>
@@ -736,7 +736,6 @@ export function integrationsView(
             <input type="password" name="appSecret" required autocomplete="new-password" />
           </div>
         </div>
-        <input type="hidden" name="brand" value="feishu" />
         <div class="actions"><button type="submit" class="secondary">手动连接已有应用</button><button type="submit" class="secondary" formnovalidate formaction="/integrations/bot/verify">只验证现有配置</button></div>
       </form>
     </details>`;
