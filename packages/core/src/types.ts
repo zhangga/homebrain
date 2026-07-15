@@ -2,7 +2,7 @@
  * Core-internal types layered on the shared domain vocabulary. Options bags for
  * the Knowledge seam live here so the interface file stays declarative.
  */
-import type { SpaceId } from "@homebrain/shared";
+import type { SpaceId } from "@homeagent/shared";
 
 export interface DreamOptions {
   /** cap on raw entries processed this run (cost control) */

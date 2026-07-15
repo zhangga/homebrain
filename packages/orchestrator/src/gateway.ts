@@ -14,7 +14,7 @@
  * mentions only" toggle): when `mentionsOnly` is false, the bot responds to
  * every group message, not just @-mentions. Defaults to true.
  */
-import type { InboundMessage } from "@homebrain/connectors";
+import type { InboundMessage } from "@homeagent/connectors";
 
 export interface GatewayDecision {
   /** whether to produce a response */

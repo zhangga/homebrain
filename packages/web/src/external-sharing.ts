@@ -1,4 +1,4 @@
-import type { Config } from "@homebrain/shared";
+import type { Config } from "@homeagent/shared";
 
 export type FeishuExternalSharingState =
   | "not_started"

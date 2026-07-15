@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { LarkProvisioningState } from "@homebrain/shared";
+import type { LarkProvisioningState } from "@homeagent/shared";
 import {
   feishuProvisioningPollScript,
   isFeishuProvisioningActive,

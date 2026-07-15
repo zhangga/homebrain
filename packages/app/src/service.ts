@@ -17,8 +17,10 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { dlopen, FFIType } from "bun:ffi";
+import { brandedEnv } from "@homeagent/shared";
 
-export const SERVICE_LABEL = "com.homebrain.agent";
+export const SERVICE_LABEL = "com.homeagent.agent";
+export const LEGACY_SERVICE_LABEL = "com.homebrain.agent";
 const SERVICE_LOG_NAMES = ["service.stdout.log", "service.stderr.log"] as const;
 
 function shiftLogBackups(path: string): void {
@@ -72,7 +74,7 @@ export function startServiceLogMaintenance(
   dataDir: string,
   options: { managed?: boolean; maxBytes?: number; intervalMs?: number; logDir?: string } = {},
 ): () => void {
-  const managed = options.managed ?? process.env.HOMEBRAIN_SERVICE_MANAGED === "1";
+  const managed = options.managed ?? brandedEnv(process.env, "SERVICE_MANAGED") === "1";
   if (!managed) return () => {};
   const maintain = () => {
     try {
@@ -80,10 +82,10 @@ export function startServiceLogMaintenance(
         dataDir,
         options.maxBytes,
         undefined,
-        options.logDir ?? process.env.HOMEBRAIN_LOG_DIR,
+        options.logDir ?? brandedEnv(process.env, "LOG_DIR"),
       );
     } catch (err) {
-      process.stderr.write(`homebrain log rotation failed: ${String(err)}\n`);
+      process.stderr.write(`homeagent log rotation failed: ${String(err)}\n`);
     }
   };
   maintain();
@@ -159,7 +161,7 @@ export function runtimeServiceStatus(options: {
   startedAt?: number;
 } = {}): RuntimeServiceStatus {
   return {
-    managed: (options.env ?? process.env).HOMEBRAIN_SERVICE_MANAGED === "1",
+    managed: brandedEnv(options.env ?? process.env, "SERVICE_MANAGED") === "1",
     pid: options.pid ?? process.pid,
     startedAt: options.startedAt ?? Date.now() - Math.round(process.uptime() * 1000),
   };
@@ -228,6 +230,8 @@ export function acquireProcessLock(options: ProcessLockOptions): ProcessLock {
   const startedAt = options.startedAt ?? Date.now();
   const alive = options.isProcessAlive ?? defaultIsProcessAlive;
   const runDir = join(options.dataDir, "run");
+  // Keep the pre-rename filename as a persisted coordination boundary. Using a
+  // new lock name would let old and new binaries run against the same data.
   const path = join(runDir, "homebrain.lock");
   const cleanupPath = `${path}.cleanup`;
   mkdirSync(runDir, { recursive: true });
@@ -243,12 +247,12 @@ export function acquireProcessLock(options: ProcessLockOptions): ProcessLock {
         // The kernel lock remains authoritative even if metadata is unreadable.
       }
       throw new Error(
-        ownerPid ? `homebrain is already running (PID ${ownerPid})` : "homebrain is already running",
+        ownerPid ? `homeagent is already running (PID ${ownerPid})` : "homeagent is already running",
       );
     }
     locked = true;
 
-    // Before P3.2, homebrain used a PID-only lock. Refuse an actually live
+    // Before P3.2, the service used a PID-only lock. Refuse an actually live
     // legacy owner during an in-place upgrade; version 2 locks are governed by
     // the kernel and therefore cannot be confused by PID reuse.
     try {
@@ -259,10 +263,10 @@ export function acquireProcessLock(options: ProcessLockOptions): ProcessLock {
         && previous.pid !== pid
         && alive(previous.pid)
       ) {
-        throw new Error(`homebrain is already running (PID ${previous.pid})`);
+        throw new Error(`homeagent is already running (PID ${previous.pid})`);
       }
     } catch (err) {
-      if (err instanceof Error && err.message.startsWith("homebrain is already running")) throw err;
+      if (err instanceof Error && err.message.startsWith("homeagent is already running")) throw err;
       // Empty/corrupt stale metadata is safe to replace while holding flock.
     }
 
@@ -296,6 +300,7 @@ export function acquireProcessLock(options: ProcessLockOptions): ProcessLock {
 /** Owns the on-disk LaunchAgent definition and launchctl lifecycle. */
 export class LaunchAgentService {
   readonly plistPath: string;
+  readonly legacyPlistPath: string;
   readonly stdoutPath: string;
   readonly stderrPath: string;
   private readonly runner: ServiceCommandRunner;
@@ -308,6 +313,12 @@ export class LaunchAgentService {
 
   constructor(private readonly options: LaunchAgentServiceOptions) {
     this.plistPath = join(options.homeDir, "Library", "LaunchAgents", `${SERVICE_LABEL}.plist`);
+    this.legacyPlistPath = join(
+      options.homeDir,
+      "Library",
+      "LaunchAgents",
+      `${LEGACY_SERVICE_LABEL}.plist`,
+    );
     this.logDir = options.logDir ?? join(options.dataDir, "logs");
     this.stdoutPath = join(this.logDir, "service.stdout.log");
     this.stderrPath = join(this.logDir, "service.stderr.log");
@@ -321,7 +332,7 @@ export class LaunchAgentService {
 
   private assertMacOS(): void {
     if (this.options.platform !== "darwin") {
-      throw new Error("homebrain service currently supports macOS LaunchAgent only");
+      throw new Error("homeagent service currently supports macOS LaunchAgent only");
     }
   }
 
@@ -331,6 +342,10 @@ export class LaunchAgentService {
 
   private get target(): string {
     return `${this.domain}/${SERVICE_LABEL}`;
+  }
+
+  private get legacyTarget(): string {
+    return `${this.domain}/${LEGACY_SERVICE_LABEL}`;
   }
 
   private plist(): string {
@@ -357,9 +372,9 @@ ${workingDirectory}
   <dict>
 ${plistString("HOME", this.options.homeDir)}
 ${plistString("PATH", path)}
-${plistString("HOMEBRAIN_DATA_DIR", this.options.dataDir)}
-${plistString("HOMEBRAIN_LOG_DIR", this.logDir)}
-${plistString("HOMEBRAIN_SERVICE_MANAGED", "1")}
+${plistString("HOMEAGENT_DATA_DIR", this.options.dataDir)}
+${plistString("HOMEAGENT_LOG_DIR", this.logDir)}
+${plistString("HOMEAGENT_SERVICE_MANAGED", "1")}
   </dict>
   <key>RunAtLoad</key>
   <true/>
@@ -381,6 +396,22 @@ ${plistString("StandardErrorPath", this.stderrPath)}
     rotateActiveServiceLogs(this.options.dataDir, this.logMaxBytes, this.logPreserveBytes, this.logDir);
   }
 
+  /** Prevent the pre-rename Feishu consumer from running beside HomeAgent. */
+  async retireLegacyService(): Promise<void> {
+    this.assertMacOS();
+    if (!existsSync(this.legacyPlistPath)) return;
+    const current = await this.launchctl("print", this.legacyTarget);
+    if (current.code === 0) {
+      const stopped = await this.launchctl("bootout", this.legacyTarget);
+      if (stopped.code !== 0) {
+        throw new Error(
+          `legacy launchctl bootout failed: ${stopped.stderr.trim() || stopped.stdout.trim() || stopped.code}`,
+        );
+      }
+    }
+    rmSync(this.legacyPlistPath, { force: true });
+  }
+
   private async waitForRunning(previousPid?: number, requireReplacement = false): Promise<ServiceStatus> {
     const attempts = Math.max(1, Math.ceil(this.startupTimeoutMs / this.pollIntervalMs) + 1);
     let latest: ServiceStatus | undefined;
@@ -391,13 +422,14 @@ ${plistString("StandardErrorPath", this.stderrPath)}
       if (attempt + 1 < attempts) await this.sleep(this.pollIntervalMs);
     }
     throw new Error(
-      `homebrain service did not reach running state within ${this.startupTimeoutMs}ms`
+      `homeagent service did not reach running state within ${this.startupTimeoutMs}ms`
       + (latest?.lastExitCode !== undefined ? ` (last exit ${latest.lastExitCode})` : ""),
     );
   }
 
   async install(): Promise<ServiceStatus> {
     this.assertMacOS();
+    await this.retireLegacyService();
     const current = await this.status();
     if (current.loaded) {
       const stopped = await this.launchctl("bootout", this.target);
@@ -426,7 +458,7 @@ ${plistString("StandardErrorPath", this.stderrPath)}
   async start(): Promise<ServiceStatus> {
     this.assertMacOS();
     const current = await this.status();
-    if (!current.installed) throw new Error("homebrain service is not installed; run `bun run service install`");
+    if (!current.installed) throw new Error("homeagent service is not installed; run `bun run service install`");
     if (current.running) return current;
     const result = current.loaded
       ? await this.launchctl("kickstart", this.target)
@@ -452,7 +484,7 @@ ${plistString("StandardErrorPath", this.stderrPath)}
   async restart(): Promise<ServiceStatus> {
     this.assertMacOS();
     const current = await this.status();
-    if (!current.installed) throw new Error("homebrain service is not installed; run `bun run service install`");
+    if (!current.installed) throw new Error("homeagent service is not installed; run `bun run service install`");
     if (!current.loaded || !current.running) return this.start();
     const result = await this.launchctl("kill", "SIGTERM", this.target);
     if (result.code !== 0) {

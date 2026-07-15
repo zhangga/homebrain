@@ -1,8 +1,10 @@
 /**
  * Minimal structured logger. JSON lines to stderr so stdout stays clean for
  * connectors that stream data (e.g. lark-cli piping). Level is controlled by
- * HOMEBRAIN_LOG_LEVEL (debug|info|warn|error), default info.
+ * HOMEAGENT_LOG_LEVEL (debug|info|warn|error), default info.
  */
+
+import { brandedEnv } from "./brand.ts";
 
 export type LogLevel = "debug" | "info" | "warn" | "error";
 
@@ -14,7 +16,7 @@ const ORDER: Record<LogLevel, number> = {
 };
 
 function threshold(): number {
-  const raw = (process.env.HOMEBRAIN_LOG_LEVEL ?? "info").toLowerCase();
+  const raw = (brandedEnv(process.env, "LOG_LEVEL") ?? "info").toLowerCase();
   return ORDER[raw as LogLevel] ?? ORDER.info;
 }
 
@@ -43,7 +45,7 @@ function emit(
   process.stderr.write(JSON.stringify(line) + "\n");
 }
 
-export function createLogger(scope = "homebrain"): Logger {
+export function createLogger(scope = "homeagent"): Logger {
   return {
     debug: (m, f) => emit("debug", scope, m, f),
     info: (m, f) => emit("info", scope, m, f),

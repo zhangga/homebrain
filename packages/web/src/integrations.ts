@@ -3,8 +3,8 @@ import type {
   LarkProvisioningSession,
   LarkSetupInput,
   LarkSetupStatus,
-} from "@homebrain/shared";
-import type { CodexLoginSession } from "@homebrain/llm";
+} from "@homeagent/shared";
+import type { CodexLoginSession } from "@homeagent/llm";
 
 export interface LarkSetupPort {
   status(): Promise<LarkSetupStatus>;
@@ -26,7 +26,7 @@ export interface FeishuRuntimeStatus {
 
 /** App-owned Codex installation/login boundary used by the first-run wizard. */
 export interface CodexSetupPort {
-  /** True only when Homebrain can install the official Codex release itself. */
+  /** True only when HomeAgent can install the official Codex release itself. */
   canInstall: boolean;
   /** Whether the app-managed executable is already present. */
   isInstalled(): boolean;

@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Make Homebrain's first Feishu app-creation confirmation explicitly request every permission and event the product uses, and refuse to report success until both required event consumers are provisioned.
+**Goal:** Make HomeAgent's first Feishu app-creation confirmation explicitly request every permission and event the product uses, and refuse to report success until both required event consumers are provisioned.
 
-**Architecture:** Replace the implicit `lark-cli config init --new` preset dependency with Feishu's official Node SDK `registerApp`, using `createOnly: true` and a Homebrain-owned additive `addons` manifest. Keep `lark-cli` as the credential store and runtime API client by passing the returned secret through stdin only. After creation, run bounded event-consumer probes; if Feishu still omits an event, keep the same provisioning session active and expose the official incremental authorization link instead of sending the user to the developer console.
+**Architecture:** Replace the implicit `lark-cli config init --new` preset dependency with Feishu's official Node SDK `registerApp`, using `createOnly: true` and a HomeAgent-owned additive `addons` manifest. Keep `lark-cli` as the credential store and runtime API client by passing the returned secret through stdin only. After creation, run bounded event-consumer probes; if Feishu still omits an event, keep the same provisioning session active and expose the official incremental authorization link instead of sending the user to the developer console.
 
 **Tech Stack:** Bun, TypeScript, `@larksuiteoapi/node-sdk` 1.71.1+, lark-cli 1.0.69, Hono, bun:test
 
@@ -12,7 +12,7 @@
 
 ## File Structure
 
-- Create `packages/connectors/src/lark-app-registration.ts`: official SDK adapter and the audited Homebrain permission/event manifest.
+- Create `packages/connectors/src/lark-app-registration.ts`: official SDK adapter and the audited HomeAgent permission/event manifest.
 - Create `packages/connectors/src/lark-app-registration.test.ts`: public registration-option contract tests.
 - Modify `packages/connectors/src/lark-setup.ts`: registration state machine, stdin credential handoff, bounded event verification, and official repair-link handling.
 - Modify `packages/connectors/src/lark-setup.test.ts`: end-to-end setup-state tests through the public `LarkCliSetup` API.
@@ -32,10 +32,10 @@
 
 - [ ] **Step 1: Write the failing manifest test**
 
-Assert an independently written literal list for the Homebrain tenant scopes:
+Assert an independently written literal list for the HomeAgent tenant scopes:
 
 ```ts
-expect(HOMEBRAIN_FEISHU_ADDONS).toEqual({
+expect(HOMEAGENT_FEISHU_ADDONS).toEqual({
   preset: true,
   scopes: {
     tenant: [
@@ -64,7 +64,7 @@ expect(HOMEBRAIN_FEISHU_ADDONS).toEqual({
 });
 ```
 
-Also inject a fake `registerApp` function and assert the adapter sends `createOnly: true`, `source: "homebrain"`, the complete addons object, an app name/description preset, and an abort signal. Assert that the returned App Secret is available only on the internal result object, not on the URL callback payload.
+Also inject a fake `registerApp` function and assert the adapter sends `createOnly: true`, `source: "homeagent"`, the complete addons object, an app name/description preset, and an abort signal. Assert that the returned App Secret is available only on the internal result object, not on the URL callback payload.
 
 - [ ] **Step 2: Run the registration test and verify RED**
 
@@ -78,10 +78,10 @@ Expected: FAIL because the module and manifest do not exist.
 
 - [ ] **Step 3: Add the official SDK and minimal adapter**
 
-Add `@larksuiteoapi/node-sdk` to `@homebrain/connectors`. Implement:
+Add `@larksuiteoapi/node-sdk` to `@homeagent/connectors`. Implement:
 
 ```ts
-export const HOMEBRAIN_FEISHU_ADDONS = { /* exact audited literal */ } as const;
+export const HOMEAGENT_FEISHU_ADDONS = { /* exact audited literal */ } as const;
 
 export interface LarkAppRegistrar {
   register(input: {
@@ -116,7 +116,7 @@ Expected: PASS.
 
 ```bash
 git add packages/connectors/package.json bun.lock packages/connectors/src/lark-app-registration.ts packages/connectors/src/lark-app-registration.test.ts packages/connectors/src/index.ts
-git commit -m "feat: request Homebrain Feishu permissions upfront"
+git commit -m "feat: request HomeAgent Feishu permissions upfront"
 ```
 
 ### Task 2: SDK-backed creation and secure credential handoff

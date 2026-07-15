@@ -1,4 +1,5 @@
 export * from "./types.ts";
+export * from "./brand.ts";
 export * from "./serializer.ts";
 export * from "./logger.ts";
 export * from "./config.ts";

@@ -8,8 +8,8 @@
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import type { SpaceId } from "@homebrain/shared";
-import { isSpaceId, spaceToDir } from "@homebrain/shared";
+import type { SpaceId } from "@homeagent/shared";
+import { isSpaceId, spaceToDir } from "@homeagent/shared";
 import type { SpaceMeta } from "./types.ts";
 import { SpaceStore } from "./space.ts";
 

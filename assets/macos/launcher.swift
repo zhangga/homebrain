@@ -7,10 +7,10 @@ let contentsDirectory = macOSDirectory.deletingLastPathComponent()
 let appRoot = contentsDirectory.deletingLastPathComponent()
 let resources = contentsDirectory.appendingPathComponent("Resources", isDirectory: true)
 let bunPath = resources.appendingPathComponent("bin/bun").path
-let entryPath = resources.appendingPathComponent("app/homebrain.js").path
+let entryPath = resources.appendingPathComponent("app/homeagent.js").path
 
-setenv("HOMEBRAIN_BUNDLED_APP_ROOT", appRoot.path, 1)
-setenv("HOMEBRAIN_LAUNCHER_PATH", invokedPath.path, 1)
+setenv("HOMEAGENT_BUNDLED_APP_ROOT", appRoot.path, 1)
+setenv("HOMEAGENT_LAUNCHER_PATH", invokedPath.path, 1)
 
 let arguments = [bunPath, entryPath] + Array(CommandLine.arguments.dropFirst())
 var cArguments = arguments.map { strdup(String($0)) }
@@ -24,5 +24,5 @@ _ = cArguments.withUnsafeMutableBufferPointer { buffer in
 }
 
 let message = String(cString: strerror(errno))
-fputs("Homebrain could not start: \(message)\n", stderr)
+fputs("HomeAgent could not start: \(message)\n", stderr)
 exit(126)

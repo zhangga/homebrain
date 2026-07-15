@@ -1,5 +1,5 @@
 {
-  "name": "@homebrain/orchestrator",
+  "name": "@homeagent/orchestrator",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -8,9 +8,9 @@
     ".": "./src/index.ts"
   },
   "dependencies": {
-    "@homebrain/shared": "workspace:*",
-    "@homebrain/llm": "workspace:*",
-    "@homebrain/core": "workspace:*",
-    "@homebrain/connectors": "workspace:*"
+    "@homeagent/shared": "workspace:*",
+    "@homeagent/llm": "workspace:*",
+    "@homeagent/core": "workspace:*",
+    "@homeagent/connectors": "workspace:*"
   }
 }

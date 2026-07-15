@@ -15,10 +15,10 @@ import type {
   SystemHealthSnapshot,
   LarkProvisioningSession,
   LarkSetupStatus,
-} from "@homebrain/shared";
-import type { SpaceMeta, Agent, Task, Reminder } from "@homebrain/core";
-import { AGENT_PERMISSIONS, TASK_CADENCES } from "@homebrain/core";
-import { codexReasoningEffortsForModel, type DetectedProvider } from "@homebrain/llm";
+} from "@homeagent/shared";
+import type { SpaceMeta, Agent, Task, Reminder } from "@homeagent/core";
+import { AGENT_PERMISSIONS, TASK_CADENCES } from "@homeagent/core";
+import { codexReasoningEffortsForModel, type DetectedProvider } from "@homeagent/llm";
 import type { FeishuRuntimeStatus } from "./integrations.ts";
 import type { FeishuExternalSharingStatus } from "./external-sharing.ts";
 import {
@@ -218,7 +218,7 @@ export function healthView(
           )}</span>
           ${serviceRestartable && serviceDetails.managed === true
             ? html`<form method="post" action="/service/restart" class="inline-form"
-                onsubmit="return confirm('安全重启 homebrain 后台服务？')">
+                onsubmit="return confirm('安全重启 homeagent 后台服务？')">
                 <button type="submit" class="secondary">安全重启</button>
               </form>`
             : ""}
@@ -297,7 +297,7 @@ export function governanceView(
     </div>
     <div class="card">
       <h2 style="margin-top:0">恢复空间</h2>
-      <p class="muted">仅接受 homebrain.space v1 归档；已有同名空间不会被覆盖。</p>
+      <p class="muted">仅接受 homeagent.space v1 归档；已有同名空间不会被覆盖。</p>
       <form method="post" action="/governance/restore" enctype="multipart/form-data" class="actions">
         <input type="file" name="archive" accept="application/json,.json" required />
         <button type="submit">上传并恢复</button>
@@ -355,7 +355,7 @@ export function agentsView(
 
   // Provider dropdown: only local CLIs, selectable when detected as runnable,
   // else greyed with the reason. (The internal API is used by the claude CLI
-  // itself, not exposed as a homebrain provider.)
+  // itself, not exposed as a homeagent provider.)
   const availableList = providers.filter((p) => p.available).map((p) => p.name).join("、");
   const providerOptions = providers.map((p) => {
     const sel = p.id === providerVal ? "selected" : "";

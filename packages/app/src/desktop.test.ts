@@ -7,8 +7,8 @@ function status(overrides: Partial<ServiceStatus> = {}): ServiceStatus {
     installed: false,
     loaded: false,
     running: false,
-    label: "com.homebrain.agent",
-    plistPath: "/tmp/com.homebrain.agent.plist",
+    label: "com.homeagent.agent",
+    plistPath: "/tmp/com.homeagent.agent.plist",
     stdoutPath: "/tmp/service.stdout.log",
     stderrPath: "/tmp/service.stderr.log",
     ...overrides,
@@ -118,7 +118,7 @@ describe("desktop launcher", () => {
     expect(healthTimeouts).toEqual([1_000, 1_000, 1_000, 1_000]);
     expect(commands).toHaveLength(1);
     expect(commands[0]?.argv[0]).toBe("/usr/bin/osascript");
-    expect(commands[0]?.argv.join(" ")).toContain("Homebrain 启动失败");
+    expect(commands[0]?.argv.join(" ")).toContain("HomeAgent 启动失败");
     expect(commands[0]?.timeoutMs).toBeLessThanOrEqual(10_000);
   });
 });

@@ -1,12 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import {
-  HOMEBRAIN_FEISHU_ADDONS,
+  HOMEAGENT_FEISHU_ADDONS,
   createLarkAppRegistrar,
 } from "./lark-app-registration.ts";
 
-describe("Homebrain Feishu app registration", () => {
+describe("HomeAgent Feishu app registration", () => {
   test("requests every runtime permission and event during initial creation", () => {
-    expect(HOMEBRAIN_FEISHU_ADDONS).toEqual({
+    expect(HOMEAGENT_FEISHU_ADDONS).toEqual({
       preset: true,
       scopes: {
         tenant: [
@@ -67,12 +67,12 @@ describe("Homebrain Feishu app registration", () => {
     expect(captured).toMatchObject({
       domain: "accounts.feishu.cn",
       larkDomain: "accounts.larksuite.com",
-      source: "homebrain",
+      source: "homeagent",
       signal: controller.signal,
       createOnly: true,
-      addons: HOMEBRAIN_FEISHU_ADDONS,
+      addons: HOMEAGENT_FEISHU_ADDONS,
       appPreset: {
-        name: "Homebrain",
+        name: "HomeAgent",
         desc: "把飞书群聊沉淀为可检索、可复用的团队知识",
       },
     });

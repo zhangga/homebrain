@@ -19,13 +19,13 @@ describe("update manifest", () => {
     writeFileSync(x64, "intel");
     const manifest = createUpdateManifest({
       version: "0.1.0-beta.1",
-      repository: "zhangga/homebrain",
+      repository: "zhangga/homeagent",
       arm64Path: arm64,
       x64Path: x64,
     });
     expect(manifest.artifacts.arm64.sha256).toMatch(/^[a-f0-9]{64}$/);
     expect(manifest.artifacts.x64.url).toBe(
-      "https://github.com/zhangga/homebrain/releases/download/v0.1.0-beta.1/Homebrain-0.1.0-beta.1-macos-x64.dmg",
+      "https://github.com/zhangga/homeagent/releases/download/v0.1.0-beta.1/HomeAgent-0.1.0-beta.1-macos-x64.dmg",
     );
   });
 

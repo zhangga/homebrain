@@ -18,8 +18,8 @@
  * fall back to the model's general knowledge, tagged `general` and explicitly
  * flagged as not-in-knowledge-base.
  */
-import type { AskResult, Citation, Page, PageRef, SpaceId } from "@homebrain/shared";
-import { config, logger } from "@homebrain/shared";
+import type { AskResult, Citation, Page, PageRef, SpaceId } from "@homeagent/shared";
+import { config, logger } from "@homeagent/shared";
 import type { SpaceStore } from "./space.ts";
 import type { AskOptions } from "./types.ts";
 import { gatewayClient, type LlmClient } from "./llm.ts";

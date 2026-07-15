@@ -10,8 +10,8 @@ import {
   type Page,
   type SpaceId,
   type SystemHealthSnapshot,
-} from "@homebrain/shared";
-import { KnowledgeEngine, FakeLlm } from "@homebrain/core";
+} from "@homeagent/shared";
+import { KnowledgeEngine, FakeLlm } from "@homeagent/core";
 import { createWebApp } from "./app.ts";
 
 let dir: string;
@@ -38,7 +38,7 @@ function page(slug: string, title: string, content: string): Page {
 
 beforeEach(async () => {
   dir = mkdtempSync(join(tmpdir(), "hb-web-"));
-  process.env.HOMEBRAIN_DATA_DIR = dir;
+  process.env.HOMEAGENT_DATA_DIR = dir;
   resetConfig();
   fake = new FakeLlm();
   engine = new KnowledgeEngine({ dataDir: dir, llm: fake });
@@ -63,7 +63,7 @@ beforeEach(async () => {
 afterEach(() => {
   engine.close();
   rmSync(dir, { recursive: true, force: true });
-  delete process.env.HOMEBRAIN_DATA_DIR;
+  delete process.env.HOMEAGENT_DATA_DIR;
   resetConfig();
 });
 
@@ -212,7 +212,7 @@ describe("web backend (read-only)", () => {
           verified: true,
           brand: "feishu",
           appId: "cli_ready",
-          botName: "Homebrain",
+          botName: "HomeAgent",
           botOpenId: "ou_ready",
           message: "ready",
         }),
@@ -224,7 +224,7 @@ describe("web backend (read-only)", () => {
     const response = await setupApp.request("/setup");
     expect(response.status).toBe(200);
     expect(readSettings(dir)).toEqual(expect.objectContaining({
-      feishuBotName: "Homebrain",
+      feishuBotName: "HomeAgent",
       feishuBotOpenId: "ou_ready",
     }));
   });
@@ -244,7 +244,7 @@ describe("web backend (read-only)", () => {
     let installed = false;
     let installCalls = 0;
     let loginStarts = 0;
-    let session: import("@homebrain/llm").CodexLoginSession = {
+    let session: import("@homeagent/llm").CodexLoginSession = {
       state: "idle",
       message: "尚未连接",
     };
@@ -354,13 +354,13 @@ describe("web backend (read-only)", () => {
         status: async () => ({
           state: "ready",
           verified: true,
-          botName: "Homebrain",
+          botName: "HomeAgent",
           botOpenId: "ou_ready",
           message: "ready",
         }),
         configure: async () => { throw new Error("unused"); },
       },
-      activeFeishuIdentity: { botName: "Homebrain", botOpenId: "ou_ready" },
+      activeFeishuIdentity: { botName: "HomeAgent", botOpenId: "ou_ready" },
       feishuRuntime: () => ({ ready: true, consumers: [] }),
     });
     const response = await ready.request("/setup/finish", { method: "POST" });
@@ -372,7 +372,7 @@ describe("web backend (read-only)", () => {
     const startedAt = Date.now() + 1_000;
     saveSettings({
       onboardingStartedAt: startedAt,
-      feishuBotName: "Homebrain",
+      feishuBotName: "HomeAgent",
       feishuBotOpenId: "ou_ready",
     });
     const setupApp = createWebApp({
@@ -385,13 +385,13 @@ describe("web backend (read-only)", () => {
         status: async () => ({
           state: "ready",
           verified: true,
-          botName: "Homebrain",
+          botName: "HomeAgent",
           botOpenId: "ou_ready",
           message: "ready",
         }),
         configure: async () => { throw new Error("unused"); },
       },
-      activeFeishuIdentity: { botName: "Homebrain", botOpenId: "ou_ready" },
+      activeFeishuIdentity: { botName: "HomeAgent", botOpenId: "ou_ready" },
       feishuRuntime: () => ({ ready: true, consumers: [] }),
     });
 
@@ -427,7 +427,7 @@ describe("web backend (read-only)", () => {
           verified: true,
           appId: "cli_external",
           brand: "feishu",
-          botName: "Homebrain",
+          botName: "HomeAgent",
           botOpenId: "ou_ready",
           message: "ready",
         }),
@@ -437,7 +437,7 @@ describe("web backend (read-only)", () => {
           return chatId === "oc_external";
         },
       },
-      activeFeishuIdentity: { botName: "Homebrain", botOpenId: "ou_ready" },
+      activeFeishuIdentity: { botName: "HomeAgent", botOpenId: "ou_ready" },
       feishuRuntime: () => ({ ready: true, consumers: [] }),
     });
 
@@ -459,7 +459,7 @@ describe("web backend (read-only)", () => {
       space: SPACE,
       source: "message",
       chatId: "oc_external",
-      content: "@Homebrain 对外共享测试",
+      content: "@HomeAgent 对外共享测试",
       createdAt: started.feishuExternalSharingStartedAt! + 1,
     });
     await setupApp.request("/setup");
@@ -482,7 +482,7 @@ describe("web backend (read-only)", () => {
           verified: true,
           appId: "cli_internal",
           brand: "feishu",
-          botName: "Homebrain",
+          botName: "HomeAgent",
           botOpenId: "ou_ready",
           message: "ready",
         }),
@@ -513,7 +513,7 @@ describe("web backend (read-only)", () => {
     expect(denied.status).toBe(401);
     expect(denied.headers.get("www-authenticate")).toContain("Basic");
 
-    const basic = Buffer.from("homebrain:admin-secret").toString("base64");
+    const basic = Buffer.from("homeagent:admin-secret").toString("base64");
     expect((await secureApp.request("/", { headers: { authorization: `Basic ${basic}` } })).status).toBe(200);
     expect((await secureApp.request("/governance", {
       headers: { authorization: "Bearer admin-secret" },
@@ -659,7 +659,7 @@ describe("web backend (read-only)", () => {
     expect(res.status).toBe(200);
     const body = await res.text();
     expect(body).toContain("team/oc_web");
-    expect(body).toContain("homebrain");
+    expect(body).toContain("homeagent");
   });
 
   test("space detail shows knowledge pages", async () => {
@@ -731,7 +731,7 @@ describe("management backend (read-write)", () => {
     expect(exported.headers.get("content-disposition")).toContain("attachment");
     const archiveText = await exported.text();
     expect(JSON.parse(archiveText)).toEqual(
-      expect.objectContaining({ format: "homebrain.space", version: 1 }),
+      expect.objectContaining({ format: "homeagent.space", version: 1 }),
     );
 
     const deleted = await app.request(`/spaces/${encodeURIComponent(SPACE)}/delete`, {
@@ -758,7 +758,7 @@ describe("management backend (read-write)", () => {
       new File(
         [
           JSON.stringify({
-            format: "homebrain.space",
+            format: "homeagent.space",
             version: 1,
             exportedAt: 1,
             space: { id: "team/unsafe", createdAt: 1 },

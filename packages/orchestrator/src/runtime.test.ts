@@ -2,10 +2,10 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { JSONOptions } from "@homebrain/llm";
-import { resetConfig, saveSettings, type SpaceId } from "@homebrain/shared";
-import { KnowledgeEngine, FakeLlm, type AgentInput } from "@homebrain/core";
-import { CliConnector, type Connector } from "@homebrain/connectors";
+import type { JSONOptions } from "@homeagent/llm";
+import { resetConfig, saveSettings, type SpaceId } from "@homeagent/shared";
+import { KnowledgeEngine, FakeLlm, type AgentInput } from "@homeagent/core";
+import { CliConnector, type Connector } from "@homeagent/connectors";
 import { Orchestrator } from "./runtime.ts";
 
 let dir: string;
@@ -79,7 +79,7 @@ function makeCliOnlyRuntime(
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "hb-orch-"));
-  process.env.HOMEBRAIN_DATA_DIR = dir;
+  process.env.HOMEAGENT_DATA_DIR = dir;
   resetConfig();
   fake = makeFake();
   engine = new KnowledgeEngine({ dataDir: dir, llm: fake });
@@ -95,7 +95,7 @@ afterEach(async () => {
   await orch.stop();
   engine.close();
   rmSync(dir, { recursive: true, force: true });
-  delete process.env.HOMEBRAIN_DATA_DIR;
+  delete process.env.HOMEAGENT_DATA_DIR;
   resetConfig();
 });
 

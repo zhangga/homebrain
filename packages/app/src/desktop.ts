@@ -88,14 +88,14 @@ export async function launchDesktop(options: DesktopLaunchOptions): Promise<Desk
       const delay = Math.min(pollIntervalMs, deadline - now());
       if (delay > 0) await sleep(delay);
     }
-    if (!healthy) throw new Error("homebrain did not become healthy");
+    if (!healthy) throw new Error("homeagent did not become healthy");
 
     const opened = await executor(["/usr/bin/open", `http://127.0.0.1:${port}/setup`], 5_000);
-    if (opened.code !== 0) throw new Error("failed to open Homebrain setup");
+    if (opened.code !== 0) throw new Error("failed to open HomeAgent setup");
     return { action };
   } catch {
     const alert = [
-      'display alert "Homebrain 启动失败"',
+      'display alert "HomeAgent 启动失败"',
       'message "服务暂时无法启动，请稍后重试。"',
       'as critical buttons {"好"} default button "好"',
     ].join(" ");

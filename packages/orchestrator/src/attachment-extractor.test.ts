@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { deflateSync } from "node:zlib";
-import type { DownloadedAttachment } from "@homebrain/connectors";
+import type { DownloadedAttachment } from "@homeagent/connectors";
 import {
   createNativeExtractor,
   extractAttachmentText,
@@ -49,7 +49,7 @@ test("bundled native extraction executes the precompiled Resources helper direct
   };
   const extractor = createNativeExtractor({
     platform: "darwin",
-    execPath: "/Applications/Homebrain.app/Contents/MacOS/homebrain",
+    execPath: "/Applications/HomeAgent.app/Contents/MacOS/homeagent",
     runProcess,
   });
 
@@ -61,7 +61,7 @@ test("bundled native extraction executes the precompiled Resources helper direct
   expect(calls).toEqual([
     {
       command: [
-        "/Applications/Homebrain.app/Contents/Resources/bin/attachment-extract",
+        "/Applications/HomeAgent.app/Contents/Resources/bin/attachment-extract",
         "image",
         "/tmp/scan.png",
       ],
@@ -74,7 +74,7 @@ test("bundled native extraction recognizes the separately embedded Bun runtime",
   const commands: string[][] = [];
   const extractor = createNativeExtractor({
     platform: "darwin",
-    execPath: "/Applications/Homebrain.app/Contents/Resources/bin/bun",
+    execPath: "/Applications/HomeAgent.app/Contents/Resources/bin/bun",
     runProcess: async (command) => {
       commands.push(command);
       return { code: 0, stdout: "bundled text", stderr: "" };
@@ -83,7 +83,7 @@ test("bundled native extraction recognizes the separately embedded Bun runtime",
 
   await extractor("pdf", "/tmp/brief.pdf");
   expect(commands[0]?.[0]).toBe(
-    "/Applications/Homebrain.app/Contents/Resources/bin/attachment-extract",
+    "/Applications/HomeAgent.app/Contents/Resources/bin/attachment-extract",
   );
   expect(commands.some((command) => command.includes("swiftc"))).toBeFalse();
 });
@@ -92,8 +92,8 @@ test("bundled native extraction rejects a helper outside Resources/bin", async (
   let invoked = false;
   const extractor = createNativeExtractor({
     platform: "darwin",
-    execPath: "/Applications/Homebrain.app/Contents/MacOS/homebrain",
-    attachmentHelper: "/Applications/Homebrain.app/Contents/Resources/bin-evil/attachment-extract",
+    execPath: "/Applications/HomeAgent.app/Contents/MacOS/homeagent",
+    attachmentHelper: "/Applications/HomeAgent.app/Contents/Resources/bin-evil/attachment-extract",
     runProcess: async () => {
       invoked = true;
       return { code: 0, stdout: "unsafe", stderr: "" };

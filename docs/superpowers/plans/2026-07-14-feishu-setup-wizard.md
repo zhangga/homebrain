@@ -4,12 +4,12 @@
 
 ## Outcome
 
-用户只通过 homebrain 管理后台即可完成现有飞书应用接入、Bot 身份同步、Agent 创建入口、群聊绑定和发送通道测试，不再需要手工查询 Bot open_id 或编辑 JSON。
+用户只通过 homeagent 管理后台即可完成现有飞书应用接入、Bot 身份同步、Agent 创建入口、群聊绑定和发送通道测试，不再需要手工查询 Bot open_id 或编辑 JSON。
 
 ## Requirements
 
 - Integrations 页面提供 App ID、App Secret 和 Feishu/Lark 品牌配置。
-- App Secret 只能通过 stdin 传给 `lark-cli config init --app-secret-stdin`，不得出现在 argv、homebrain 配置、日志或返回页面中。
+- App Secret 只能通过 stdin 传给 `lark-cli config init --app-secret-stdin`，不得出现在 argv、homeagent 配置、日志或返回页面中。
 - 配置后执行 `lark-cli auth status --json --verify`，自动保存已验证 Bot 的名称和 open_id。
 - 已有 `lark-cli` 配置可以在不重新输入 Secret 的情况下重新验证并同步身份。
 - 页面展示 `im.message.receive_v1` 与 `im.chat.member.bot.added_v1` 两条事件消费者的当前运行状态，并列出仍需在开放平台确认的权限、发布和可用范围检查项。
@@ -27,5 +27,5 @@
 
 - 飞书开放平台本身的机器人能力、权限、事件订阅、版本发布和可用范围仍由管理员在开放平台操作。
 - Provider CLI 的安装与登录授权不由本向导接管。
-- homebrain 不接管 `lark-cli` 自己的凭据存储；系统钥匙串/加密配置属于后续安全交付阶段。
+- homeagent 不接管 `lark-cli` 自己的凭据存储；系统钥匙串/加密配置属于后续安全交付阶段。
 - Bot 身份和事件消费者暂不热切换；修改应用后重启进程生效。

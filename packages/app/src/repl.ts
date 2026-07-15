@@ -1,5 +1,5 @@
 /**
- * `homebrain repl` — drive the full orchestrator trunk from the terminal using
+ * `homeagent repl` — drive the full orchestrator trunk from the terminal using
  * the CLI connector and the REAL gateway (no feishu). This is the Slice 4
  * acceptance harness: "终端模拟飞书跑通全主干".
  *
@@ -15,10 +15,10 @@
  *                  prefix with /at to target the GROUP space: `/at /task new X`
  *   plain text     a p2p message (always answered)
  */
-import { KnowledgeEngine } from "@homebrain/core";
-import { CliConnector } from "@homebrain/connectors";
-import { Orchestrator } from "@homebrain/orchestrator";
-import { teamSpace, personalSpace } from "@homebrain/shared";
+import { KnowledgeEngine } from "@homeagent/core";
+import { CliConnector } from "@homeagent/connectors";
+import { Orchestrator } from "@homeagent/orchestrator";
+import { teamSpace, personalSpace } from "@homeagent/shared";
 
 async function main(): Promise<void> {
   const engine = new KnowledgeEngine();
@@ -50,7 +50,7 @@ async function main(): Promise<void> {
 
   console.error(
     [
-      "[homebrain repl] starting — Ctrl-D to exit. Commands:",
+      "[homeagent repl] starting — Ctrl-D to exit. Commands:",
       "  /at <text>     群内 @机器人 提问（期望回复）",
       "  /group <text>  群内不 @（静默收录）",
       "  /added         模拟机器人被拉进群",
@@ -63,7 +63,7 @@ async function main(): Promise<void> {
   await orch.start(); // blocks reading stdin in interactive mode
   await orch.stop();
   engine.close();
-  console.error("[homebrain repl] bye");
+  console.error("[homeagent repl] bye");
 }
 
 main().catch((err) => {

@@ -1,4 +1,4 @@
-import type { LarkProvisioningState } from "@homebrain/shared";
+import type { LarkProvisioningState } from "@homeagent/shared";
 import { html, raw } from "hono/html";
 import type { HtmlEscapedString } from "hono/utils/html";
 

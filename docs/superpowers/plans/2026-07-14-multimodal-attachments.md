@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Download supported Feishu message attachments, extract useful text locally, and feed that text into homebrain's existing raw-message, dream-cycle, retention, export, and retraction paths.
+**Goal:** Download supported Feishu message attachments, extract useful text locally, and feed that text into homeagent's existing raw-message, dream-cycle, retention, export, and retraction paths.
 
 **Architecture:** The Feishu connector remains the only module that knows `lark-cli`: it resolves resource keys from the raw message and downloads each resource into an isolated temporary directory. A platform-neutral extractor in the orchestrator reads text formats directly and uses a bounded macOS Vision/PDFKit helper for image OCR and PDF text. The orchestrator writes one additional `source: "message"` raw entry per successfully extracted attachment, preserving the original `messageId` so existing retraction and retention behavior applies unchanged.
 
@@ -86,7 +86,7 @@ Expected: failure because `InboundMessage.messageType` and `parseMessageResource
 Add these public contracts to `connector.ts`:
 
 ```ts
-import type { Attachment } from "@homebrain/shared";
+import type { Attachment } from "@homeagent/shared";
 
 export interface DownloadedAttachment {
   attachment: Attachment;
@@ -109,7 +109,7 @@ export interface Connector {
 Add the pure descriptor parser to `feishu-normalize.ts`:
 
 ```ts
-import type { Attachment } from "@homebrain/shared";
+import type { Attachment } from "@homeagent/shared";
 
 export interface FeishuMessageResource {
   kind: Attachment["kind"];
@@ -240,7 +240,7 @@ async downloadAttachments(messageId: string): Promise<DownloadedAttachment[]> {
   const resources = parseMessageResources(message?.msg_type, message?.body?.content);
   const downloads: DownloadedAttachment[] = [];
   for (const resource of resources) {
-    const directory = mkdtempSync(join(tmpdir(), "homebrain-attachment-"));
+    const directory = mkdtempSync(join(tmpdir(), "homeagent-attachment-"));
     const output = "resource.bin";
     try {
       await this.runCommand([
@@ -369,7 +369,7 @@ Create `attachment-extractor.ts` with this public surface:
 ```ts
 import { readFileSync } from "node:fs";
 import { extname, join } from "node:path";
-import type { DownloadedAttachment } from "@homebrain/connectors";
+import type { DownloadedAttachment } from "@homeagent/connectors";
 
 const TEXT_EXTENSIONS = new Set([".txt", ".md", ".markdown", ".csv", ".json", ".log"]);
 const MAX_OUTPUT_CHARS = 200_000;
@@ -564,7 +564,7 @@ Expected: failure because runtime does not download or extract attachments.
 Add an injectable public seam while defaulting production to the real extractor:
 
 ```ts
-import type { DownloadedAttachment } from "@homebrain/connectors";
+import type { DownloadedAttachment } from "@homeagent/connectors";
 import { extractAttachmentText } from "./attachment-extractor.ts";
 
 export interface RuntimeOptions {
@@ -693,7 +693,7 @@ bun test
 bun run typecheck
 ```
 
-Expected: all non-live tests pass; live tests remain opt-in/skipped without `HOMEBRAIN_LIVE=1`.
+Expected: all non-live tests pass; live tests remain opt-in/skipped without `HOMEAGENT_LIVE=1`.
 
 - [x] **Step 4: Review and commit documentation**
 

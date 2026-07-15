@@ -1,5 +1,5 @@
-import type { DetectedProvider } from "@homebrain/llm";
-import type { LarkSetupStatus } from "@homebrain/shared";
+import type { DetectedProvider } from "@homeagent/llm";
+import type { LarkSetupStatus } from "@homeagent/shared";
 import type { FeishuRuntimeStatus } from "./integrations.ts";
 import type { FeishuExternalSharingState } from "./external-sharing.ts";
 

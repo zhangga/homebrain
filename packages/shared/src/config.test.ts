@@ -15,7 +15,7 @@ let dir: string;
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "hb-config-"));
-  process.env.HOMEBRAIN_DATA_DIR = dir;
+  process.env.HOMEAGENT_DATA_DIR = dir;
   process.env.ANTHROPIC_BASE_URL = "http://localhost:0";
   process.env.ANTHROPIC_AUTH_TOKEN = "test-token";
   resetConfig();
@@ -23,14 +23,14 @@ beforeEach(() => {
 
 afterEach(() => {
   rmSync(dir, { recursive: true, force: true });
-  delete process.env.HOMEBRAIN_DATA_DIR;
+  delete process.env.HOMEAGENT_DATA_DIR;
   resetConfig();
 });
 
 describe("editable settings overlay", () => {
   test("local CLI runtime starts without legacy gateway credentials", () => {
     const cfg = loadConfig({
-      HOMEBRAIN_DATA_DIR: dir,
+      HOMEAGENT_DATA_DIR: dir,
     });
     expect(cfg.gatewayBaseUrl).toBe("");
     expect(cfg.gatewayToken).toBe("");
@@ -51,14 +51,34 @@ describe("editable settings overlay", () => {
   test("web exposure settings are env-only", () => {
     const cfg = loadConfig({
       ...process.env,
-      HOMEBRAIN_WEB_HOST: "0.0.0.0",
-      HOMEBRAIN_WEB_ADMIN_TOKEN: "admin-secret",
-      HOMEBRAIN_RAW_RETENTION_DAYS: "45",
+      HOMEAGENT_WEB_HOST: "0.0.0.0",
+      HOMEAGENT_WEB_ADMIN_TOKEN: "admin-secret",
+      HOMEAGENT_RAW_RETENTION_DAYS: "45",
     });
     expect(cfg.webHost).toBe("0.0.0.0");
     expect(cfg.webAdminToken).toBe("admin-secret");
     expect(cfg.rawRetentionDays).toBe(45);
     expect(readSettings(dir)).toEqual({});
+  });
+
+  test("reads legacy environment settings while preferring HomeAgent values", () => {
+    const legacy = loadConfig({
+      HOMEBRAIN_DATA_DIR: dir,
+      HOMEBRAIN_WEB_PORT: "4100",
+      HOMEBRAIN_DEFAULT_PROVIDER: "codex",
+    });
+    expect(legacy.dataDir).toBe(dir);
+    expect(legacy.webPort).toBe(4100);
+    expect(legacy.defaultProvider).toBe("codex");
+
+    const canonical = loadConfig({
+      HOMEAGENT_DATA_DIR: dir,
+      HOMEBRAIN_DATA_DIR: "/legacy-data",
+      HOMEAGENT_WEB_PORT: "4200",
+      HOMEBRAIN_WEB_PORT: "4100",
+    });
+    expect(canonical.dataDir).toBe(dir);
+    expect(canonical.webPort).toBe(4200);
   });
 
   test("default provider/model overlay from settings.json", () => {
@@ -81,8 +101,8 @@ describe("editable settings overlay", () => {
     expect(
       loadConfig({
         ...process.env,
-        HOMEBRAIN_DEFAULT_PROVIDER: "codex",
-        HOMEBRAIN_DEFAULT_MODEL: "gpt-5.6",
+        HOMEAGENT_DEFAULT_PROVIDER: "codex",
+        HOMEAGENT_DEFAULT_MODEL: "gpt-5.6",
       }).defaultModel,
     ).toBe("gpt-5.6-sol");
   });
@@ -102,12 +122,12 @@ describe("editable settings overlay", () => {
   });
 
   test("persisted settings win over env defaults", () => {
-    process.env.HOMEBRAIN_LLM_MODEL = "claude-haiku-4-5-20251001";
+    process.env.HOMEAGENT_LLM_MODEL = "claude-haiku-4-5-20251001";
     resetConfig();
     expect(loadConfig().model).toBe("claude-haiku-4-5-20251001");
     saveSettings({ model: "claude-sonnet-5" }, dir);
     expect(loadConfig().model).toBe("claude-sonnet-5");
-    delete process.env.HOMEBRAIN_LLM_MODEL;
+    delete process.env.HOMEAGENT_LLM_MODEL;
   });
 
   test("saveSettings merges (does not clobber unrelated keys)", () => {
@@ -128,9 +148,9 @@ describe("editable settings overlay", () => {
   });
 
   test("feishu bot identity is exposed on config and editable", () => {
-    saveSettings({ feishuBotName: "homebrain", feishuBotOpenId: "ou_x" }, dir);
+    saveSettings({ feishuBotName: "homeagent", feishuBotOpenId: "ou_x" }, dir);
     const cfg = loadConfig();
-    expect(cfg.feishuBotName).toBe("homebrain");
+    expect(cfg.feishuBotName).toBe("homeagent");
     expect(cfg.feishuBotOpenId).toBe("ou_x");
   });
 

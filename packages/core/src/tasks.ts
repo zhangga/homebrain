@@ -12,8 +12,8 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
-import type { SpaceId } from "@homebrain/shared";
-import { isSpaceId } from "@homebrain/shared";
+import type { SpaceId } from "@homeagent/shared";
+import { isSpaceId } from "@homeagent/shared";
 
 /** How often a task runs. */
 export type TaskCadence = "hourly" | "daily";

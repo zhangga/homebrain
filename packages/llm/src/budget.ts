@@ -9,7 +9,7 @@
  */
 import { appendFileSync, mkdirSync, readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
-import { config } from "@homebrain/shared";
+import { config } from "@homeagent/shared";
 
 /** Why a call is being made — drives budget prioritization. */
 export type CallPurpose = "ask" | "distill" | "classify" | "other";

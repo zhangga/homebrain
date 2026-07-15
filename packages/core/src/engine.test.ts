@@ -5,7 +5,7 @@ import { join } from "node:path";
 import type { Knowledge } from "./knowledge.ts";
 import { KnowledgeEngine } from "./engine.ts";
 import { FakeLlm } from "./testing.ts";
-import type { Page, SpaceId } from "@homebrain/shared";
+import type { Page, SpaceId } from "@homeagent/shared";
 
 let dir: string;
 let engine: KnowledgeEngine;

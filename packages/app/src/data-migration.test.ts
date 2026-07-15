@@ -23,14 +23,14 @@ describe("legacy data migration", () => {
   let destinationDir: string;
 
   beforeEach(() => {
-    root = mkdtempSync(join(tmpdir(), "homebrain-migration-test-"));
+    root = mkdtempSync(join(tmpdir(), "homeagent-migration-test-"));
     homeDir = join(root, "home");
-    sourceDir = join(homeDir, "Applications", "homebrain", "data");
+    sourceDir = join(homeDir, "Library", "Application Support", "Homebrain");
     destinationDir = join(
       homeDir,
       "Library",
       "Application Support",
-      "Homebrain",
+      "HomeAgent",
     );
     mkdirSync(join(sourceDir, "spaces", "family"), { recursive: true });
     writeFileSync(join(sourceDir, "spaces", "family", "memory.txt"), "北极星", "utf8");
@@ -49,6 +49,19 @@ describe("legacy data migration", () => {
 
     rmSync(sourceDir, { recursive: true, force: true });
     expect(planDataMigration({ homeDir, destinationDir }).state).toBe("not-needed");
+  });
+
+  test("falls back to the older source-install data directory", () => {
+    rmSync(sourceDir, { recursive: true, force: true });
+    const sourceInstall = join(homeDir, "Applications", "homebrain", "data");
+    mkdirSync(sourceInstall, { recursive: true });
+    writeFileSync(join(sourceInstall, "memory.txt"), "旧数据", "utf8");
+
+    expect(planDataMigration({ homeDir, destinationDir })).toEqual({
+      state: "needs-confirmation",
+      source: sourceInstall,
+      destination: destinationDir,
+    });
   });
 
   test("rejects a non-empty destination without changing either tree", () => {
@@ -86,7 +99,7 @@ describe("legacy data migration", () => {
 
   test("copies through a synced sibling staging directory and atomically records completion", () => {
     mkdirSync(destinationDir, { recursive: true });
-    const stagingDir = join(dirname(destinationDir), ".Homebrain.migration-test");
+    const stagingDir = join(dirname(destinationDir), ".HomeAgent.migration-test");
     const synced: string[] = [];
     const fileSystem = {
       ...nodeMigrationFileSystem,
@@ -108,7 +121,7 @@ describe("legacy data migration", () => {
       state: "completed",
       source: sourceDir,
       destination: destinationDir,
-      recordPath: join(destinationDir, "migration-v1.json"),
+      recordPath: join(destinationDir, "migration-v2.json"),
     });
     expect(readFileSync(join(destinationDir, "spaces", "family", "memory.txt"), "utf8")).toBe(
       "北极星",
@@ -124,13 +137,14 @@ describe("legacy data migration", () => {
       result: "completed",
     });
     expect(synced).toContain(join(stagingDir, "spaces", "family", "memory.txt"));
-    expect(synced).toContain(join(stagingDir, "migration-v1.json"));
+    expect(synced).toContain(join(stagingDir, "migration-v2.json"));
     expect(synced).toContain(stagingDir);
     expect(synced).toContain(dirname(destinationDir));
   });
 
   test("prompts before first packaged launch and preserves a cancelled migration", async () => {
     let promptArgv: string[] | undefined;
+    let legacyServiceRetired = false;
     const continued = await prepareLegacyDataMigration({
       homeDir,
       destinationDir,
@@ -138,8 +152,13 @@ describe("legacy data migration", () => {
         promptArgv = argv;
         return { code: 0, stdout: "button returned:迁移", stderr: "" };
       },
+      beforeCopy: () => {
+        expect(existsSync(destinationDir)).toBeFalse();
+        legacyServiceRetired = true;
+      },
     });
     expect(continued).toBe("continue");
+    expect(legacyServiceRetired).toBeTrue();
     expect(promptArgv?.slice(0, 2)).toEqual(["/usr/bin/osascript", "-e"]);
     expect(readFileSync(join(destinationDir, "spaces", "family", "memory.txt"), "utf8")).toBe(
       "北极星",
@@ -150,6 +169,9 @@ describe("legacy data migration", () => {
       homeDir,
       destinationDir,
       runner: async () => ({ code: 1, stdout: "", stderr: "User canceled" }),
+      beforeCopy: () => {
+        throw new Error("cancelled migration must not retire the old service");
+      },
     });
     expect(exited).toBe("exit");
     expect(existsSync(destinationDir)).toBeFalse();

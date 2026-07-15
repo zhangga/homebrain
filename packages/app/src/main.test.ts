@@ -25,7 +25,7 @@ describe("compiled app command dispatch", () => {
   });
 
   test("treats empty or non-executable managed provider files as damaged", () => {
-    const dir = mkdtempSync(join(tmpdir(), "homebrain-managed-bin-"));
+    const dir = mkdtempSync(join(tmpdir(), "homeagent-managed-bin-"));
     temporary.push(dir);
     const binary = join(dir, "codex");
     writeFileSync(binary, "");

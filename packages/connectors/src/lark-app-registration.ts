@@ -4,13 +4,13 @@ import {
 } from "@larksuiteoapi/node-sdk";
 
 /**
- * Additive permissions used by Homebrain's current Feishu runtime.
+ * Additive permissions used by HomeAgent's current Feishu runtime.
  *
  * Keep this list aligned with FeishuConnector commands. The sensitive
  * im:message.group_msg scope is required for resolving quoted group messages
  * and downloading group-message attachments, not only for mentionsOnly=false.
  */
-export const HOMEBRAIN_FEISHU_ADDONS: AppAddons = {
+export const HOMEAGENT_FEISHU_ADDONS: AppAddons = {
   preset: true,
   scopes: {
     tenant: [
@@ -62,14 +62,14 @@ export function createLarkAppRegistrar(
       const result = await register({
         domain: "accounts.feishu.cn",
         larkDomain: "accounts.larksuite.com",
-        source: "homebrain",
+        source: "homeagent",
         signal: input.signal,
         createOnly: true,
         appPreset: {
-          name: "Homebrain",
+          name: "HomeAgent",
           desc: "把飞书群聊沉淀为可检索、可复用的团队知识",
         },
-        addons: HOMEBRAIN_FEISHU_ADDONS,
+        addons: HOMEAGENT_FEISHU_ADDONS,
         onQRCodeReady(info) {
           input.onVerificationUrl({
             url: info.url,

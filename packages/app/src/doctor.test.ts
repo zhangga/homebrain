@@ -8,13 +8,13 @@ import type { RuntimePaths } from "./runtime-paths.ts";
 
 const paths: RuntimePaths = {
   bundled: true,
-  appRoot: "/Applications/Homebrain.app",
-  resourceDir: "/Applications/Homebrain.app/Contents/Resources",
-  dataDir: "/Users/example/Library/Application Support/Homebrain",
-  logDir: "/Users/example/Library/Logs/Homebrain",
-  larkBin: "/Applications/Homebrain.app/Contents/Resources/bin/lark-cli",
+  appRoot: "/Applications/HomeAgent.app",
+  resourceDir: "/Applications/HomeAgent.app/Contents/Resources",
+  dataDir: "/Users/example/Library/Application Support/HomeAgent",
+  logDir: "/Users/example/Library/Logs/HomeAgent",
+  larkBin: "/Applications/HomeAgent.app/Contents/Resources/bin/lark-cli",
   attachmentHelper:
-    "/Applications/Homebrain.app/Contents/Resources/bin/attachment-extract",
+    "/Applications/HomeAgent.app/Contents/Resources/bin/attachment-extract",
 };
 
 function probes(status: "pass" | "action" | "fail" = "pass"): DoctorProbeSet {

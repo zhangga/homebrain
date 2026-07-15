@@ -41,7 +41,7 @@ export function createUpdateManifest(input: {
   if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(input.repository)) {
     throw new Error("repository must be a GitHub owner/name pair");
   }
-  const file = (arch: "arm64" | "x64") => `Homebrain-${input.version}-macos-${arch}.dmg`;
+  const file = (arch: "arm64" | "x64") => `HomeAgent-${input.version}-macos-${arch}.dmg`;
   const base = `https://github.com/${input.repository}/releases/download/v${input.version}`;
   return {
     version: input.version,

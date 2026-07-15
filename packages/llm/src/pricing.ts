@@ -1,6 +1,6 @@
 /**
  * Token pricing for cost governance. Prices are USD per million tokens and are
- * deliberately approximate — the gateway bills internally, but homebrain still
+ * deliberately approximate — the gateway bills internally, but homeagent still
  * needs a local estimate to enforce a daily budget and rank model tiers.
  *
  * If a model id is unknown we fall back to the default tier's price rather than

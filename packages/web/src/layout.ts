@@ -157,12 +157,12 @@ export function layout(
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>${title} · homebrain</title>
+    <title>${title} · homeagent</title>
     <style>${raw(STYLE)}</style>
   </head>
   <body>
     <nav class="rail">
-      <div class="brand">🧠 homebrain</div>
+      <div class="brand">🧠 homeagent</div>
       ${navLinks}
       <div class="spacer"></div>
       <div class="foot">管理后台 · 内网自用</div>

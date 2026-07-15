@@ -1052,7 +1052,7 @@ Expected: exit code 0 with no diagnostics.
 
 - [ ] **Step 5: Perform the real Feishu smoke flow**
 
-Run Homebrain against the maintainer's test Feishu bot with a disposable personal space; do not use production family/team spaces for this verification.
+Run HomeAgent against the maintainer's test Feishu bot with a disposable personal space; do not use production family/team spaces for this verification.
 
 Verify this sequence manually:
 

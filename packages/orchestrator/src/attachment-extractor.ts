@@ -1,7 +1,7 @@
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { extname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import type { DownloadedAttachment } from "@homebrain/connectors";
+import type { DownloadedAttachment } from "@homeagent/connectors";
 
 const TEXT_EXTENSIONS = new Set([
   ".txt",
@@ -88,7 +88,7 @@ export function createNativeExtractor(runtime: NativeExtractorRuntime = {}): Nat
     }
 
     const script = join(import.meta.dir, "attachment-extract.swift");
-    const directory = mkdtempSync(join(tmpdir(), "homebrain-native-extract-"));
+    const directory = mkdtempSync(join(tmpdir(), "homeagent-native-extract-"));
     const binary = join(directory, "attachment-extract");
     const startedAt = Date.now();
     try {

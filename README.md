@@ -1,4 +1,4 @@
-# homebrain
+# HomeAgent
 
 深度绑定飞书的团队/家庭 AI 知识库 Agent。定位是「最了解我们的 agent」：它常驻飞书群与私聊，
 默默收录大家分享的知识，夜间提炼成 wiki 知识页，并在被 @ 或私聊时基于知识库作答（带引用）。
@@ -39,18 +39,18 @@ data/workspaces/<dir>/
 
 ## 普通用户安装（macOS 13+）
 
-正式发布后，普通用户只需下载与 Mac 架构对应的 DMG，把 `Homebrain.app` 拖入“应用程序”并双击：
+正式发布后，普通用户只需下载与 Mac 架构对应的 DMG，把 `HomeAgent.app` 拖入“应用程序”并双击：
 
-1. Homebrain 自动安装并启动当前用户的后台服务，然后在默认浏览器打开设置向导。
-2. 点击“安装并连接 ChatGPT”，明确同意后由 Homebrain 下载、校验并安装 OpenAI 官方 Codex；登录在
+1. HomeAgent 自动安装并启动当前用户的后台服务，然后在默认浏览器打开设置向导。
+2. 点击“安装并连接 ChatGPT”，明确同意后由 HomeAgent 下载、校验并安装 OpenAI 官方 Codex；登录在
    OpenAI 官方页面完成，不需要复制 API Key。
-3. 点击“一键创建飞书机器人”，在飞书页面确认。Homebrain 会自动申请运行权限、验证机器人身份，并引导完成消息监听。
+3. 点击“一键创建飞书机器人”，在飞书页面确认。HomeAgent 会自动申请运行权限、验证机器人身份，并引导完成消息监听。
 4. 如需加入外部群，向导会直达当前应用并列出对外共享发布项；完成飞书版本发布和管理员审批后，用一条真实外部群消息验证。
 5. 把机器人加入群聊并发送第一条测试消息；向导确认真实消息到达后进入知识空间。
 
 应用包已自带 Bun 运行时、`lark-cli` 和 macOS 附件提取助手，用户不需要安装 Git、Bun、Node、npm、
-Homebrew 或全局 CLI。知识数据保存在 `~/Library/Application Support/Homebrain`，日志保存在
-`~/Library/Logs/Homebrain`；替换应用版本不会覆盖知识数据。
+Homebrew 或全局 CLI。知识数据保存在 `~/Library/Application Support/HomeAgent`，日志保存在
+`~/Library/Logs/HomeAgent`；替换应用版本不会覆盖知识数据。
 
 > 当前仓库提供 beta 构建与发布流水线。面向外部分发的 DMG 仍须由维护者配置 Apple Developer ID
 > 签名/公证凭据，并完成 Bun 等二进制再分发审查；未经签名的本地构建仅供开发验证。
@@ -69,23 +69,26 @@ Homebrew 或全局 CLI。知识数据保存在 `~/Library/Application Support/Ho
 # 可选：仅旧网关客户端/网关 live test 使用；生产主流程无需配置
 export ANTHROPIC_BASE_URL=https://api.gameaigc.cn
 export ANTHROPIC_AUTH_TOKEN=sk-...
-export HOMEBRAIN_DATA_DIR=./data                    # 默认 ./data
-export HOMEBRAIN_LLM_MODEL=claude-sonnet-5          # ask/提炼默认模型
-export HOMEBRAIN_DAILY_BUDGET_USD=5                 # 每日预算
-export HOMEBRAIN_WEB_HOST=127.0.0.1                 # 默认仅本机访问
-export HOMEBRAIN_WEB_PORT=3000                      # 管理后台端口
-export HOMEBRAIN_DREAM_HOUR=3                        # 每日提炼时刻（0-23，Asia/Shanghai）
-export HOMEBRAIN_RAW_RETENTION_DAYS=90              # 已提炼原始消息保留天数；0=永久
-# 仅当 HOMEBRAIN_WEB_HOST 不是本机回环地址时必须设置（环境变量专属，不写盘）
-export HOMEBRAIN_WEB_ADMIN_TOKEN=replace-with-a-strong-secret
+export HOMEAGENT_DATA_DIR=./data                    # 默认 ./data
+export HOMEAGENT_LLM_MODEL=claude-sonnet-5          # ask/提炼默认模型
+export HOMEAGENT_DAILY_BUDGET_USD=5                 # 每日预算
+export HOMEAGENT_WEB_HOST=127.0.0.1                 # 默认仅本机访问
+export HOMEAGENT_WEB_PORT=3000                      # 管理后台端口
+export HOMEAGENT_DREAM_HOUR=3                        # 每日提炼时刻（0-23，Asia/Shanghai）
+export HOMEAGENT_RAW_RETENTION_DAYS=90              # 已提炼原始消息保留天数；0=永久
+# 仅当 HOMEAGENT_WEB_HOST 不是本机回环地址时必须设置（环境变量专属，不写盘）
+export HOMEAGENT_WEB_ADMIN_TOKEN=replace-with-a-strong-secret
 # 可选：精确 @ 识别（否则群内任意 @ 都视为叫机器人）
-export HOMEBRAIN_FEISHU_BOT_NAME=homebrain
-export HOMEBRAIN_FEISHU_BOT_OPEN_ID=ou_xxx
+export HOMEAGENT_FEISHU_BOT_NAME=homeagent
+export HOMEAGENT_FEISHU_BOT_OPEN_ID=ou_xxx
 ```
+
+改名前的 `HOMEBRAIN_*` 环境变量仍可读取；若新旧变量同时存在，以 `HOMEAGENT_*` 为准。
+打包应用首次启动时也会在确认后复制旧版 Homebrain 数据，并保留旧目录不变。
 
 > 后台「设置 / Agents / Integrations」里改的配置会写入 `data/config/{settings,agents,spaces}.json`
 > 并叠加在上述环境变量之上（后台显式设置优先）。模型 / 预算 / 提炼时刻 / 群设置即时生效；
-> Bot 身份与端口需重启生效。`HOMEBRAIN_WEB_HOST` 与 `HOMEBRAIN_WEB_ADMIN_TOKEN` 仅从环境变量读取：
+> Bot 身份与端口需重启生效。`HOMEAGENT_WEB_HOST` 与 `HOMEAGENT_WEB_ADMIN_TOKEN` 仅从环境变量读取：
 > 默认绑定 `127.0.0.1`；开放到局域网或 `0.0.0.0` 时必须配置管理令牌，后台支持浏览器 Basic Auth
 > （密码填令牌）及 Bearer Token。可选的 `ANTHROPIC_*` 只在调用旧网关客户端时校验，只读、不写盘，
 > LaunchAgent 也不会保存它们。
@@ -99,9 +102,9 @@ export HOMEBRAIN_FEISHU_BOT_OPEN_ID=ou_xxx
 ```bash
 bun install
 bun test                              # 全部离线单测/契约测试
-HOMEBRAIN_LIVE=1 bun test packages/llm/src/gateway.live.test.ts   # 真调网关
-HOMEBRAIN_LIVE=1 bun test packages/core/src/dream.live.test.ts    # 真跑提炼
-HOMEBRAIN_LIVE=1 bun test packages/core/src/ask.live.test.ts      # 真跑问答
+HOMEAGENT_LIVE=1 bun test packages/llm/src/gateway.live.test.ts   # 真调网关
+HOMEAGENT_LIVE=1 bun test packages/core/src/dream.live.test.ts    # 真跑提炼
+HOMEAGENT_LIVE=1 bun test packages/core/src/ask.live.test.ts      # 真跑问答
 bunx tsc -p tsconfig.json --noEmit    # 类型检查
 ```
 
@@ -125,12 +128,12 @@ bun run packages/web/src/dev.ts        # http://localhost:3000（启动日志：
 ```
 
 能测**全部界面**：空间/知识、Agents、任务、Integrations、运行状态、数据治理、设置——增删改、开关、落盘、任务「立即运行」都可验证。
-问答框与任务运行返回**固定假答案**（不 spawn 真 CLI，秒回），看不到真实模型效果。数据写 `./data`（或 `HOMEBRAIN_DATA_DIR`）。
+问答框与任务运行返回**固定假答案**（不 spawn 真 CLI，秒回），看不到真实模型效果。数据写 `./data`（或 `HOMEAGENT_DATA_DIR`）。
 
 ### 3. 后台真跑本机 CLI（能看到真实效果 · 慢）
 
 ```bash
-HOMEBRAIN_DEV_REAL_CLI=1 bun run packages/web/src/dev.ts   # 启动日志：LLM=真实本机 CLI
+HOMEAGENT_DEV_REAL_CLI=1 bun run packages/web/src/dev.ts   # 启动日志：LLM=真实本机 CLI
 ```
 
 给某群指定 Agent（或在设置里配默认 CLI），问答/任务会真的 spawn `claude`/`trae-cli`。单次数秒，任务的即时提炼会再多调几次。
@@ -153,7 +156,7 @@ bun run packages/app/src/repl.ts       # 启动横幅列出全部命令
 ```
 
 > **注意事项**：
-> - 第 3、4 种会 **spawn 真 claude/trae-cli**：慢、有开销，且 CLI **用它自己的鉴权和模型**，不一定尊重 homebrain 里选的 model；想快速点功能用第 2 种。
+> - 第 3、4 种会 **spawn 真 claude/trae-cli**：慢、有开销，且 CLI **用它自己的鉴权和模型**，不一定尊重 homeagent 里选的 model；想快速点功能用第 2 种。
 > - 本机 `codex` 之前探测不可用（WSL 无 Linux node），`claude`/`trae-cli` 可用；后台每次启动**实时探测**，以界面显示为准。
 
 ## 管理后台（mew 风格，可读写）
@@ -162,8 +165,8 @@ bun run packages/app/src/repl.ts       # 启动横幅列出全部命令
 
 - **空间 / 知识**：空间列表、知识页、原始条目、问答测试、手动触发提炼。
 - **Agents**（中列列表 + 右侧编辑器）：新建 / 编辑 / 删除智能体，配置 **名称、Provider、Instruction（人格，会注入到回答）、Model、推理强度、Visibility**。
-  - **Provider = 本机已安装的 agent CLI**（`claude` / `codex` / `trae-cli`）。**所有 LLM 工作（意图分类 + 问答 ask + 提炼 dream + 任务）都通过当前空间配置的本机 CLI 子进程执行，homebrain 不直连任何网络 API**。后台**探测本机** CLI，只让可用的可选（装了但跑不了的灰显并标注原因，如 WSL 下无 Linux node 的 codex）。
-  - **Model 随 Provider 变化**：切 Provider 时 Model 下拉自动换成该 provider 的维护清单（CLI 无“列模型”接口）；Codex 当前提供 `gpt-5.6-sol / gpt-5.6-terra / gpt-5.6-luna / gpt-5.5 / gpt-5.4 / gpt-5.4-mini / gpt-5.3-codex-spark`。其中 `gpt-5.6-sol` 是 GPT-5.6 Sol 的完整模型 ID；Homebrain 日常问答优先选择较快、成本更低的 `gpt-5.6-luna`，复杂研究可选择 `gpt-5.6-terra` 或 `gpt-5.6-sol`。
+  - **Provider = 本机已安装的 agent CLI**（`claude` / `codex` / `trae-cli`）。**所有 LLM 工作（意图分类 + 问答 ask + 提炼 dream + 任务）都通过当前空间配置的本机 CLI 子进程执行，homeagent 不直连任何网络 API**。后台**探测本机** CLI，只让可用的可选（装了但跑不了的灰显并标注原因，如 WSL 下无 Linux node 的 codex）。
+  - **Model 随 Provider 变化**：切 Provider 时 Model 下拉自动换成该 provider 的维护清单（CLI 无“列模型”接口）；Codex 当前提供 `gpt-5.6-sol / gpt-5.6-terra / gpt-5.6-luna / gpt-5.5 / gpt-5.4 / gpt-5.4-mini / gpt-5.3-codex-spark`。其中 `gpt-5.6-sol` 是 GPT-5.6 Sol 的完整模型 ID；HomeAgent 日常问答优先选择较快、成本更低的 `gpt-5.6-luna`，复杂研究可选择 `gpt-5.6-terra` 或 `gpt-5.6-sol`。
   - **推理强度按 Agent 配置**：Codex Agent 可选择继承默认值，或从当前模型支持的档位中选择；GPT-5.6 系列支持 `none / low / medium / high / xhigh / max`，旧模型不会显示不支持的档位。普通问答建议从 `medium` 开始，级别越高通常耗时和 token 越多。其他 Provider 暂不传递此配置。
 - **任务**（研究任务执行）：新建定期任务，让某空间的 Agent CLI 定期研究一个主题；产出**存为该空间的原始材料**（`source=task`），**运行结束立即触发一次本空间提炼**（当场变成 wiki 知识页，而非等夜间），并可**推送摘要到该空间绑定的飞书群/私聊**。
   - 字段：名称、目标空间、研究主题、周期（每天几点 / 每小时）、启用开关、推送开关。
@@ -185,11 +188,11 @@ bun run packages/app/src/repl.ts       # 启动横幅列出全部命令
   `@ mentions only`，并直接发送测试消息验证发送通道。对外共享状态按 App ID 独立记录，更换机器人后不会沿用
   旧机器人的验证结果。
 - **运行状态**：集中展示后台托管方式、PID、启动时间、两条飞书事件消费者的详细状态、必需 CLI、知识存储、任务、提醒、Dream Cycle 与三个调度器；LaunchAgent 托管时可从页面安全重启。
-- **数据治理**：按空间导出 `homebrain.space v1` JSON 完整备份（知识页、原始记录、撤回标记、任务、提醒、空间元数据及关联 Agent），恢复备份，或永久删除整个空间；可按保留周期立即清理已提炼的过期消息。
+- **数据治理**：按空间导出 `homeagent.space v1` JSON 完整备份（知识页、原始记录、撤回标记、任务、提醒、空间元数据及关联 Agent），恢复备份，或永久删除整个空间；可按保留周期立即清理已提炼的过期消息。
 - **设置**：**默认 Provider + 默认 Model**（群未指定 Agent 时用它）、每日预算、提炼时刻、原始消息保留周期、端口。
 
-后台默认只监听 `127.0.0.1`，无需登录。若通过 `HOMEBRAIN_WEB_HOST` 开放到非回环地址，启动时会强制要求
-`HOMEBRAIN_WEB_ADMIN_TOKEN`；除 `/healthz`、`/readyz` 外的所有页面与操作都需要认证。
+后台默认只监听 `127.0.0.1`，无需登录。若通过 `HOMEAGENT_WEB_HOST` 开放到非回环地址，启动时会强制要求
+`HOMEAGENT_WEB_ADMIN_TOKEN`；除 `/healthz`、`/readyz` 外的所有页面与操作都需要认证。
 非本机访问应置于 HTTPS 反向代理之后；不要在不可信网络上直接使用明文 HTTP 传输管理令牌。
 
 对上 mew 的 `Codex Agent · Topic reply · @ mentions only`：给群指定 Agent 后，回答用该 Agent 的 CLI 与人格；
@@ -198,29 +201,29 @@ bun run packages/app/src/repl.ts       # 启动横幅列出全部命令
 
 ### 首次启动与飞书连接
 
-1. 普通用户双击 `Homebrain.app`；源码开发者运行 `bun start`。全新数据目录会自动进入 `/setup`。
+1. 普通用户双击 `HomeAgent.app`；源码开发者运行 `bun start`。全新数据目录会自动进入 `/setup`。
 2. 应用包用户点击“安装并连接 ChatGPT”即可完成 Codex 下载、校验与 OpenAI 官方登录；源码运行会提供
    已检测到的 Codex、Claude Code 或 TRAE CLI，并把手动安装命令留在高级路径。
-3. 点击“一键创建飞书机器人”，在飞书官方页面确认。Homebrain 通过官方 Node SDK 显式提交完整授权清单，
+3. 点击“一键创建飞书机器人”，在飞书官方页面确认。HomeAgent 通过官方 Node SDK 显式提交完整授权清单，
    一次申请私聊、群内 @、群内全部消息、消息读取/发送、附件、表情、群信息、机器人进群权限和两条事件订阅。
-   App Secret 只通过 stdin 写入 `lark-cli` 的系统钥匙串，不进入 Homebrain 设置、页面或日志。
+   App Secret 只通过 stdin 写入 `lark-cli` 的系统钥匙串，不进入 HomeAgent 设置、页面或日志。
 4. `im:message.group_msg` 是敏感权限；如果企业启用了自建应用审核，管理员会在这次创建确认中批准。
    不需要用户创建完成后再进入开放平台逐项补权限或事件。
 5. 如需对外共享，向导会打开当前应用。进入“应用发布 → 版本管理与发布 → 创建版本”，开启
    “允许机器人被添加到外部群中使用”和“允许外部用户与机器人单聊”，然后保存、提交发布并完成管理员审批。
-   这两个开关不属于飞书 SDK 的创建权限清单，当前不能由 Homebrain 代替用户或管理员自动开启；可选择“暂时仅内部使用”。
+   这两个开关不属于飞书 SDK 的创建权限清单，当前不能由 HomeAgent 代替用户或管理员自动开启；可选择“暂时仅内部使用”。
 6. LaunchAgent 托管时点击“激活消息监听”安全重启；源码运行时重启 `bun start`。
-7. 发布获批后，把机器人加入一个外部群并发送“@机器人 对外共享测试”。Homebrain 会通过只读群信息接口确认该群
+7. 发布获批后，把机器人加入一个外部群并发送“@机器人 对外共享测试”。HomeAgent 会通过只读群信息接口确认该群
    确实是外部群，而且只接受点击“开始验证”之后收到的消息。随后把机器人加入目标群，@机器人发送第一条知识测试消息；
-   Homebrain 会按 `chat_id` 自动建立群知识空间。
+   HomeAgent 会按 `chat_id` 自动建立群知识空间。
 
 已有应用可在“手动输入 App ID”中接入。App Secret 只通过子进程 stdin 交给
 `lark-cli config init --app-secret-stdin`，不会写入 `data/config/settings.json`、页面或日志。后续可从
 “飞书连接”重新进入引导、验证现有配置、调整群聊 Agent 与回复方式。
 
-一键创建使用飞书官方智能体应用模板，并通过 `addons` 显式叠加 Homebrain 的全部运行时权限和事件。
+一键创建使用飞书官方智能体应用模板，并通过 `addons` 显式叠加 HomeAgent 的全部运行时权限和事件。
 敏感权限 `im:message.group_msg` 也在首次确认中申请；若企业要求审核，需在创建阶段由管理员批准。
-Homebrain 只有在 `im.message.receive_v1` 和 `im.chat.member.bot.added_v1` 都通过有界监听验证后才显示创建完成。
+HomeAgent 只有在 `im.message.receive_v1` 和 `im.chat.member.bot.added_v1` 都通过有界监听验证后才显示创建完成。
 若飞书仍漏配事件，创建页会直接给出官方增量授权链接并持续复检，不要求用户进入开发者后台操作。
 已有应用仍可在“更多设置”中通过 App ID / App Secret 接入。
 Provider 自身的登录授权仍由对应 CLI 管理。
@@ -232,7 +235,7 @@ Provider 自身的登录授权仍由对应 CLI 管理。
 ```bash
 bun install --frozen-lockfile
 bun run build:macos --target arm64 --allow-dirty
-bun run smoke:macos --app dist/Homebrain.app
+bun run smoke:macos --app dist/HomeAgent.app
 ```
 
 正式发布由 `v*` tag 触发 GitHub Actions，分别在 Apple Silicon 与 Intel runner 上构建，签名嵌套可执行文件，
@@ -252,7 +255,7 @@ bun run smoke:macos --app dist/Homebrain.app
 都会覆盖这些派生记录。macOS 使用系统自带的 Vision/PDFKit；其他平台仍可提取上述 UTF-8 文本文件，
 但会安全跳过图片 OCR 和 PDF 文本提取。音频转写、Office 文件、视频理解和 `post` 消息内嵌资源暂不支持。
 
-> **CLI-only 的代价（务必知悉）**：claude/trae-cli 是完整编码 agent，单次调用**慢、开销大**，dream 批量提炼会明显变慢；它们**自带鉴权和模型选择**，不一定尊重你在 homebrain 里选的 model。dream 的结构化抽取靠"让 CLI 只输出 JSON + 解析校验 + 失败跳过（quarantine）"，偶有条目建不出页。每日预算仅对可计费的 provider 有意义。
+> **CLI-only 的代价（务必知悉）**：claude/trae-cli 是完整编码 agent，单次调用**慢、开销大**，dream 批量提炼会明显变慢；它们**自带鉴权和模型选择**，不一定尊重你在 homeagent 里选的 model。dream 的结构化抽取靠"让 CLI 只输出 JSON + 解析校验 + 失败跳过（quarantine）"，偶有条目建不出页。每日预算仅对可计费的 provider 有意义。
 
 ### 生产启动（接真实飞书）
 
@@ -261,7 +264,7 @@ bun run packages/app/src/main.ts
 # 或 bun start
 ```
 
-启动后：feishu 连接器监听事件、管理后台在 `HOMEBRAIN_WEB_HOST:HOMEBRAIN_WEB_PORT`、调度器做启动 catch-up + 每日 03:00 提炼，并按保留周期清理已提炼的过期消息。
+启动后：feishu 连接器监听事件、管理后台在 `HOMEAGENT_WEB_HOST:HOMEAGENT_WEB_PORT`、调度器做启动 catch-up + 每日 03:00 提炼，并按保留周期清理已提炼的过期消息。
 SIGTERM/SIGINT 优雅退出（对 lark-cli 子进程发 SIGTERM，绝不 kill -9）。
 
 ### macOS 后台常驻（P3.2）
@@ -285,17 +288,17 @@ bun run service status --json
 bun run service uninstall            # 保留 data 与日志
 ```
 
-服务定义写在 `~/Library/LaunchAgents/com.homebrain.agent.plist`，日志写到
-`$HOMEBRAIN_DATA_DIR/logs/service.{stdout,stderr}.log`（默认仓库内 `data/logs`）。plist 权限为 0600，
+服务定义写在 `~/Library/LaunchAgents/com.homeagent.agent.plist`，日志写到
+`$HOMEAGENT_DATA_DIR/logs/service.{stdout,stderr}.log`（默认仓库内 `data/logs`）。plist 权限为 0600，
 只包含 HOME、PATH、数据目录和托管标记，不保存 Anthropic 或后台管理密钥。主进程使用
-`data/run/homebrain.lock` 上由内核自动释放的 advisory lock 阻止重复实例；SIGTERM/SIGINT 仍会优雅停止
+`data/run/homeagent.lock` 上由内核自动释放的 advisory lock 阻止重复实例；SIGTERM/SIGINT 仍会优雅停止
 所有子进程。活动日志超过 10 MiB 时会保留最近 1 MiB 并轮转 3 份，所有日志文件权限均为 0600。
 
 部署探针：`GET /healthz` 是不依赖外部组件的快速进程存活检查，始终返回 200；`GET /readyz` 只有在知识存储、必需 CLI、两条飞书事件消费者及 Dream Cycle、任务、提醒三个调度器都可用时返回 200，否则返回 503。管理后台 `/health` 提供完整健康快照的人类可读视图。
 
 ## 飞书权限边界
 
-一键创建在首次飞书确认页显式申请以下 Homebrain 运行时能力：
+一键创建在首次飞书确认页显式申请以下 HomeAgent 运行时能力：
 
 - 消息接收：`im:message.p2p_msg:readonly`、`im:message.group_at_msg:readonly`、
   `im:message.group_at_msg.include_bot:readonly`、`im:message.group_msg`；
@@ -308,7 +311,7 @@ bun run service uninstall            # 保留 data 与日志
 用户仍需在飞书官方页面确认；如果企业启用了自建应用审核，管理员会在这次创建流程中批准本次安装。
 机器人加入群聊或收到私聊后会自动创建空间，文档同步所用的 user 身份 token 到期时会在下次 API 调用时自动刷新。
 
-对外共享是单独的发布能力，不是可随创建 `addons` 自动授予的权限。Homebrain 会直达当前 App、引导开启外部群与
+对外共享是单独的发布能力，不是可随创建 `addons` 自动授予的权限。HomeAgent 会直达当前 App、引导开启外部群与
 外部私聊两个开关，并在管理员审批后用真实外部群消息验证；验证进度与 App ID 绑定。飞书企业/团队认证、个人实名认证、
 版本发布及管理员审批仍由飞书官方页面处理。
 

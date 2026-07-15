@@ -240,7 +240,7 @@ describe("CodexReleaseInstaller", () => {
       },
     };
     const installer = new CodexReleaseInstaller({
-      dataDir: "/Users/me/Library/Application Support/Homebrain",
+      dataDir: "/Users/me/Library/Application Support/HomeAgent",
       architecture: "arm64",
       network,
       files,
@@ -258,7 +258,7 @@ describe("CodexReleaseInstaller", () => {
 
     expect(discoveredTarget).toBe("aarch64-apple-darwin");
     expect(result).toEqual({
-      path: "/Users/me/Library/Application Support/Homebrain/bin/codex",
+      path: "/Users/me/Library/Application Support/HomeAgent/bin/codex",
       version: "0.144.4",
       sourceUrl: release.downloadUrl,
       sha256,
@@ -267,28 +267,28 @@ describe("CodexReleaseInstaller", () => {
     expect(operations).toContainEqual({
       op: "chmod",
       args: [
-        "/Users/me/Library/Application Support/Homebrain/bin/.codex-install-test-stage/codex-aarch64-apple-darwin",
+        "/Users/me/Library/Application Support/HomeAgent/bin/.codex-install-test-stage/codex-aarch64-apple-darwin",
         0o755,
       ],
     });
     expect(operations).toContainEqual({
       op: "rename",
       args: [
-        "/Users/me/Library/Application Support/Homebrain/bin/.codex-install-test-stage/codex-aarch64-apple-darwin",
-        "/Users/me/Library/Application Support/Homebrain/bin/codex",
+        "/Users/me/Library/Application Support/HomeAgent/bin/.codex-install-test-stage/codex-aarch64-apple-darwin",
+        "/Users/me/Library/Application Support/HomeAgent/bin/codex",
       ],
     });
     expect(operations).toContainEqual({
       op: "rename",
       args: [
-        "/Users/me/Library/Application Support/Homebrain/bin/.codex-install-test-stage/codex-install.json",
-        "/Users/me/Library/Application Support/Homebrain/bin/codex-install.json",
+        "/Users/me/Library/Application Support/HomeAgent/bin/.codex-install-test-stage/codex-install.json",
+        "/Users/me/Library/Application Support/HomeAgent/bin/codex-install.json",
       ],
     });
     expect(operations.at(-1)).toEqual({
       op: "remove",
       args: [
-        "/Users/me/Library/Application Support/Homebrain/bin/.codex-install-test-stage",
+        "/Users/me/Library/Application Support/HomeAgent/bin/.codex-install-test-stage",
       ],
     });
     const receiptWrite = operations.find(({ op, args }) =>

@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SpaceIndex } from "./sqlite.ts";
-import type { Page, RawEntry } from "@homebrain/shared";
+import type { Page, RawEntry } from "@homeagent/shared";
 
 let dir: string;
 let idx: SpaceIndex;

@@ -6,19 +6,20 @@ import {
   type RawRecord,
   type RawSource,
   type SpaceId,
-} from "@homebrain/shared";
+} from "@homeagent/shared";
 import {
   CODEX_REASONING_EFFORTS,
   isCliProvider,
   isCodexReasoningEffortSupported,
-} from "@homebrain/llm";
+} from "@homeagent/llm";
 import type { Agent } from "./agents.ts";
 import { AGENT_PERMISSIONS } from "./agents.ts";
 import { TASK_CADENCES, type Task } from "./tasks.ts";
 import type { Reminder } from "./reminders.ts";
 import type { SpaceMeta } from "./types.ts";
 
-export const SPACE_ARCHIVE_FORMAT = "homebrain.space" as const;
+export const SPACE_ARCHIVE_FORMAT = "homeagent.space" as const;
+export const LEGACY_SPACE_ARCHIVE_FORMAT = "homebrain.space" as const;
 export const SPACE_ARCHIVE_VERSION = 1 as const;
 
 export interface MessageRetractionRecord {
@@ -306,7 +307,10 @@ function parseReminder(value: unknown, index: number, space: SpaceId): Reminder 
 /** Validate and normalize untrusted JSON before any restore writes occur. */
 export function parseSpaceArchive(value: unknown): SpaceArchive {
   const root = record(value, "archive");
-  if (root.format !== SPACE_ARCHIVE_FORMAT || root.version !== SPACE_ARCHIVE_VERSION) {
+  if (
+    (root.format !== SPACE_ARCHIVE_FORMAT && root.format !== LEGACY_SPACE_ARCHIVE_FORMAT)
+    || root.version !== SPACE_ARCHIVE_VERSION
+  ) {
     throw new Error("unsupported space archive format or version");
   }
   const meta = record(root.space, "space");

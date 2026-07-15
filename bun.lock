@@ -3,87 +3,87 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "homebrain",
+      "name": "homeagent",
       "devDependencies": {
         "@types/bun": "^1.3.0",
         "typescript": "^5.6.0",
       },
     },
     "packages/app": {
-      "name": "@homebrain/app",
+      "name": "@homeagent/app",
       "version": "0.0.0",
       "dependencies": {
-        "@homebrain/connectors": "workspace:*",
-        "@homebrain/core": "workspace:*",
-        "@homebrain/llm": "workspace:*",
-        "@homebrain/orchestrator": "workspace:*",
-        "@homebrain/shared": "workspace:*",
-        "@homebrain/web": "workspace:*",
+        "@homeagent/connectors": "workspace:*",
+        "@homeagent/core": "workspace:*",
+        "@homeagent/llm": "workspace:*",
+        "@homeagent/orchestrator": "workspace:*",
+        "@homeagent/shared": "workspace:*",
+        "@homeagent/web": "workspace:*",
         "hono": "^4.6.0",
       },
     },
     "packages/connectors": {
-      "name": "@homebrain/connectors",
+      "name": "@homeagent/connectors",
       "version": "0.0.0",
       "dependencies": {
-        "@homebrain/shared": "workspace:*",
+        "@homeagent/shared": "workspace:*",
         "@larksuiteoapi/node-sdk": "^1.71.1",
       },
     },
     "packages/core": {
-      "name": "@homebrain/core",
+      "name": "@homeagent/core",
       "version": "0.0.0",
       "dependencies": {
-        "@homebrain/llm": "workspace:*",
-        "@homebrain/shared": "workspace:*",
+        "@homeagent/llm": "workspace:*",
+        "@homeagent/shared": "workspace:*",
       },
     },
     "packages/llm": {
-      "name": "@homebrain/llm",
+      "name": "@homeagent/llm",
       "version": "0.0.0",
       "dependencies": {
-        "@homebrain/shared": "workspace:*",
+        "@homeagent/shared": "workspace:*",
       },
     },
     "packages/orchestrator": {
-      "name": "@homebrain/orchestrator",
+      "name": "@homeagent/orchestrator",
       "version": "0.0.0",
       "dependencies": {
-        "@homebrain/connectors": "workspace:*",
-        "@homebrain/core": "workspace:*",
-        "@homebrain/llm": "workspace:*",
-        "@homebrain/shared": "workspace:*",
+        "@homeagent/connectors": "workspace:*",
+        "@homeagent/core": "workspace:*",
+        "@homeagent/llm": "workspace:*",
+        "@homeagent/shared": "workspace:*",
       },
     },
     "packages/shared": {
-      "name": "@homebrain/shared",
+      "name": "@homeagent/shared",
       "version": "0.0.0",
     },
     "packages/web": {
-      "name": "@homebrain/web",
+      "name": "@homeagent/web",
       "version": "0.0.0",
       "dependencies": {
-        "@homebrain/core": "workspace:*",
-        "@homebrain/llm": "workspace:*",
-        "@homebrain/shared": "workspace:*",
+        "@homeagent/core": "workspace:*",
+        "@homeagent/llm": "workspace:*",
+        "@homeagent/shared": "workspace:*",
         "hono": "^4.6.0",
       },
     },
   },
   "packages": {
-    "@homebrain/app": ["@homebrain/app@workspace:packages/app"],
+    "@homeagent/app": ["@homeagent/app@workspace:packages/app"],
 
-    "@homebrain/connectors": ["@homebrain/connectors@workspace:packages/connectors"],
+    "@homeagent/connectors": ["@homeagent/connectors@workspace:packages/connectors"],
 
-    "@homebrain/core": ["@homebrain/core@workspace:packages/core"],
+    "@homeagent/core": ["@homeagent/core@workspace:packages/core"],
 
-    "@homebrain/llm": ["@homebrain/llm@workspace:packages/llm"],
+    "@homeagent/llm": ["@homeagent/llm@workspace:packages/llm"],
 
-    "@homebrain/orchestrator": ["@homebrain/orchestrator@workspace:packages/orchestrator"],
+    "@homeagent/orchestrator": ["@homeagent/orchestrator@workspace:packages/orchestrator"],
 
-    "@homebrain/shared": ["@homebrain/shared@workspace:packages/shared"],
+    "@homeagent/shared": ["@homeagent/shared@workspace:packages/shared"],
 
-    "@homebrain/web": ["@homebrain/web@workspace:packages/web"],
+    "@homeagent/web": ["@homeagent/web@workspace:packages/web"],
 
     "@larksuiteoapi/node-sdk": ["@larksuiteoapi/node-sdk@1.71.1", "", { "dependencies": { "axios": "^1.16.0", "lodash.identity": "^3.0.0", "lodash.merge": "^4.6.2", "lodash.pickby": "^4.6.0", "protobufjs": "^7.2.6", "qs": "^6.14.2", "ws": "^8.19.0" } }, "sha512-Z4cZmgWvwiE7tCHqGm+t7DKvbpNRRTH2HqVwcYiOMAwbjIytXSoQqWytsOVu3p+d0fIvrtyIPZok5HOV/VNxxw=="],
 

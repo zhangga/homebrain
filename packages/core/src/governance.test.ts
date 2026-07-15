@@ -2,9 +2,9 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Page, SpaceId } from "@homebrain/shared";
+import type { Page, SpaceId } from "@homeagent/shared";
 import { KnowledgeEngine } from "./engine.ts";
-import type { SpaceArchive } from "./governance.ts";
+import { parseSpaceArchive, type SpaceArchive } from "./governance.ts";
 
 const SPACE: SpaceId = "team/oc_governance";
 const dirs: string[] = [];
@@ -79,7 +79,7 @@ describe("space data governance", () => {
     const archive = await source.exportSpace(SPACE);
     expect(archive).toEqual(
       expect.objectContaining({
-        format: "homebrain.space",
+        format: "homeagent.space",
         version: 1,
         space: expect.objectContaining({ id: SPACE, name: "治理群", agentId: agent.id }),
         agent: expect.objectContaining({ id: agent.id, name: "治理助手" }),
@@ -106,6 +106,18 @@ describe("space data governance", () => {
     expect(roundTrip.retractions).toEqual(archive.retractions);
     expect(roundTrip.reminders).toEqual(archive.reminders);
     restored.close();
+  });
+
+  test("accepts a pre-rename archive and normalizes its format", async () => {
+    const engine = new KnowledgeEngine({ dataDir: tempDir("ha-legacy-archive-") });
+    engine.ensureSpace(SPACE, { chatId: "oc_governance" });
+    const archive = await engine.exportSpace(SPACE);
+    engine.close();
+
+    const parsed = parseSpaceArchive({ ...archive, format: "homebrain.space" });
+
+    expect(parsed.format).toBe("homeagent.space");
+    expect(parsed.space.id).toBe(SPACE);
   });
 
   test("deleting a space removes its knowledge and tasks but keeps shared agents", async () => {
@@ -186,7 +198,7 @@ describe("space data governance", () => {
       attachments: [],
     })) as SpaceArchive["raw"];
     await engine.restoreSpace({
-      format: "homebrain.space",
+      format: "homeagent.space",
       version: 1,
       exportedAt: now,
       space: { id: SPACE, createdAt: now - 50 * day },
@@ -228,7 +240,7 @@ describe("space data governance", () => {
     };
 
     await expect(engine.restoreSpace({
-      format: "homebrain.space",
+      format: "homeagent.space",
       version: 1,
       exportedAt: now,
       space: { id: SPACE, createdAt: now },
@@ -250,7 +262,7 @@ describe("space data governance", () => {
     const now = Date.now();
 
     await expect(engine.restoreSpace({
-      format: "homebrain.space",
+      format: "homeagent.space",
       version: 1,
       exportedAt: now,
       space: { id: "team/a/b", createdAt: now },
@@ -287,7 +299,7 @@ describe("space data governance", () => {
     const now = Date.now();
 
     await expect(engine.restoreSpace({
-      format: "homebrain.space",
+      format: "homeagent.space",
       version: 1,
       exportedAt: now,
       space: { id: SPACE, createdAt: now },
@@ -336,7 +348,7 @@ describe("space data governance", () => {
     const engine = new KnowledgeEngine({ dataDir: tempDir("hb-task-hour-") });
     const now = Date.now();
     await expect(engine.restoreSpace({
-      format: "homebrain.space",
+      format: "homeagent.space",
       version: 1,
       exportedAt: now,
       space: { id: SPACE, createdAt: now },
@@ -370,7 +382,7 @@ describe("space data governance", () => {
     const now = Date.now();
 
     await expect(engine.restoreSpace({
-      format: "homebrain.space",
+      format: "homeagent.space",
       version: 1,
       exportedAt: now,
       space: { id: SPACE, createdAt: now },

@@ -6,16 +6,16 @@ describe("macOS app build plan", () => {
   test("contains the immutable runtime layout", () => {
     const root = "/repo";
     const plan = createMacOSBuildPlan({ repoRoot: root, target: "arm64" });
-    expect(plan.appPath).toBe(join(root, "dist", "Homebrain.app"));
+    expect(plan.appPath).toBe(join(root, "dist", "HomeAgent.app"));
     expect(plan.outputs).toEqual([
-      "Homebrain.app/Contents/Info.plist",
-      "Homebrain.app/Contents/MacOS/homebrain",
-      "Homebrain.app/Contents/Resources/app/homebrain.js",
-      "Homebrain.app/Contents/Resources/bin/bun",
-      "Homebrain.app/Contents/Resources/bin/lark-cli",
-      "Homebrain.app/Contents/Resources/bin/attachment-extract",
-      "Homebrain.app/Contents/Resources/LICENSE",
-      "Homebrain.app/Contents/Resources/THIRD_PARTY_NOTICES.md",
+      "HomeAgent.app/Contents/Info.plist",
+      "HomeAgent.app/Contents/MacOS/homeagent",
+      "HomeAgent.app/Contents/Resources/app/homeagent.js",
+      "HomeAgent.app/Contents/Resources/bin/bun",
+      "HomeAgent.app/Contents/Resources/bin/lark-cli",
+      "HomeAgent.app/Contents/Resources/bin/attachment-extract",
+      "HomeAgent.app/Contents/Resources/LICENSE",
+      "HomeAgent.app/Contents/Resources/THIRD_PARTY_NOTICES.md",
     ]);
     expect(plan.larkAsset).toBe("lark-cli-1.0.69-darwin-arm64.tar.gz");
   });

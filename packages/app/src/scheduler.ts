@@ -8,8 +8,8 @@
  * The decision of *whether* to run a space is a pure function (shouldRunSpace)
  * so the policy is unit-tested without timers.
  */
-import { logger, config, type SpaceId } from "@homebrain/shared";
-import type { KnowledgeEngine } from "@homebrain/core";
+import { logger, config, type SpaceId } from "@homeagent/shared";
+import type { KnowledgeEngine } from "@homeagent/core";
 
 const log = logger.child("scheduler");
 

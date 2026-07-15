@@ -1,5 +1,5 @@
 /**
- * homebrain production entrypoint. Assembles the full system over one shared
+ * homeagent production entrypoint. Assembles the full system over one shared
  * KnowledgeEngine:
  *   - the feishu connector + orchestrator (inbound events -> knowledge + replies)
  *   - the read-only web backend (Bun.serve + Hono)
@@ -7,18 +7,18 @@
  * and shuts everything down gracefully on SIGINT/SIGTERM (propagating SIGTERM to
  * the lark-cli consumers — never kill -9).
  */
-import { assertSafeWebBinding, config, logger } from "@homebrain/shared";
+import { assertSafeWebBinding, config, logger } from "@homeagent/shared";
 import { accessSync, constants, statSync } from "node:fs";
 import { join } from "node:path";
-import { KnowledgeEngine } from "@homebrain/core";
-import { CodexProviderSetup, CodexReleaseInstaller } from "@homebrain/llm";
-import { FeishuConnector, LarkCliSetup } from "@homebrain/connectors";
+import { KnowledgeEngine } from "@homeagent/core";
+import { CodexProviderSetup, CodexReleaseInstaller } from "@homeagent/llm";
+import { FeishuConnector, LarkCliSetup } from "@homeagent/connectors";
 import {
   Orchestrator,
   createNativeExtractor,
   extractAttachmentText,
-} from "@homebrain/orchestrator";
-import { createWebApp } from "@homebrain/web";
+} from "@homeagent/orchestrator";
+import { createWebApp } from "@homeagent/web";
 import { Scheduler } from "./scheduler.ts";
 import { TaskScheduler } from "./task-scheduler.ts";
 import { ReminderScheduler } from "./reminder-scheduler.ts";
@@ -49,7 +49,7 @@ export function isUsableManagedExecutable(path: string): boolean {
 async function run(cfg: ReturnType<typeof config>, processLock: ProcessLock): Promise<void> {
   const runtimePaths = resolveRuntimePaths();
   const stopLogMaintenance = startServiceLogMaintenance(cfg.dataDir);
-  log.info("starting homebrain", {
+  log.info("starting homeagent", {
     dataDir: cfg.dataDir,
     model: cfg.model,
     webHost: cfg.webHost,
@@ -224,9 +224,9 @@ export function selectAppCommand(args: string[], bundled: boolean): AppCommand {
 export async function runEntrypoint(args = process.argv.slice(2)): Promise<number> {
   const paths = resolveRuntimePaths();
   if (paths.bundled) {
-    process.env.HOMEBRAIN_DATA_DIR ??= paths.dataDir;
-    process.env.HOMEBRAIN_LOG_DIR ??= paths.logDir;
-    process.env.HOMEBRAIN_CODEX_BIN ??= join(paths.dataDir, "bin", "codex");
+    process.env.HOMEAGENT_DATA_DIR ??= paths.dataDir;
+    process.env.HOMEAGENT_LOG_DIR ??= paths.logDir;
+    process.env.HOMEAGENT_CODEX_BIN ??= join(paths.dataDir, "bin", "codex");
   }
   const command = selectAppCommand(args, paths.bundled);
   if (command === "serve") {
@@ -234,13 +234,17 @@ export async function runEntrypoint(args = process.argv.slice(2)): Promise<numbe
     return 0;
   }
   if (command === "desktop") {
+    const service = createDefaultService();
     if (paths.bundled) {
       const { prepareLegacyDataMigration } = await import("./data-migration.ts");
-      const migration = await prepareLegacyDataMigration({ destinationDir: paths.dataDir });
+      const migration = await prepareLegacyDataMigration({
+        destinationDir: paths.dataDir,
+        beforeCopy: () => service.retireLegacyService(),
+      });
       if (migration === "exit") return 0;
     }
     const result = await launchDesktop({
-      service: createDefaultService(),
+      service,
       port: config().webPort,
     });
     return result.action === "failed" ? 1 : 0;
@@ -252,7 +256,7 @@ export async function runEntrypoint(args = process.argv.slice(2)): Promise<numbe
     const { runDoctorCli } = await import("./doctor.ts");
     return runDoctorCli(args.slice(1));
   }
-  process.stderr.write("Usage: homebrain <serve|desktop|service|doctor>\n");
+  process.stderr.write("Usage: homeagent <serve|desktop|service|doctor>\n");
   return 2;
 }
 

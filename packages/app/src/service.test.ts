@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync, mkdirSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -39,14 +39,14 @@ describe("macOS LaunchAgent service", () => {
       platform: "darwin",
       uid: 501,
       homeDir,
-      repoRoot: "/Users/test/Homebrain & Family",
+      repoRoot: "/Users/test/HomeAgent & Family",
       dataDir,
       bunPath: "/opt/homebrew/bin/bun",
       environment: {
         HOME: homeDir,
         PATH: "/opt/homebrew/bin:/usr/bin:/bin",
         ANTHROPIC_AUTH_TOKEN: "must-not-be-persisted",
-        HOMEBRAIN_WEB_ADMIN_TOKEN: "also-must-not-be-persisted",
+        HOMEAGENT_WEB_ADMIN_TOKEN: "also-must-not-be-persisted",
       },
       runner,
       logMaxBytes: 10,
@@ -64,13 +64,13 @@ describe("macOS LaunchAgent service", () => {
     expect(statSync(service.stdoutPath).mode & 0o777).toBe(0o600);
     expect(statSync(service.stderrPath).mode & 0o777).toBe(0o600);
     expect(readFileSync(`${service.stdoutPath}.1`, "utf8")).toBe("oversized-old-log".slice(-8));
-    expect(plist).toContain("<string>com.homebrain.agent</string>");
+    expect(plist).toContain("<string>com.homeagent.agent</string>");
     expect(plist).toContain("<key>RunAtLoad</key>\n  <true/>");
     expect(plist).toContain("<key>KeepAlive</key>\n  <true/>");
     expect(plist).toContain("/opt/homebrew/bin/bun");
     expect(plist).toContain("packages/app/src/main.ts");
-    expect(plist).toContain("/Users/test/Homebrain &amp; Family");
-    expect(plist).toContain("HOMEBRAIN_SERVICE_MANAGED");
+    expect(plist).toContain("/Users/test/HomeAgent &amp; Family");
+    expect(plist).toContain("HOMEAGENT_SERVICE_MANAGED");
     expect(plist).toContain("service.stdout.log");
     expect(plist).toContain("service.stderr.log");
     expect(plist).not.toContain("must-not-be-persisted");
@@ -78,7 +78,7 @@ describe("macOS LaunchAgent service", () => {
     expect(calls).toContainEqual([
       "/bin/launchctl",
       "enable",
-      "gui/501/com.homebrain.agent",
+      "gui/501/com.homeagent.agent",
     ]);
     expect(calls).toContainEqual([
       "/bin/launchctl",
@@ -91,19 +91,19 @@ describe("macOS LaunchAgent service", () => {
   test("bundled install runs the app executable and uses macOS Library data and logs", async () => {
     const homeDir = mkdtempSync(join(tmpdir(), "hb-service-bundle-home-"));
     dirs.push(homeDir);
-    const dataDir = join(homeDir, "Library", "Application Support", "Homebrain");
-    const logDir = join(homeDir, "Library", "Logs", "Homebrain");
+    const dataDir = join(homeDir, "Library", "Application Support", "HomeAgent");
+    const logDir = join(homeDir, "Library", "Logs", "HomeAgent");
     let loaded = false;
     const service = new LaunchAgentService({
       platform: "darwin",
       uid: 501,
       homeDir,
-      repoRoot: "/Applications/Homebrain.app",
+      repoRoot: "/Applications/HomeAgent.app",
       dataDir,
       logDir,
       bunPath: "/should/not/be/used/bun",
       bundled: true,
-      executablePath: "/Applications/Homebrain.app/Contents/MacOS/homebrain",
+      executablePath: "/Applications/HomeAgent.app/Contents/MacOS/homeagent",
       environment: { HOME: homeDir, PATH: "/usr/bin:/bin" },
       runner: async (argv) => {
         if (argv[1] === "print") {
@@ -119,15 +119,69 @@ describe("macOS LaunchAgent service", () => {
     await service.install();
     const plist = readFileSync(service.plistPath, "utf8");
 
-    expect(plist).toContain("<string>/Applications/Homebrain.app/Contents/MacOS/homebrain</string>");
+    expect(plist).toContain("<string>/Applications/HomeAgent.app/Contents/MacOS/homeagent</string>");
     expect(plist).toContain("<string>serve</string>");
     expect(plist).not.toContain("/should/not/be/used/bun");
     expect(plist).not.toContain("packages/app/src/main.ts");
     expect(plist).not.toContain("<key>WorkingDirectory</key>");
-    expect(plist).toContain("Library/Application Support/Homebrain");
+    expect(plist).toContain("Library/Application Support/HomeAgent");
     expect(service.stdoutPath).toBe(join(logDir, "service.stdout.log"));
     expect(service.stderrPath).toBe(join(logDir, "service.stderr.log"));
     expect(statSync(service.stdoutPath).mode & 0o777).toBe(0o600);
+  });
+
+  test("install unloads and removes the pre-rename LaunchAgent", async () => {
+    const homeDir = mkdtempSync(join(tmpdir(), "ha-service-legacy-home-"));
+    const dataDir = mkdtempSync(join(tmpdir(), "ha-service-legacy-data-"));
+    dirs.push(homeDir, dataDir);
+    const legacyPlist = join(
+      homeDir,
+      "Library",
+      "LaunchAgents",
+      "com.homebrain.agent.plist",
+    );
+    mkdirSync(join(homeDir, "Library", "LaunchAgents"), { recursive: true });
+    writeFileSync(legacyPlist, "legacy");
+    const calls: string[][] = [];
+    let newLoaded = false;
+    const service = new LaunchAgentService({
+      platform: "darwin",
+      uid: 501,
+      homeDir,
+      repoRoot: "/Applications/HomeAgent.app",
+      dataDir,
+      bunPath: "/opt/homebrew/bin/bun",
+      environment: { HOME: homeDir, PATH: "/usr/bin:/bin" },
+      runner: async (argv) => {
+        calls.push(argv);
+        const target = argv.at(-1);
+        if (argv[1] === "print" && target === "gui/501/com.homebrain.agent") {
+          return { code: 0, stdout: "state = running\npid = 3001\n", stderr: "" };
+        }
+        if (argv[1] === "print") {
+          return newLoaded
+            ? { code: 0, stdout: "state = running\npid = 3002\n", stderr: "" }
+            : { code: 113, stdout: "", stderr: "not found" };
+        }
+        if (argv[1] === "bootstrap") newLoaded = true;
+        return { code: 0, stdout: "", stderr: "" };
+      },
+    });
+
+    await service.install();
+
+    expect(existsSync(legacyPlist)).toBeFalse();
+    expect(calls).toContainEqual([
+      "/bin/launchctl",
+      "bootout",
+      "gui/501/com.homebrain.agent",
+    ]);
+    expect(calls).toContainEqual([
+      "/bin/launchctl",
+      "bootstrap",
+      "gui/501",
+      service.plistPath,
+    ]);
   });
 
   test("start, stop, restart, status, and uninstall use the correct launchctl lifecycle", async () => {
@@ -168,10 +222,10 @@ describe("macOS LaunchAgent service", () => {
     expect(await service.status()).toEqual(expect.objectContaining({ running: true, pid: 7301 }));
 
     expect(await service.restart()).toEqual(expect.objectContaining({ running: true, pid: 7302 }));
-    expect(calls).toContainEqual(["/bin/launchctl", "kill", "SIGTERM", "gui/501/com.homebrain.agent"]);
+    expect(calls).toContainEqual(["/bin/launchctl", "kill", "SIGTERM", "gui/501/com.homeagent.agent"]);
 
     expect(await service.stop()).toEqual(expect.objectContaining({ installed: true, loaded: false }));
-    expect(calls).toContainEqual(["/bin/launchctl", "bootout", "gui/501/com.homebrain.agent"]);
+    expect(calls).toContainEqual(["/bin/launchctl", "bootout", "gui/501/com.homeagent.agent"]);
 
     expect(await service.start()).toEqual(expect.objectContaining({ running: true }));
     expect(calls.filter((call) => call[1] === "bootstrap").length).toBe(2);
@@ -188,13 +242,14 @@ describe("macOS LaunchAgent service", () => {
       startedAt: 1_783_932_000_000,
       isProcessAlive: (pid) => pid === 4101,
     });
+    expect(first.path).toBe(join(dataDir, "run", "homebrain.lock"));
 
     expect(() => acquireProcessLock({
       dataDir,
       pid: 4102,
       startedAt: 1_783_932_001_000,
       isProcessAlive: (pid) => pid === 4101,
-    })).toThrow("homebrain is already running (PID 4101)");
+    })).toThrow("homeagent is already running (PID 4101)");
     first.release();
 
     const runDir = join(dataDir, "run");
@@ -246,7 +301,7 @@ describe("macOS LaunchAgent service", () => {
     refuseBootout = true;
 
     expect(service.uninstall()).rejects.toThrow("launchctl uninstall failed: operation not permitted");
-    expect(readFileSync(service.plistPath, "utf8")).toContain("com.homebrain.agent");
+    expect(readFileSync(service.plistPath, "utf8")).toContain("com.homeagent.agent");
   });
 
   test("status only associates a lock start time with the matching launchd PID", async () => {
@@ -303,7 +358,7 @@ describe("macOS LaunchAgent service", () => {
     });
 
     expect(service.install()).rejects.toThrow(
-      "homebrain service did not reach running state within 0ms (last exit 1)",
+      "homeagent service did not reach running state within 0ms (last exit 1)",
     );
   });
 

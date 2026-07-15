@@ -3,14 +3,14 @@
  * this module turns them into one deployment/readiness contract without
  * reaching into their private state.
  */
-import { config, type ComponentHealth, type SystemHealthSnapshot } from "@homebrain/shared";
-import type { ConnectorHealth } from "@homebrain/connectors";
-import type { KnowledgeEngine } from "@homebrain/core";
+import { config, type ComponentHealth, type SystemHealthSnapshot } from "@homeagent/shared";
+import type { ConnectorHealth } from "@homeagent/connectors";
+import type { KnowledgeEngine } from "@homeagent/core";
 import {
   detectProviders as detectLocalProviders,
   isCliProvider,
   type DetectedProvider,
-} from "@homebrain/llm";
+} from "@homeagent/llm";
 import type { RuntimeLoopHealth } from "./scheduler.ts";
 import type { RuntimeServiceStatus } from "./service.ts";
 

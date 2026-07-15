@@ -1,10 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import type { InboundMessage } from "@homebrain/connectors";
+import type { InboundMessage } from "@homeagent/connectors";
 import { attribute } from "./attribution.ts";
 import { gate } from "./gateway.ts";
 import { prefilterChitchat } from "./intent.ts";
 import { formatAnswer } from "./format.ts";
-import type { AskResult } from "@homebrain/shared";
+import type { AskResult } from "@homeagent/shared";
 
 function msg(over: Partial<InboundMessage>): InboundMessage {
   return {

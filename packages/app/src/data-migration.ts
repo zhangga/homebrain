@@ -90,13 +90,16 @@ const defaultPromptRunner: DataMigrationPromptRunner = async (argv) => {
 
 /** Ask before copying a legacy source install into the packaged-app data root. */
 export async function prepareLegacyDataMigration(
-  options: DataMigrationOptions & { runner?: DataMigrationPromptRunner },
+  options: DataMigrationOptions & {
+    runner?: DataMigrationPromptRunner;
+    beforeCopy?: () => void | Promise<void>;
+  },
 ): Promise<DataMigrationPromptResult> {
   const plan = planDataMigration(options);
   if (plan.state !== "needs-confirmation") return "continue";
   const script = [
-    'display dialog "检测到旧版 Homebrain 数据。是否复制到新版数据目录？旧数据会保留不变。"',
-    'with title "迁移 Homebrain 数据"',
+    'display dialog "检测到旧版 Homebrain 数据。是否复制到 HomeAgent 数据目录？旧数据会保留不变。"',
+    'with title "迁移到 HomeAgent"',
     'buttons {"退出", "迁移"}',
     'default button "迁移" cancel button "退出"',
     "with icon note",
@@ -112,6 +115,7 @@ export async function prepareLegacyDataMigration(
     return "exit";
   }
   if (prompt.code !== 0 || !prompt.stdout.includes("button returned:迁移")) return "exit";
+  await options.beforeCopy?.();
   confirmDataMigration(options);
   return "continue";
 }
@@ -161,11 +165,28 @@ export const nodeMigrationFileSystem: MigrationFileSystem = {
 
 export function planDataMigration(options: DataMigrationOptions): DataMigrationPlan {
   const fs = options.fileSystem ?? nodeMigrationFileSystem;
-  const source = resolve(
-    options.sourceDir ??
-      join(options.homeDir ?? homedir(), "Applications", "homebrain", "data"),
+  const home = options.homeDir ?? homedir();
+  const previousPackagedSource = resolve(
+    home,
+    "Library",
+    "Application Support",
+    "Homebrain",
   );
+  const previousSourceInstall = resolve(home, "Applications", "homebrain", "data");
+  let source = resolve(options.sourceDir ?? previousPackagedSource);
   const destination = resolve(options.destinationDir);
+
+  try {
+    if (
+      options.sourceDir === undefined
+      && !fs.exists(previousPackagedSource)
+      && fs.exists(previousSourceInstall)
+    ) {
+      source = previousSourceInstall;
+    }
+  } catch {
+    return { state: "rejected", source, destination, reason: "filesystem-error" };
+  }
 
   if (pathsOverlap(source, destination)) {
     return { state: "rejected", source, destination, reason: "paths-overlap" };
@@ -227,7 +248,7 @@ export function confirmDataMigration(options: DataMigrationOptions): DataMigrati
   fs.makeDirectory(destinationParent, true);
   try {
     copyDirectory(plan.source, staging, fs);
-    const recordPath = join(staging, "migration-v1.json");
+    const recordPath = join(staging, "migration-v2.json");
     const record = {
       source: plan.source,
       destination: plan.destination,
@@ -252,7 +273,7 @@ export function confirmDataMigration(options: DataMigrationOptions): DataMigrati
       state: "completed",
       source: plan.source,
       destination: plan.destination,
-      recordPath: join(plan.destination, "migration-v1.json"),
+      recordPath: join(plan.destination, "migration-v2.json"),
     };
   } catch (error) {
     if (fs.exists(staging)) fs.removeTree(staging);

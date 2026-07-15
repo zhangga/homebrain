@@ -6,7 +6,7 @@
  * on these types, never on lark-cli — so the whole feishu surface is swappable
  * (plan R6: lark-cli breaking changes are absorbed in the feishu connector).
  */
-import type { Attachment } from "@homebrain/shared";
+import type { Attachment } from "@homeagent/shared";
 
 export interface DownloadedAttachment {
   attachment: Attachment;

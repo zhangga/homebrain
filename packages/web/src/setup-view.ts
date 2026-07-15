@@ -1,8 +1,8 @@
 import { html, raw } from "hono/html";
 import type { HtmlEscapedString } from "hono/utils/html";
-import type { LarkProvisioningSession, LarkSetupStatus } from "@homebrain/shared";
-import type { SpaceMeta } from "@homebrain/core";
-import type { CodexLoginSession, DetectedProvider } from "@homebrain/llm";
+import type { LarkProvisioningSession, LarkSetupStatus } from "@homeagent/shared";
+import type { SpaceMeta } from "@homeagent/core";
+import type { CodexLoginSession, DetectedProvider } from "@homeagent/llm";
 import type { FeishuRuntimeStatus } from "./integrations.ts";
 import type { SetupSnapshot, SetupStep } from "./setup.ts";
 import type { FeishuExternalSharingStatus } from "./external-sharing.ts";
@@ -141,7 +141,7 @@ export function setupLayout(body: HtmlEscapedString | Promise<HtmlEscapedString>
     <head>
       <meta charset="utf-8" />
       <meta name="viewport" content="width=device-width,initial-scale=1" />
-      <title>开始使用 · homebrain</title>
+      <title>开始使用 · homeagent</title>
       <style>${raw(SETUP_STYLE)}</style>
     </head>
     <body>${body}</body>
@@ -187,7 +187,7 @@ function aiStep(input: SetupViewInput): HtmlEscapedString | Promise<HtmlEscapedS
         ? "正在确认 ChatGPT 登录…"
         : "请在浏览器中确认登录";
     return html`<div class="eyebrow">01 · AI</div><h1 class="setup-title">连接你的 ChatGPT</h1>
-      <p class="lede">Homebrain 正在安全地完成本机连接。登录授权由 OpenAI 页面处理，Homebrain 不会接触你的密码。</p>
+      <p class="lede">HomeAgent 正在安全地完成本机连接。登录授权由 OpenAI 页面处理，HomeAgent 不会接触你的密码。</p>
       <div class="waiting"><strong>${title}</strong>
         <span class="muted">${input.codex.installing ? "正在下载并校验 OpenAI 官方 Codex" : input.codex.login.message}</span>
         ${input.codex.login.userCode ? html`<div class="command">${input.codex.login.userCode}</div>` : ""}
@@ -204,16 +204,16 @@ function aiStep(input: SetupViewInput): HtmlEscapedString | Promise<HtmlEscapedS
       ? html`<details><summary>Codex 可能已损坏或需要重新安装</summary>
           <form method="post" action="/setup/ai/codex/install">
             <label class="consent"><input type="checkbox" name="consent" value="on" required />
-              <span>允许重新下载并校验 OpenAI 官方 Codex，替换 Homebrain 专用目录中的现有文件。</span></label>
+              <span>允许重新下载并校验 OpenAI 官方 Codex，替换 HomeAgent 专用目录中的现有文件。</span></label>
             <div class="actions"><button class="secondary-action">重新安装 Codex</button></div>
           </form></details>`
       : "";
     return html`<div class="eyebrow">01 · AI</div><h1 class="setup-title">先连接你的 ChatGPT</h1>
-      <p class="lede">Homebrain 会使用你自己的 ChatGPT 账号来理解消息和整理知识。登录在 OpenAI 官方页面完成，凭据保存在 macOS 钥匙串。</p>
+      <p class="lede">HomeAgent 会使用你自己的 ChatGPT 账号来理解消息和整理知识。登录在 OpenAI 官方页面完成，凭据保存在 macOS 钥匙串。</p>
       ${error ? html`<div class="flash">${error}</div>` : ""}
       <form method="post" action="${needsInstall ? "/setup/ai/codex/install" : "/setup/ai/codex/login"}">
         ${needsInstall ? html`<label class="consent"><input type="checkbox" name="consent" value="on" required />
-          <span>允许 Homebrain 下载并校验 OpenAI 官方 Codex，将它安装在本机 Homebrain 专用目录。不会修改系统级软件。</span></label>` : ""}
+          <span>允许 HomeAgent 下载并校验 OpenAI 官方 Codex，将它安装在本机 HomeAgent 专用目录。不会修改系统级软件。</span></label>` : ""}
         <div class="actions"><button class="primary-action">${needsInstall ? "安装并连接 ChatGPT" : "连接 ChatGPT"}</button></div>
       </form>
       ${repair}
@@ -221,7 +221,7 @@ function aiStep(input: SetupViewInput): HtmlEscapedString | Promise<HtmlEscapedS
   }
   if (available.length === 0) {
     return html`<div class="eyebrow">01 · AI</div><h1 class="setup-title">先给记忆找一个会思考的大脑</h1>
-      <p class="lede">Homebrain 使用你自己的 AI 账号。安装并登录任意一个，然后回来重新检测。</p>
+      <p class="lede">HomeAgent 使用你自己的 AI 账号。安装并登录任意一个，然后回来重新检测。</p>
       <div class="choice-grid">
         <div class="choice"><strong>Codex</strong><small>适合已有 ChatGPT 账号</small><div class="command">npm install -g @openai/codex && codex login</div></div>
         <div class="choice"><strong>Claude Code</strong><small>适合已有 Claude 账号</small><div class="command">npm install -g @anthropic-ai/claude-code && claude auth login</div></div>
@@ -289,7 +289,7 @@ function feishuStep(input: SetupViewInput): HtmlEscapedString | Promise<HtmlEsca
         <div class="actions"><button class="primary-action">一键创建飞书机器人</button></div>
       </form>`;
   return html`<div class="eyebrow">02 · Feishu</div><h1 class="setup-title">让记忆住进飞书</h1>
-    <p class="lede">Homebrain 会通过飞书官方流程创建专属机器人。首次确认会一次申请消息收发、群消息读取、附件与表情、群信息，以及接收消息和机器人入群事件。企业管理员可能需要在这次创建确认中批准“接收群内全部消息”敏感权限；创建完成后不需要进入开放平台逐项配置。凭据由系统钥匙串保管。</p>
+    <p class="lede">HomeAgent 会通过飞书官方流程创建专属机器人。首次确认会一次申请消息收发、群消息读取、附件与表情、群信息，以及接收消息和机器人入群事件。企业管理员可能需要在这次创建确认中批准“接收群内全部消息”敏感权限；创建完成后不需要进入开放平台逐项配置。凭据由系统钥匙串保管。</p>
     ${failure}${primary}
     <details><summary>手动输入 App ID</summary>
       <p class="muted">仅用于接入已经存在的企业自建应用。请先确认应用已开通所需权限，并核对消息与机器人入群事件订阅。</p>
@@ -312,13 +312,13 @@ function consumerLabel(key: string): string {
 function externalSharingStep(input: SetupViewInput): HtmlEscapedString | Promise<HtmlEscapedString> {
   if (input.externalSharing.state === "awaiting_external_message") {
     return html`<div class="eyebrow">03 · External sharing</div><h1 class="setup-title">用外部群消息验证</h1>
-      <p class="lede">发布和管理员审批完成后，把 ${input.lark.botName ?? "Homebrain 机器人"} 加入一个外部群，发送“@${input.lark.botName ?? "机器人"} 对外共享测试”。Homebrain 只会用开始验证之后收到的真实外部群消息确认结果。</p>
+      <p class="lede">发布和管理员审批完成后，把 ${input.lark.botName ?? "HomeAgent 机器人"} 加入一个外部群，发送“@${input.lark.botName ?? "机器人"} 对外共享测试”。HomeAgent 只会用开始验证之后收到的真实外部群消息确认结果。</p>
       <div class="waiting"><strong>正在等待外部群消息</strong><span class="muted">如果机器人刚刚创建，请先完成下一步安全重启，让消息监听接管新应用。</span></div>
       <form method="get" action="/setup" class="actions"><button class="primary-action">我已发送，重新检查</button></form>
       ${input.externalSharing.consoleUrl ? html`<div class="actions"><a class="button secondary-action" href="${input.externalSharing.consoleUrl}" target="_blank" rel="noreferrer">重新打开飞书应用</a></div>` : ""}`;
   }
   return html`<div class="eyebrow">03 · External sharing</div><h1 class="setup-title">发布对外共享版本</h1>
-    <p class="lede">飞书暂未开放用 API 自动开启对外共享。Homebrain 已定位到当前应用；请在飞书完成一次版本发布，随后会自动验证结果。</p>
+    <p class="lede">飞书暂未开放用 API 自动开启对外共享。HomeAgent 已定位到当前应用；请在飞书完成一次版本发布，随后会自动验证结果。</p>
     <div class="status-list">
       <div class="status-row"><span>1. 创建版本</span><span>应用发布 → 版本管理与发布 → 创建版本</span></div>
       <div class="status-row"><span>2. 开启外部群</span><span>允许机器人被添加到外部群中使用</span></div>
@@ -343,12 +343,12 @@ function activateStep(input: SetupViewInput): HtmlEscapedString | Promise<HtmlEs
     : html`<div class="status-row"><span>飞书消息连接</span><span>等待服务重启</span></div>`;
   const failureNotice = html`<div class="waiting">
     <strong>消息监听异常</strong>
-    <span class="muted">可能与 Homebrain 服务进程、网络连接、飞书应用权限或企业审批有关。请重新检查连接，或前往<a href="/health">运行状态</a>查看安全诊断详情。</span>
+    <span class="muted">可能与 HomeAgent 服务进程、网络连接、飞书应用权限或企业审批有关。请重新检查连接，或前往<a href="/health">运行状态</a>查看安全诊断详情。</span>
   </div>`;
   const action = input.restartRequired
     ? input.restartable
       ? html`<form method="post" action="/setup/restart" class="actions"><button class="primary-action">激活消息监听</button></form>`
-      : html`<div class="waiting"><strong>需要重启 Homebrain</strong><span class="muted">请在启动它的终端按 Ctrl+C，然后重新运行 bun start。</span></div>`
+      : html`<div class="waiting"><strong>需要重启 HomeAgent</strong><span class="muted">请在启动它的终端按 Ctrl+C，然后重新运行 bun start。</span></div>`
     : failed
       ? input.restartable
         ? html`${failureNotice}<form method="post" action="/setup/restart" class="actions"><button class="primary-action">重新检查连接</button></form>`
@@ -358,13 +358,13 @@ function activateStep(input: SetupViewInput): HtmlEscapedString | Promise<HtmlEs
   return html`<div class="eyebrow">04 · Activate</div><h1 class="setup-title">让机器人开始接收消息</h1>
     <p class="lede">机器人身份已经确认。最后重启一次后台服务，让新的消息通道正式接管。</p>
     <div class="status-list">${rows}</div>${action}
-    <details><summary>如果重启后仍未就绪</summary><p class="muted">请先在运行状态确认服务进程和消息消费者状态，再检查网络连接、飞书应用权限以及企业是否有待审批授权。Homebrain 会保留当前进度，不必重新创建机器人。</p></details>`;
+    <details><summary>如果重启后仍未就绪</summary><p class="muted">请先在运行状态确认服务进程和消息消费者状态，再检查网络连接、飞书应用权限以及企业是否有待审批授权。HomeAgent 会保留当前进度，不必重新创建机器人。</p></details>`;
 }
 
 function inviteStep(input: SetupViewInput): HtmlEscapedString | Promise<HtmlEscapedString> {
   return html`<div class="eyebrow">05 · Invite</div><h1 class="setup-title">发送第一条共同记忆</h1>
-    <p class="lede">在飞书里搜索机器人，把它加入一个群聊，然后发送“@机器人 记住：这是第一条测试消息”。@ 能确保最小权限的新应用也收到这条验证消息；Homebrain 收到后会自动建立知识空间。</p>
-    <div class="bot-token"><span>●</span><strong>${input.lark.botName ?? "Homebrain 机器人"}</strong></div>
+    <p class="lede">在飞书里搜索机器人，把它加入一个群聊，然后发送“@机器人 记住：这是第一条测试消息”。@ 能确保最小权限的新应用也收到这条验证消息；HomeAgent 收到后会自动建立知识空间。</p>
+    <div class="bot-token"><span>●</span><strong>${input.lark.botName ?? "HomeAgent 机器人"}</strong></div>
     ${input.groups.length ? html`<p class="muted">已发现群聊，正在等待第一条消息。</p>` : ""}
     <form method="get" action="/setup" class="actions"><button class="primary-action">我已发送，重新检查</button></form>
     <form method="post" action="/setup/finish" class="actions"><button class="secondary-action">暂时只在私聊中使用</button></form>`;
@@ -372,8 +372,8 @@ function inviteStep(input: SetupViewInput): HtmlEscapedString | Promise<HtmlEsca
 
 function doneStep(input: SetupViewInput): HtmlEscapedString | Promise<HtmlEscapedString> {
   return html`<div class="eyebrow">06 · Ready</div><h1 class="setup-title">一切就绪，记忆开始生长</h1>
-    <p class="lede">${input.groups.length ? `已发现 ${input.groups.length} 个群聊空间。` : "机器人已连接。"} 接下来只要在飞书里分享、提问或发送资料，Homebrain 会在后台持续整理。</p>
-    <form method="post" action="/setup/finish" class="actions"><button class="primary-action">进入 Homebrain</button></form>`;
+    <p class="lede">${input.groups.length ? `已发现 ${input.groups.length} 个群聊空间。` : "机器人已连接。"} 接下来只要在飞书里分享、提问或发送资料，HomeAgent 会在后台持续整理。</p>
+    <form method="post" action="/setup/finish" class="actions"><button class="primary-action">进入 HomeAgent</button></form>`;
 }
 
 export function setupView(input: SetupViewInput): HtmlEscapedString | Promise<HtmlEscapedString> {
@@ -384,14 +384,14 @@ export function setupView(input: SetupViewInput): HtmlEscapedString | Promise<Ht
           : input.snapshot.current === "invite" ? inviteStep(input)
             : doneStep(input);
   return html`<div class="shell">
-    <a class="brand" href="/"><span class="brand-mark">⌁</span>homebrain</a>
+    <a class="brand" href="/"><span class="brand-mark">⌁</span>homeagent</a>
     ${progress(input.snapshot)}
     <main class="stage">${input.flashMsg ? html`<div class="flash">${input.flashMsg}</div>` : ""}${content}</main>
   </div>`;
 }
 
 export function restartingView(instanceId: string): HtmlEscapedString | Promise<HtmlEscapedString> {
-  return setupLayout(html`<div class="shell"><a class="brand" href="/"><span class="brand-mark">⌁</span>homebrain</a>
+  return setupLayout(html`<div class="shell"><a class="brand" href="/"><span class="brand-mark">⌁</span>homeagent</a>
     <aside class="progress"><div class="progress-kicker">Applying connection</div></aside>
     <main class="stage"><div class="eyebrow">04 · Activate</div><h1 class="setup-title">正在唤醒机器人</h1>
       <p class="lede">服务会短暂离线，然后自动回到这里。请不要关闭这个页面。</p><div id="restart-status" data-instance="${instanceId}" class="waiting"><strong>重新连接中…</strong></div>

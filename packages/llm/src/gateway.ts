@@ -11,7 +11,7 @@
  *     BLOCK TYPE, never by matching the name we sent.
  *   - There is no embeddings endpoint; the knowledge layer is retrieval-by-LLM.
  */
-import { config, logger, type Logger } from "@homebrain/shared";
+import { config, logger, type Logger } from "@homeagent/shared";
 import { estimateCost } from "./pricing.ts";
 import {
   BudgetExceededError,

@@ -16,7 +16,7 @@ import {
 } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
-import { isSpaceId, type SpaceId } from "@homebrain/shared";
+import { isSpaceId, type SpaceId } from "@homeagent/shared";
 
 export type ReminderStatus = "scheduled" | "completed" | "cancelled";
 
@@ -107,7 +107,7 @@ export class ReminderStore {
         reminders.set(id, { ...reminder });
       }
     } catch {
-      // A corrupt optional config file must not prevent Homebrain from starting.
+      // A corrupt optional config file must not prevent HomeAgent from starting.
     }
     return reminders;
   }

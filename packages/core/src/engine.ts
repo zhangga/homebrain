@@ -17,14 +17,14 @@ import type {
   PageRef,
   RawEntry,
   SpaceId,
-} from "@homebrain/shared";
-import { Serializer, canonicalModelId, config, logger } from "@homebrain/shared";
+} from "@homeagent/shared";
+import { Serializer, canonicalModelId, config, logger } from "@homeagent/shared";
 import {
   isCliProvider,
   isCodexReasoningEffortSupported,
   runProvider as runLocalProvider,
   type ProviderId,
-} from "@homebrain/llm";
+} from "@homeagent/llm";
 import type { Knowledge } from "./knowledge.ts";
 import {
   SPACE_ARCHIVE_FORMAT,

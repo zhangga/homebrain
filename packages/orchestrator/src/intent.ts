@@ -10,8 +10,8 @@
  * The classifier is injected an LlmClient (from core) so it is unit-testable
  * offline with a fake.
  */
-import { config } from "@homebrain/shared";
-import type { LlmClient } from "@homebrain/core";
+import { config } from "@homeagent/shared";
+import type { LlmClient } from "@homeagent/core";
 
 export type Intent = "question" | "remember" | "command" | "chitchat";
 

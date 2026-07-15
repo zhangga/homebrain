@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { markdownToPage, pageToMarkdown } from "./markdown.ts";
-import type { Page } from "@homebrain/shared";
+import type { Page } from "@homeagent/shared";
 
 function samplePage(overrides: Partial<Page> = {}): Page {
   return {

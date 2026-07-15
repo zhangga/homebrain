@@ -1,5 +1,6 @@
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
+import { brandedEnv } from "@homeagent/shared";
 
 export interface RuntimePaths {
   bundled: boolean;
@@ -20,7 +21,7 @@ export function resolveRuntimePaths(input: {
   const execPath = input.execPath ?? process.execPath;
   const home = input.homeDir ?? homedir();
   const env = input.env ?? process.env;
-  const explicitAppRoot = env.HOMEBRAIN_BUNDLED_APP_ROOT?.trim();
+  const explicitAppRoot = brandedEnv(env, "BUNDLED_APP_ROOT")?.trim();
   const marker = ".app/Contents/MacOS/";
   const markerAt = execPath.indexOf(marker);
   const bundled = Boolean(explicitAppRoot) || markerAt >= 0;
@@ -31,10 +32,14 @@ export function resolveRuntimePaths(input: {
     ? join(appRoot, "Contents", "Resources")
     : join(appRoot, "packages", "orchestrator", "src");
   const dataDir = resolve(
-    env.HOMEBRAIN_DATA_DIR ??
+    brandedEnv(env, "DATA_DIR") ??
       (bundled
-        ? join(home, "Library", "Application Support", "Homebrain")
+        ? join(home, "Library", "Application Support", "HomeAgent")
         : join(appRoot, "data")),
+  );
+  const logDir = resolve(
+    brandedEnv(env, "LOG_DIR")
+      ?? (bundled ? join(home, "Library", "Logs", "HomeAgent") : join(dataDir, "logs")),
   );
 
   return {
@@ -42,9 +47,9 @@ export function resolveRuntimePaths(input: {
     appRoot,
     resourceDir,
     dataDir,
-    logDir: bundled ? join(home, "Library", "Logs", "Homebrain") : join(dataDir, "logs"),
+    logDir,
     larkBin:
-      env.HOMEBRAIN_LARK_BIN ??
+      brandedEnv(env, "LARK_BIN") ??
       (bundled ? join(resourceDir, "bin", "lark-cli") : "lark-cli"),
     attachmentHelper: bundled
       ? join(resourceDir, "bin", "attachment-extract")

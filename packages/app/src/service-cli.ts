@@ -1,4 +1,5 @@
 import { homedir } from "node:os";
+import { brandedEnv } from "@homeagent/shared";
 import { LaunchAgentService, type ServiceStatus } from "./service.ts";
 import { resolveRuntimePaths, type RuntimePaths } from "./runtime-paths.ts";
 
@@ -79,7 +80,7 @@ export async function runServiceCli(args: string[], options: ServiceCliOptions):
     else write(formatStatus(status));
     return command === "status" && !status.running ? 1 : 0;
   } catch (err) {
-    writeError(`homebrain service: ${err instanceof Error ? err.message : String(err)}`);
+    writeError(`homeagent service: ${err instanceof Error ? err.message : String(err)}`);
     return 1;
   }
 }
@@ -104,9 +105,9 @@ export function createDefaultService(options: DefaultServiceOptions = {}): Launc
     logDir: runtimePaths.logDir,
     bunPath: Bun.which("bun") ?? execPath,
     bundled: runtimePaths.bundled,
-    executablePath: environment.HOMEBRAIN_LAUNCHER_PATH
+    executablePath: brandedEnv(environment, "LAUNCHER_PATH")
       ?? (runtimePaths.bundled
-        ? `${runtimePaths.appRoot}/Contents/MacOS/homebrain`
+        ? `${runtimePaths.appRoot}/Contents/MacOS/homeagent`
         : execPath),
     environment,
   });

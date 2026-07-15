@@ -2,8 +2,8 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { type SpaceId } from "@homebrain/shared";
-import { KnowledgeEngine, type Task } from "@homebrain/core";
+import { type SpaceId } from "@homeagent/shared";
+import { KnowledgeEngine, type Task } from "@homeagent/core";
 import { shouldRunTask, TaskScheduler } from "./task-scheduler.ts";
 
 const SPACE: SpaceId = "team/oc_tsched";

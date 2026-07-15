@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { LarkProvisioningSession, LarkSetupStatus } from "@homebrain/shared";
+import type { LarkProvisioningSession, LarkSetupStatus } from "@homeagent/shared";
 import { restartingView, setupLayout, setupView } from "./setup-view.ts";
 import type { SetupSnapshot, SetupStep } from "./setup.ts";
 import type { FeishuExternalSharingStatus } from "./external-sharing.ts";
@@ -116,7 +116,7 @@ describe("guided setup view", () => {
       },
     });
     expect(repair).toContain("重新安装 Codex");
-    expect(repair).toContain("替换 Homebrain 专用目录");
+    expect(repair).toContain("替换 HomeAgent 专用目录");
   });
 
   test("Feishu step makes one-click provisioning primary and manual credentials secondary", () => {

@@ -2,8 +2,8 @@ import { constants, accessSync, existsSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { createConnection } from "node:net";
-import { detectProviders } from "@homebrain/llm";
-import { readSettings } from "@homebrain/shared";
+import { detectProviders } from "@homeagent/llm";
+import { brandedEnv, readSettings } from "@homeagent/shared";
 import { resolveRuntimePaths, type RuntimePaths } from "./runtime-paths.ts";
 
 export type DoctorStatus = "pass" | "action" | "fail";
@@ -53,7 +53,7 @@ export interface DoctorOptions {
 
 const MESSAGES: Record<DoctorCheckId, Record<DoctorStatus, string>> = {
   macos: {
-    pass: "当前系统支持 Homebrain 的 macOS 后台服务",
+    pass: "当前系统支持 HomeAgent 的 macOS 后台服务",
     action: "请确认当前设备满足 macOS 系统要求",
     fail: "当前系统不是受支持的 macOS",
   },
@@ -73,14 +73,14 @@ const MESSAGES: Record<DoctorCheckId, Record<DoctorStatus, string>> = {
     fail: "AI 提供方检查失败或超时",
   },
   port: {
-    pass: "本地管理端口可用或已由 Homebrain 使用",
-    action: "Homebrain 服务尚未开始监听本地管理端口",
+    pass: "本地管理端口可用或已由 HomeAgent 使用",
+    action: "HomeAgent 服务尚未开始监听本地管理端口",
     fail: "本地管理端口被其他应用占用或检查超时",
   },
   "launch-agent": {
-    pass: "Homebrain 后台服务已经安装并加载",
-    action: "需要启动 Homebrain 后台服务",
-    fail: "Homebrain 后台服务状态检查失败或超时",
+    pass: "HomeAgent 后台服务已经安装并加载",
+    action: "需要启动 HomeAgent 后台服务",
+    fail: "HomeAgent 后台服务状态检查失败或超时",
   },
   "feishu-runtime": {
     pass: "飞书机器人事件监听已经就绪",
@@ -155,7 +155,7 @@ export async function runDoctorCli(input: string[] | {
   if (argv.includes("--json")) {
     write(`${JSON.stringify(report, null, 2)}\n`);
   } else {
-    write(`Homebrain 安装检查：${report.status}\n`);
+    write(`HomeAgent 安装检查：${report.status}\n`);
     for (const check of report.checks) {
       write(`[${check.status}] ${check.message}\n`);
     }
@@ -168,7 +168,7 @@ function configuredPort(paths: RuntimePaths): number {
   const persisted = readSettings(paths.dataDir).webPort;
   const persistedPort = validPort(persisted);
   if (persistedPort !== undefined) return persistedPort;
-  const fromEnvironment = Number(process.env.HOMEBRAIN_WEB_PORT);
+  const fromEnvironment = Number(brandedEnv(process.env, "WEB_PORT"));
   return validPort(fromEnvironment) ?? 3000;
 }
 
@@ -242,13 +242,13 @@ function defaultProbes(input: {
         input.homeDir,
         "Library",
         "LaunchAgents",
-        "com.homebrain.agent.plist",
+        "com.homeagent.agent.plist",
       );
       if (!existsSync(plist)) return "action";
       if (input.platform !== "darwin") return "fail";
       const uid = process.getuid?.() ?? 0;
       return (await commandExitsZero(
-        ["/bin/launchctl", "print", `gui/${uid}/com.homebrain.agent`],
+        ["/bin/launchctl", "print", `gui/${uid}/com.homeagent.agent`],
         input.timeoutMs,
       ))
         ? "pass"
@@ -324,7 +324,7 @@ if (import.meta.main) {
       process.exitCode = exitCode;
     },
     () => {
-      process.stderr.write("Homebrain 安装检查无法完成\n");
+      process.stderr.write("HomeAgent 安装检查无法完成\n");
       process.exitCode = 1;
     },
   );

@@ -2,22 +2,22 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { resetConfig } from "@homebrain/shared";
+import { resetConfig } from "@homeagent/shared";
 import { checkBudget, recordCall, spentToday, localDay } from "./budget.ts";
 
 let dir: string;
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "hb-budget-"));
-  process.env.HOMEBRAIN_DATA_DIR = dir;
-  process.env.HOMEBRAIN_DAILY_BUDGET_USD = "5";
+  process.env.HOMEAGENT_DATA_DIR = dir;
+  process.env.HOMEAGENT_DAILY_BUDGET_USD = "5";
   resetConfig();
 });
 
 afterEach(() => {
   rmSync(dir, { recursive: true, force: true });
-  delete process.env.HOMEBRAIN_DATA_DIR;
-  delete process.env.HOMEBRAIN_DAILY_BUDGET_USD;
+  delete process.env.HOMEAGENT_DATA_DIR;
+  delete process.env.HOMEAGENT_DAILY_BUDGET_USD;
   resetConfig();
 });
 
@@ -63,7 +63,7 @@ describe("budget", () => {
   });
 
   test("tolerates malformed log lines", async () => {
-    const { config } = require("@homebrain/shared");
+    const { config } = require("@homeagent/shared");
     const logs = join(config().dataDir, "logs");
     mkdirSync(logs, { recursive: true });
     await Bun.write(join(logs, `llm-${localDay()}.jsonl`), "not json\n{bad}\n");

@@ -4,7 +4,7 @@
 
 **Goal:** Make the Integrations page create and connect a Feishu bot through the official one-click launcher, with the standard bot permissions and event subscriptions preconfigured, so users do not manually create an app in the Feishu developer console.
 
-**Architecture:** Keep `lark-cli config init --new` as the security and provisioning boundary. Current bundled `lark-cli` 1.0.69 already invokes Feishu's official one-click app-creation flow, stores credentials in the system keychain, and provisions the standard agent permission/event preset. Reuse the existing bounded `LarkCliSetup` session from both onboarding and Integrations; add no second credential store and never return App Secret through Homebrain. The management UI becomes a restrained integration console: one active-bot row, one primary create/replace action, then connected groups.
+**Architecture:** Keep `lark-cli config init --new` as the security and provisioning boundary. Current bundled `lark-cli` 1.0.69 already invokes Feishu's official one-click app-creation flow, stores credentials in the system keychain, and provisions the standard agent permission/event preset. Reuse the existing bounded `LarkCliSetup` session from both onboarding and Integrations; add no second credential store and never return App Secret through HomeAgent. The management UI becomes a restrained integration console: one active-bot row, one primary create/replace action, then connected groups.
 
 **Tech Stack:** Bun, TypeScript, Hono server-rendered HTML, official `lark-cli` 1.0.69+, Bun test.
 
@@ -13,9 +13,9 @@
 ## Scope and platform boundary
 
 - The zero-console path covers bot creation, bot capability, private messages, group `@` messages, sending messages, message resources, reactions, `im.message.receive_v1`, and `im.chat.member.bot.added_v1`. These are included in Feishu's official intelligent-agent application preset.
-- The user still must open the Feishu confirmation link or scan its QR code. An enterprise administrator may still have to approve installation under that tenant's governance policy; Homebrain cannot bypass administrator consent.
+- The user still must open the Feishu confirmation link or scan its QR code. An enterprise administrator may still have to approve installation under that tenant's governance policy; HomeAgent cannot bypass administrator consent.
 - The sensitive `im:message.group_msg` scope for receiving messages that do not mention the bot is not part of Feishu's standard preset. The default connection therefore remains `@ mentions only`, matching the reference UI. The existing advanced “respond to all messages” option must clearly disclose that extra scope requirement.
-- Multi-bot/profile routing is a separate project. This plan preserves one active bot per Homebrain process.
+- Multi-bot/profile routing is a separate project. This plan preserves one active bot per HomeAgent process.
 
 ## File map
 
@@ -554,7 +554,7 @@ Expected: FAIL because the page still tells users to manually enable capabilitie
 Change the Feishu-step lead in `packages/web/src/setup-view.ts` to:
 
 ```ts
-<p class="lede">Homebrain 会通过飞书官方流程创建专属机器人，自动配置机器人权限和事件订阅。你只需要在飞书页面确认，凭据由系统钥匙串保管。</p>
+<p class="lede">HomeAgent 会通过飞书官方流程创建专属机器人，自动配置机器人权限和事件订阅。你只需要在飞书页面确认，凭据由系统钥匙串保管。</p>
 ```
 
 Replace the failed-consumer actions inside `activateStep` with:
@@ -567,7 +567,7 @@ const approvalNotice = html`<div class="waiting">
 const action = input.restartRequired
   ? input.restartable
     ? html`<form method="post" action="/setup/restart" class="actions"><button class="primary-action">激活消息监听</button></form>`
-    : html`<div class="waiting"><strong>需要重启 Homebrain</strong><span class="muted">请在启动它的终端按 Ctrl+C，然后重新运行 bun start。</span></div>`
+    : html`<div class="waiting"><strong>需要重启 HomeAgent</strong><span class="muted">请在启动它的终端按 Ctrl+C，然后重新运行 bun start。</span></div>`
   : failed
     ? input.restartable
       ? html`${approvalNotice}<form method="post" action="/setup/restart" class="actions"><button class="primary-action">重新检查连接</button></form>`
@@ -579,7 +579,7 @@ const action = input.restartRequired
 Change the recovery details to:
 
 ```ts
-<details><summary>如果重启后仍未就绪</summary><p class="muted">确认扫码账号有创建企业自建应用的权限，并检查企业管理员是否有待审批的应用授权。Homebrain 会保留当前进度，不必重新创建机器人。</p></details>
+<details><summary>如果重启后仍未就绪</summary><p class="muted">确认扫码账号有创建企业自建应用的权限，并检查企业管理员是否有待审批的应用授权。HomeAgent 会保留当前进度，不必重新创建机器人。</p></details>
 ```
 
 - [ ] **Step 4: Update README onboarding and permission language**
@@ -588,11 +588,11 @@ Replace README's first-run Feishu steps with:
 
 ```md
 3. 点击“一键创建飞书机器人”，在飞书官方页面确认。飞书会创建企业自建应用，并自动预置机器人能力、
-   私聊与群内 @ 消息权限、消息发送/资源/表情权限，以及 Homebrain 使用的两条事件订阅。App Secret
-   只写入 `lark-cli` 的系统钥匙串，不进入 Homebrain 设置、页面或日志。
+   私聊与群内 @ 消息权限、消息发送/资源/表情权限，以及 HomeAgent 使用的两条事件订阅。App Secret
+   只写入 `lark-cli` 的系统钥匙串，不进入 HomeAgent 设置、页面或日志。
 4. 如果企业启用了自建应用审核，由飞书管理员批准本次安装；不需要用户进入开放平台手工创建应用或逐项配置权限。
 5. LaunchAgent 托管时点击“激活消息监听”安全重启；源码运行时重启 `bun start`。
-6. 把机器人加入目标群，@机器人发送第一条测试消息。Homebrain 会按 `chat_id` 自动建立群知识空间。
+6. 把机器人加入目标群，@机器人发送第一条测试消息。HomeAgent 会按 `chat_id` 自动建立群知识空间。
 ```
 
 Replace the permission caveat with:
@@ -651,20 +651,20 @@ Expected: all tests pass.
 
 - [ ] **Step 3: Exercise the real launcher without completing creation**
 
-Start Homebrain against a temporary data directory:
+Start HomeAgent against a temporary data directory:
 
 ```bash
-HOMEBRAIN_DATA_DIR="$(mktemp -d)" HOMEBRAIN_WEB_PORT=3100 bun start
+HOMEAGENT_DATA_DIR="$(mktemp -d)" HOMEAGENT_WEB_PORT=3100 bun start
 ```
 
 Open `http://127.0.0.1:3100/integrations`, click “一键创建并连接”, and verify:
 
 1. The page renders only an HTTPS `open.feishu.cn/page/cli` or `open.feishu.cn/page/launcher` confirmation link.
 2. The Feishu confirmation page states that a robot application and its permission/event preset will be created.
-3. Cancelling or allowing the ten-minute link to expire produces a fixed Homebrain error without CLI output.
+3. Cancelling or allowing the ten-minute link to expire produces a fixed HomeAgent error without CLI output.
 4. The manual App ID form is available only under “更多设置”.
 
-Terminate Homebrain with Ctrl+C. Do not finish creating a disposable enterprise application during this smoke test.
+Terminate HomeAgent with Ctrl+C. Do not finish creating a disposable enterprise application during this smoke test.
 
 - [ ] **Step 4: Check the final diff for secrets and scope creep**
 

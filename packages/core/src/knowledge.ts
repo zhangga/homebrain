@@ -13,7 +13,7 @@ import type {
   PageRef,
   RawEntry,
   SpaceId,
-} from "@homebrain/shared";
+} from "@homeagent/shared";
 import type {
   AskOptions,
   DreamOptions,

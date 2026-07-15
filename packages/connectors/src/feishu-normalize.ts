@@ -17,10 +17,10 @@
  *   2. the rendered content containing "@<botName>";
  *   3. when identity hints and structured mentions are both absent, a textual
  *      @mention token in the rendered content.
- * Operators set HOMEBRAIN_FEISHU_BOT_NAME / _OPEN_ID for precise gating; without
+ * Operators set HOMEAGENT_FEISHU_BOT_NAME / _OPEN_ID for precise gating; without
  * them we fall back to "any mention present" so the bot is not permanently mute.
  */
-import type { Attachment } from "@homebrain/shared";
+import type { Attachment } from "@homeagent/shared";
 import type { BotAddedEvent, InboundMessage } from "./connector.ts";
 
 export interface FeishuIdentity {

@@ -16,14 +16,14 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
-import type { CodexReasoningEffort, ProviderId } from "@homebrain/llm";
+import type { CodexReasoningEffort, ProviderId } from "@homeagent/llm";
 import {
   CODEX_REASONING_EFFORTS,
   DEFAULT_CLI_PROVIDER,
   isCliProvider,
   isCodexReasoningEffortSupported,
-} from "@homebrain/llm";
-import { canonicalModelId } from "@homebrain/shared";
+} from "@homeagent/llm";
+import { canonicalModelId } from "@homeagent/shared";
 
 /** Task-execution permission tier (reserved; not enforced yet). */
 export type AgentPermission = "read-only" | "write" | "full";

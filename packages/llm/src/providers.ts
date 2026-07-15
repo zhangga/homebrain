@@ -1,6 +1,6 @@
 /**
  * Local agent-CLI providers (mew's "provider" concept, adapted to a single
- * machine). mew routes a task to a provider running on some Device; homebrain
+ * machine). mew routes a task to a provider running on some Device; homeagent
  * has no remote devices, so a "provider" here is an agent CLI installed on THIS
  * machine (claude / codex / trae-cli). This module is the single choke point for
  * all CLI provider traffic — like gateway.ts is for the network gateway.
@@ -16,7 +16,7 @@
  * The built-in "gateway" provider (the Anthropic network gateway) is handled by
  * gateway.ts, not here; it is always available and is the default.
  */
-import { logger } from "@homebrain/shared";
+import { brandedEnv, logger } from "@homeagent/shared";
 import { MANAGED_CODEX_AUTH_ARGS } from "./provider-setup.ts";
 
 const log = logger.child("providers");
@@ -66,7 +66,7 @@ export function isCodexReasoningEffortSupported(
 /**
  * The default local CLI used when an agent doesn't specify one. "gateway" is no
  * longer a user-selectable provider (the internal API is only used by the claude
- * CLI, not homebrain directly), so agents default to a real CLI.
+ * CLI, not homeagent directly), so agents default to a real CLI.
  */
 export const DEFAULT_CLI_PROVIDER: ProviderId = "claude";
 
@@ -77,7 +77,7 @@ interface CliSpec {
   /** binary looked up on PATH */
   bin: string;
   /** managed-install override used by the standalone desktop application */
-  envBin: "HOMEBRAIN_CODEX_BIN" | "HOMEBRAIN_CLAUDE_BIN" | "HOMEBRAIN_TRAE_BIN";
+  envBin: "CODEX_BIN" | "CLAUDE_BIN" | "TRAE_BIN";
   /** args that print a version quickly and exit */
   versionArgs: string[];
   /** curated model ids this provider commonly offers (mew shows these per-provider) */
@@ -117,7 +117,7 @@ const KNOWN: CliSpec[] = [
     id: "claude",
     name: "Claude Code",
     bin: "claude",
-    envBin: "HOMEBRAIN_CLAUDE_BIN",
+    envBin: "CLAUDE_BIN",
     versionArgs: ["--version"],
     models: ["sonnet", "opus", "haiku", "claude-sonnet-4-6", "claude-opus-4-8"],
     buildRun: ({ prompt, system, model }) => {
@@ -134,7 +134,7 @@ const KNOWN: CliSpec[] = [
     id: "codex",
     name: "Codex",
     bin: "codex",
-    envBin: "HOMEBRAIN_CODEX_BIN",
+    envBin: "CODEX_BIN",
     versionArgs: ["--version"],
     // Curated from OpenAI's current model catalog (CLIs expose no list command).
     models: [
@@ -159,7 +159,7 @@ const KNOWN: CliSpec[] = [
     id: "trae-cli",
     name: "TRAE CLI",
     bin: "trae-cli",
-    envBin: "HOMEBRAIN_TRAE_BIN",
+    envBin: "TRAE_BIN",
     versionArgs: ["--version"],
     models: ["openrouter-3o", "openrouter-sonnet", "openrouter-gpt-5"],
     buildRun: ({ prompt, model }) => {
@@ -232,7 +232,7 @@ export async function detectProviders(timeoutMs = 6000): Promise<DetectedProvide
 }
 
 function providerBin(spec: CliSpec): string {
-  return process.env[spec.envBin]?.trim() || spec.bin;
+  return brandedEnv(process.env, spec.envBin)?.trim() || spec.bin;
 }
 
 function base(spec: CliSpec, bin: string): Omit<DetectedProvider, "available" | "detail"> {
@@ -282,7 +282,7 @@ export async function runProvider(
   const spec = specById.get(id);
   if (!spec) throw new Error(`unknown provider: ${id}`);
   const args = spec.buildRun(input);
-  if (id === "codex" && process.env.HOMEBRAIN_CODEX_BIN?.trim()) {
+  if (id === "codex" && brandedEnv(process.env, "CODEX_BIN")?.trim()) {
     args.unshift(...MANAGED_CODEX_AUTH_ARGS);
   }
   const bin = providerBin(spec);

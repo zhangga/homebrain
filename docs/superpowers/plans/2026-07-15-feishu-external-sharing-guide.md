@@ -26,7 +26,7 @@
 - `packages/web/src/setup-view.ts`: render publish instructions, controls, and verification status.
 - `packages/web/src/setup-view.test.ts`: verify safe links and user-facing actions.
 - `packages/web/src/views.ts`: show the same state in Integrations for later re-entry.
-- `README.md`: document Feishu's unavoidable admin publishing boundary and Homebrain's verification behavior.
+- `README.md`: document Feishu's unavoidable admin publishing boundary and HomeAgent's verification behavior.
 
 ### Task 1: Persist app-scoped external-sharing progress
 
@@ -46,7 +46,7 @@ saveSettings({
   feishuExternalSharingVerifiedChatId: "oc_external",
   feishuExternalSharingSkippedAppId: "",
 }, dataDir);
-const loaded = loadConfig({ HOMEBRAIN_DATA_DIR: dataDir });
+const loaded = loadConfig({ HOMEAGENT_DATA_DIR: dataDir });
 expect(loaded.feishuExternalSharingAppId).toBe("cli_external");
 expect(loaded.feishuExternalSharingVerifiedChatId).toBe("oc_external");
 ```
@@ -270,7 +270,7 @@ git commit -m "feat: guide Feishu external sharing setup"
 
 - [ ] **Step 1: Document the platform boundary**
 
-Explain that Homebrain requests supported permissions/events at creation time, but Feishu currently requires external-sharing switches, version submission, and admin approval in the developer console. Document that Homebrain links directly to the current app, stores state per app, and verifies only from a post-start external-group message.
+Explain that HomeAgent requests supported permissions/events at creation time, but Feishu currently requires external-sharing switches, version submission, and admin approval in the developer console. Document that HomeAgent links directly to the current app, stores state per app, and verifies only from a post-start external-group message.
 
 - [ ] **Step 2: Run the focused suite**
 

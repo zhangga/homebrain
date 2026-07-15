@@ -16,7 +16,7 @@ describe("web binding safety", () => {
   test("non-local binding requires a non-empty admin token", () => {
     expect(() => assertSafeWebBinding("127.0.0.1", undefined)).not.toThrow();
     expect(() => assertSafeWebBinding("0.0.0.0", "admin-secret")).not.toThrow();
-    expect(() => assertSafeWebBinding("0.0.0.0", undefined)).toThrow("HOMEBRAIN_WEB_ADMIN_TOKEN");
-    expect(() => assertSafeWebBinding("::", "   ")).toThrow("HOMEBRAIN_WEB_ADMIN_TOKEN");
+    expect(() => assertSafeWebBinding("0.0.0.0", undefined)).toThrow("HOMEAGENT_WEB_ADMIN_TOKEN");
+    expect(() => assertSafeWebBinding("::", "   ")).toThrow("HOMEAGENT_WEB_ADMIN_TOKEN");
   });
 });

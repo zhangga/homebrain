@@ -13,7 +13,7 @@
  *   - adds/removes native message reactions via `im reactions`;
  *   - fetches docx links via `docs +fetch --as user` for doc sync (Q8).
  */
-import { config, logger } from "@homebrain/shared";
+import { config, logger } from "@homeagent/shared";
 import { mkdtempSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -430,7 +430,7 @@ export class FeishuConnector implements Connector {
     const downloads: DownloadedAttachment[] = [];
 
     for (const resource of resources) {
-      const directory = mkdtempSync(join(tmpdir(), "homebrain-attachment-"));
+      const directory = mkdtempSync(join(tmpdir(), "homeagent-attachment-"));
       const output = "resource.bin";
       try {
         await this.runCommand(

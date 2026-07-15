@@ -9,7 +9,7 @@ import {
   type CompleteOptions,
   type CompleteResult,
   type JSONOptions,
-} from "@homebrain/llm";
+} from "@homeagent/llm";
 
 export interface LlmClient {
   complete(opts: CompleteOptions): Promise<CompleteResult>;

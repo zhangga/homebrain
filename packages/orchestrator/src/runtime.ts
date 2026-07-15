@@ -18,15 +18,15 @@
  * runtime behaves as a single consumer queue (plan §III) while the engine's own
  * per-space serialization still applies underneath.
  */
-import type { SpaceId } from "@homebrain/shared";
-import { Serializer, logger } from "@homebrain/shared";
-import type { KnowledgeEngine, LlmClient } from "@homebrain/core";
+import type { SpaceId } from "@homeagent/shared";
+import { Serializer, logger } from "@homeagent/shared";
+import type { KnowledgeEngine, LlmClient } from "@homeagent/core";
 import type {
   Connector,
   DownloadedAttachment,
   InboundEvent,
   InboundMessage,
-} from "@homebrain/connectors";
+} from "@homeagent/connectors";
 import { extractAttachmentText } from "./attachment-extractor.ts";
 import { attribute } from "./attribution.ts";
 import { gate } from "./gateway.ts";

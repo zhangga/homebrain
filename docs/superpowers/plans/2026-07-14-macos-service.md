@@ -2,7 +2,7 @@
 
 ## 目标
 
-让 homebrain 在本机以 macOS LaunchAgent 长期运行，不依赖启动它的终端，并在管理后台提供可观察、可安全重启的服务入口。
+让 homeagent 在本机以 macOS LaunchAgent 长期运行，不依赖启动它的终端，并在管理后台提供可观察、可安全重启的服务入口。
 
 ## 对外接口
 
@@ -13,7 +13,7 @@
 
 ## 运行约束
 
-- LaunchAgent 标签固定为 `com.homebrain.agent`，登录后自动启动，异常退出后自动拉起。
+- LaunchAgent 标签固定为 `com.homeagent.agent`，登录后自动启动，异常退出后自动拉起。
 - plist 只写入运行所需的非敏感环境（HOME、PATH、数据目录和托管标记）；不会写入 Anthropic 或管理后台密钥。
 - 主进程使用数据目录中的内核 advisory lock 阻止重复启动；进程退出时由内核自动释放，并兼容回收旧版 PID 锁。
 - SIGINT/SIGTERM 继续走现有优雅关闭流程；管理后台重启通过 SIGTERM 退出，由 launchd 拉起。

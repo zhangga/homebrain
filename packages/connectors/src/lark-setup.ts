@@ -9,7 +9,7 @@ import type {
   LarkProvisioningSession,
   LarkSetupInput,
   LarkSetupStatus,
-} from "@homebrain/shared";
+} from "@homeagent/shared";
 import { runFeishuCommand } from "./feishu.ts";
 import {
   sdkLarkAppRegistrar,

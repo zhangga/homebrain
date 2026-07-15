@@ -1,6 +1,6 @@
 /** Proactive delivery loop for durable user reminders. */
-import { logger } from "@homebrain/shared";
-import type { KnowledgeEngine, Reminder } from "@homebrain/core";
+import { logger } from "@homeagent/shared";
+import type { KnowledgeEngine, Reminder } from "@homeagent/core";
 import type { RuntimeLoopHealth } from "./scheduler.ts";
 
 const log = logger.child("reminder-scheduler");

@@ -2,8 +2,8 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { resetConfig, type SpaceId } from "@homebrain/shared";
-import { KnowledgeEngine, FakeLlm } from "@homebrain/core";
+import { resetConfig, type SpaceId } from "@homeagent/shared";
+import { KnowledgeEngine, FakeLlm } from "@homeagent/core";
 import { DEFAULT_SCHEDULE, Scheduler, shouldRunSpace, type ScheduleConfig } from "./scheduler.ts";
 
 const cfg: ScheduleConfig = { hour: 3, stalenessHours: 24, tickMs: 60000, rawRetentionDays: 90 };
@@ -54,7 +54,7 @@ describe("Scheduler.tick", () => {
 
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), "hb-sched-"));
-    process.env.HOMEBRAIN_DATA_DIR = dir;
+    process.env.HOMEAGENT_DATA_DIR = dir;
     resetConfig();
     fake = new FakeLlm();
     engine = new KnowledgeEngine({ dataDir: dir, llm: fake });
@@ -63,7 +63,7 @@ describe("Scheduler.tick", () => {
   afterEach(() => {
     engine.close();
     rmSync(dir, { recursive: true, force: true });
-    delete process.env.HOMEBRAIN_DATA_DIR;
+    delete process.env.HOMEAGENT_DATA_DIR;
     resetConfig();
   });
 
@@ -144,7 +144,7 @@ describe("Scheduler.tick", () => {
   test("each maintenance tick applies the configured raw message retention", async () => {
     const now = new Date("2027-01-15T10:00:00+08:00");
     await engine.restoreSpace({
-      format: "homebrain.space",
+      format: "homeagent.space",
       version: 1,
       exportedAt: now.getTime(),
       space: { id: SPACE, createdAt: now.getTime() - 100 * 86_400_000 },

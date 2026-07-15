@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Turn a fresh Homebrain process into a resumable, browser-led setup that connects an AI CLI, creates and configures a Feishu/Lark bot through `lark-cli config init --new`, activates event listeners, and verifies the first real group message.
+**Goal:** Turn a fresh HomeAgent process into a resumable, browser-led setup that connects an AI CLI, creates and configures a Feishu/Lark bot through `lark-cli config init --new`, activates event listeners, and verifies the first real group message.
 
 **Architecture:** Add a single in-memory provisioning session to the connector boundary, expose only a bounded allow-listed verification URL to the web package, and derive a five-step setup snapshot from persisted settings plus live provider/Lark/runtime state. Keep manual App ID/App Secret configuration as an advanced fallback, but make one-click browser authorization the primary route.
 
@@ -258,7 +258,7 @@ Expected: all connector setup tests pass and no test output contains a fake cred
 
 ```bash
 git add packages/connectors/src/lark-setup.ts packages/connectors/src/lark-setup.test.ts
-git commit -m "feat: provision Feishu apps from Homebrain"
+git commit -m "feat: provision Feishu apps from HomeAgent"
 ```
 
 ### Task 3: Derive a resumable setup snapshot
@@ -303,11 +303,11 @@ describe("buildSetupSnapshot", () => {
       runtime: { ready: false, consumers: [] }, restartRequired: false,
     }).current).toBe("feishu");
     expect(buildSetupSnapshot({ ...base,
-      lark: { state: "ready", verified: true, botName: "Homebrain", botOpenId: "ou_bot", message: "ready" },
+      lark: { state: "ready", verified: true, botName: "HomeAgent", botOpenId: "ou_bot", message: "ready" },
       runtime: { ready: false, consumers: [] }, restartRequired: true,
     }).current).toBe("activate");
     expect(buildSetupSnapshot({ ...base,
-      lark: { state: "ready", verified: true, botName: "Homebrain", botOpenId: "ou_bot", message: "ready" },
+      lark: { state: "ready", verified: true, botName: "HomeAgent", botOpenId: "ou_bot", message: "ready" },
       runtime: { ready: true, consumers: [] }, restartRequired: false,
     }).current).toBe("invite");
   });
@@ -329,8 +329,8 @@ Expected: module-not-found failure.
 Create `packages/web/src/setup.ts` with these public types and decision order:
 
 ```ts
-import type { LarkSetupStatus } from "@homebrain/shared";
-import type { DetectedProvider } from "@homebrain/llm";
+import type { LarkSetupStatus } from "@homeagent/shared";
+import type { DetectedProvider } from "@homeagent/llm";
 import type { FeishuRuntimeStatus } from "./integrations.ts";
 
 export type SetupStep = "ai" | "feishu" | "activate" | "invite" | "done";
@@ -466,7 +466,7 @@ Expected: failures for missing port methods and setup routes.
 Update `packages/web/src/integrations.ts`:
 
 ```ts
-import type { LarkProvisioningSession, LarkSetupInput, LarkSetupStatus } from "@homebrain/shared";
+import type { LarkProvisioningSession, LarkSetupInput, LarkSetupStatus } from "@homeagent/shared";
 
 export interface LarkSetupPort {
   status(): Promise<LarkSetupStatus>;
@@ -520,7 +520,7 @@ app.get("/setup/feishu/session", (c) => {
 });
 
 app.post("/setup/restart", async (c) => {
-  if (!opts.onServiceRestart) return c.redirect(`/setup?ok=${encodeURIComponent("请在终端重启 Homebrain")}`);
+  if (!opts.onServiceRestart) return c.redirect(`/setup?ok=${encodeURIComponent("请在终端重启 HomeAgent")}`);
   opts.onServiceRestart();
   return c.html(restartingView());
 });
@@ -634,7 +634,7 @@ const PRIMARY_LABELS = {
   feishu: "一键创建飞书机器人",
   activate: "激活消息监听",
   invite: "我已加入群聊，重新检查",
-  done: "进入 Homebrain",
+  done: "进入 HomeAgent",
 } as const;
 ```
 
@@ -661,7 +661,7 @@ Expected: all setup HTML and route tests pass.
 
 ```bash
 git add packages/web/src/setup-view.ts packages/web/src/setup-view.test.ts packages/web/src/app.ts packages/web/src/index.ts
-git commit -m "feat: design the Homebrain setup journey"
+git commit -m "feat: design the HomeAgent setup journey"
 ```
 
 ### Task 6: Wire production restart, identity persistence and the existing Integrations page
@@ -743,10 +743,10 @@ git commit -m "feat: activate provisioned Feishu bots"
 Replace the manual-first setup with:
 
 ```text
-1. 启动 Homebrain，浏览器自动进入 /setup。
+1. 启动 HomeAgent，浏览器自动进入 /setup。
 2. 选择已登录的 Codex 或 Claude。
 3. 点击“一键创建飞书机器人”，在飞书页面确认。
-4. 回到 Homebrain，点击“激活消息监听”。
+4. 回到 HomeAgent，点击“激活消息监听”。
 5. 把机器人加入群聊，回到向导完成真实消息测试。
 ```
 
@@ -768,7 +768,7 @@ Expected: all tests pass and typecheck exits 0.
 Run on an unused port and temporary data directory:
 
 ```bash
-HOMEBRAIN_DATA_DIR="$(mktemp -d)" HOMEBRAIN_WEB_PORT=3301 bun start
+HOMEAGENT_DATA_DIR="$(mktemp -d)" HOMEAGENT_WEB_PORT=3301 bun start
 ```
 
 Expected: `http://127.0.0.1:3301/` redirects to `/setup`; stop it with Ctrl-C without starting automatic provisioning.
@@ -777,7 +777,7 @@ Expected: `http://127.0.0.1:3301/` redirects to `/setup`; stop it with Ctrl-C wi
 
 ```bash
 git add README.md docs/superpowers/plans/2026-07-14-feishu-setup-wizard.md
-git commit -m "docs: guide non-technical Homebrain setup"
+git commit -m "docs: guide non-technical HomeAgent setup"
 ```
 
 ## Acceptance checklist
@@ -786,7 +786,7 @@ git commit -m "docs: guide non-technical Homebrain setup"
 - A user with a working AI CLI and Feishu account can finish without copying App ID or App Secret.
 - Refreshing or closing the browser does not start a second app-registration process.
 - Only `open.feishu.cn/page/cli` and `open.larksuite.com/page/cli` URLs can reach rendered HTML.
-- Automatic and manual setup both persist only verified Bot name/open_id; App Secret never enters Homebrain settings or logs.
+- Automatic and manual setup both persist only verified Bot name/open_id; App Secret never enters HomeAgent settings or logs.
 - An unavailable event subscription becomes a human checkpoint with a direct explanation, not a generic readiness banner.
 - Existing configured installations continue to open the dashboard.
 - The setup works at 360 px width, with keyboard navigation and reduced motion.

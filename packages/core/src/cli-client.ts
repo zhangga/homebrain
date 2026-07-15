@@ -1,7 +1,7 @@
 /**
  * A CLI-backed LlmClient. Instead of the network gateway, all LLM work is run
  * through a local agent CLI (claude / codex / trae-cli) via runProvider(). This
- * is the only LLM path in homebrain — there is no network-API fallback.
+ * is the only LLM path in homeagent — there is no network-API fallback.
  *
  *   - complete(): the CLI's stdout is the answer text.
  *   - completeJSON(): we append a strict "output only JSON matching this schema"
@@ -20,9 +20,9 @@ import type {
   CompleteResult,
   JSONOptions,
   ProviderId,
-} from "@homebrain/llm";
-import { runProvider as realRunProvider } from "@homebrain/llm";
-import { logger } from "@homebrain/shared";
+} from "@homeagent/llm";
+import { runProvider as realRunProvider } from "@homeagent/llm";
+import { logger } from "@homeagent/shared";
 import type { LlmClient } from "./llm.ts";
 
 const log = logger.child("cli-client");

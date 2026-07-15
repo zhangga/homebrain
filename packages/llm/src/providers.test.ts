@@ -40,9 +40,9 @@ describe("Codex model capabilities", () => {
 describe("provider detection", () => {
   test("honors managed binary overrides for detection and execution", async () => {
     const keys = [
-      "HOMEBRAIN_CODEX_BIN",
-      "HOMEBRAIN_CLAUDE_BIN",
-      "HOMEBRAIN_TRAE_BIN",
+      "HOMEAGENT_CODEX_BIN",
+      "HOMEAGENT_CLAUDE_BIN",
+      "HOMEAGENT_TRAE_BIN",
     ] as const;
     const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
     try {
@@ -72,6 +72,26 @@ describe("provider detection", () => {
         if (value === undefined) delete process.env[key];
         else process.env[key] = value;
       }
+    }
+  });
+
+  test("accepts pre-rename managed binary overrides", async () => {
+    const canonical = process.env.HOMEAGENT_CODEX_BIN;
+    const legacy = process.env.HOMEBRAIN_CODEX_BIN;
+    try {
+      delete process.env.HOMEAGENT_CODEX_BIN;
+      process.env.HOMEBRAIN_CODEX_BIN = "/bin/echo";
+
+      const detected = await detectProviders(500);
+      expect(detected.find((provider) => provider.id === "codex")?.bin).toBe("/bin/echo");
+      expect(await runProvider("codex", { prompt: "legacy" }, 500)).toContain(
+        "cli_auth_credentials_store",
+      );
+    } finally {
+      if (canonical === undefined) delete process.env.HOMEAGENT_CODEX_BIN;
+      else process.env.HOMEAGENT_CODEX_BIN = canonical;
+      if (legacy === undefined) delete process.env.HOMEBRAIN_CODEX_BIN;
+      else process.env.HOMEBRAIN_CODEX_BIN = legacy;
     }
   });
 

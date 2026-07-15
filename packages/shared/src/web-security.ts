@@ -14,6 +14,6 @@ export function isLoopbackHost(host: string): boolean {
 export function assertSafeWebBinding(host: string, adminToken?: string): void {
   if (isLoopbackHost(host) || adminToken?.trim()) return;
   throw new Error(
-    `HOMEBRAIN_WEB_ADMIN_TOKEN is required when HOMEBRAIN_WEB_HOST is non-local (${host})`,
+    `HOMEAGENT_WEB_ADMIN_TOKEN is required when HOMEAGENT_WEB_HOST is non-local (${host})`,
   );
 }

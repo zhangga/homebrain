@@ -26,14 +26,14 @@ import {
   type SpaceId,
   type PersistedSettings,
   type SystemHealthSnapshot,
-} from "@homebrain/shared";
+} from "@homeagent/shared";
 import {
   detectProviders,
   providerModels,
   type CodexLoginSession,
   type DetectedProvider,
-} from "@homebrain/llm";
-import type { KnowledgeEngine } from "@homebrain/core";
+} from "@homeagent/llm";
+import type { KnowledgeEngine } from "@homeagent/core";
 import { layout } from "./layout.ts";
 import type { CodexSetupPort, FeishuRuntimeStatus, LarkSetupPort } from "./integrations.ts";
 import { buildSetupSnapshot } from "./setup.ts";
@@ -160,7 +160,7 @@ export function createWebApp(opts: WebOptions): Hono {
     app.use("*", async (c, next) => {
       if (c.req.path === "/healthz" || c.req.path === "/readyz") return next();
       if (isAuthorized(c.req.header("authorization"), token)) return next();
-      c.header("www-authenticate", 'Basic realm="homebrain", charset="UTF-8"');
+      c.header("www-authenticate", 'Basic realm="homeagent", charset="UTF-8"');
       return c.text("Unauthorized", 401);
     });
   } else {
@@ -678,7 +678,7 @@ export function createWebApp(opts: WebOptions): Hono {
     const space = parseSpace(c.req.param("space"));
     if (!space || !engine.registry.has(space)) return c.notFound();
     const archive = await engine.exportSpace(space);
-    const filename = `${space.replace(/[^a-zA-Z0-9._-]+/g, "-")}.homebrain.json`;
+    const filename = `${space.replace(/[^a-zA-Z0-9._-]+/g, "-")}.homeagent.json`;
     c.header("content-type", "application/json; charset=utf-8");
     c.header("content-disposition", `attachment; filename="${filename}"`);
     c.header("cache-control", "no-store");
@@ -1116,7 +1116,7 @@ export function createWebApp(opts: WebOptions): Hono {
     try {
       await opts.onIntegrationTest(
         chatId,
-        "✅ homebrain 配置测试成功：机器人发送通道可用。现在可以在群里 @我 提问。",
+        "✅ homeagent 配置测试成功：机器人发送通道可用。现在可以在群里 @我 提问。",
       );
       return c.redirect(`/integrations?ok=${encodeURIComponent("测试消息已发送，请到目标群确认")}`);
     } catch {

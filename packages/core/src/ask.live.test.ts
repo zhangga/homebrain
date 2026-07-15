@@ -1,20 +1,19 @@
 /**
- * Live ask test. Skipped unless HOMEBRAIN_LIVE=1. Builds a small KB via the real
+ * Live ask test. Skipped unless HOMEAGENT_LIVE=1. Builds a small KB via the real
  * dream cycle, then verifies a grounded answer with citations, and a general
  * fallback for an out-of-KB question. Run:
- *   HOMEBRAIN_LIVE=1 bun test packages/core/src/ask.live.test.ts
+ *   HOMEAGENT_LIVE=1 bun test packages/core/src/ask.live.test.ts
  */
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { SpaceId } from "@homebrain/shared";
-import { resetConfig } from "@homebrain/shared";
+import { brandedEnv, resetConfig, type SpaceId } from "@homeagent/shared";
 import { SpaceStore } from "./space.ts";
 import { runDreamCycle } from "./dream.ts";
 import { ask } from "./ask.ts";
 
-const LIVE = process.env.HOMEBRAIN_LIVE === "1";
+const LIVE = brandedEnv(process.env, "LIVE") === "1";
 const maybe = LIVE ? describe : describe.skip;
 
 let dir: string;
@@ -23,7 +22,7 @@ const SPACE: SpaceId = "team/oc_live_ask";
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "hb-ask-live-"));
-  process.env.HOMEBRAIN_DATA_DIR = dir;
+  process.env.HOMEAGENT_DATA_DIR = dir;
   resetConfig();
   store = new SpaceStore(SPACE, dir);
   store.ensure();
@@ -32,7 +31,7 @@ beforeEach(() => {
 afterEach(() => {
   store.close();
   rmSync(dir, { recursive: true, force: true });
-  delete process.env.HOMEBRAIN_DATA_DIR;
+  delete process.env.HOMEAGENT_DATA_DIR;
   resetConfig();
 });
 

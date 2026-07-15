@@ -8,6 +8,7 @@ import {
   writeFile as fsWriteFile,
 } from "node:fs/promises";
 import { join } from "node:path";
+import { brandedEnv } from "@homeagent/shared";
 
 const CAPTURE_LIMIT_BYTES = 8 * 1024;
 const LOGIN_DETAIL_WAIT_MS = 15_000;
@@ -144,7 +145,7 @@ export class CodexProviderSetup {
 
   constructor(options: CodexProviderSetupOptions = {}) {
     this.codexBin =
-      options.codexBin?.trim() || process.env.HOMEBRAIN_CODEX_BIN?.trim() || "codex";
+      options.codexBin?.trim() || brandedEnv(process.env, "CODEX_BIN")?.trim() || "codex";
     this.spawner = options.spawner ?? bunCodexLoginSpawner;
     this.commandRunner = options.commandRunner ?? bunCodexCommandRunner;
     this.detailWaitMs = boundedDuration(options.detailWaitMs, LOGIN_DETAIL_WAIT_MS);
@@ -485,7 +486,7 @@ const fetchCodexNetwork: CodexInstallNetwork = {
     const response = await fetch(url, {
       headers: {
         accept: "application/vnd.github+json",
-        "user-agent": "Homebrain",
+        "user-agent": "HomeAgent",
       },
       signal: AbortSignal.timeout(15_000),
     });

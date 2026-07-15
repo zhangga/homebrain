@@ -21,8 +21,8 @@
  */
 import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { DreamReport, Page, RawRecord } from "@homebrain/shared";
-import { config, logger } from "@homebrain/shared";
+import type { DreamReport, Page, RawRecord } from "@homeagent/shared";
+import { config, logger } from "@homeagent/shared";
 import type { SpaceStore } from "./space.ts";
 import type { DreamOptions } from "./types.ts";
 import { gatewayClient, type LlmClient } from "./llm.ts";

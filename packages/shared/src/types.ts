@@ -1,5 +1,5 @@
 /**
- * Core domain vocabulary shared across all homebrain packages.
+ * Core domain vocabulary shared across all homeagent packages.
  * Pure data shapes only — no behavior, no dependencies.
  */
 

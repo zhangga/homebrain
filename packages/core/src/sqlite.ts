@@ -14,7 +14,7 @@
  */
 import { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
-import type { Hit, Page, PageRef, RawEntry, RawRecord } from "@homebrain/shared";
+import type { Hit, Page, PageRef, RawEntry, RawRecord } from "@homeagent/shared";
 import type { MessageRetractionRecord } from "./governance.ts";
 import { toMatchQuery, toSearchText } from "./tokenize.ts";
 

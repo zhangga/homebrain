@@ -62,7 +62,7 @@ jobs:
           KEYCHAIN_PASSWORD: ${{ secrets.APPLE_KEYCHAIN_PASSWORD }}
         run: |
           CERTIFICATE_PATH="$RUNNER_TEMP/developer-id.p12"
-          KEYCHAIN_PATH="$RUNNER_TEMP/homebrain.keychain-db"
+          KEYCHAIN_PATH="$RUNNER_TEMP/homeagent.keychain-db"
           echo "$CERTIFICATE_BASE64" | base64 --decode > "$CERTIFICATE_PATH"
           security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
           security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
@@ -73,13 +73,13 @@ jobs:
 
       - name: Build signed app
         env:
-          HOMEBRAIN_CODESIGN_IDENTITY: ${{ secrets.APPLE_CODESIGN_IDENTITY }}
+          HOMEAGENT_CODESIGN_IDENTITY: ${{ secrets.APPLE_CODESIGN_IDENTITY }}
         run: bun run build:macos --target "${{ matrix.target }}"
 
       - name: Verify and smoke-test app
         run: |
-          codesign --verify --deep --strict --verbose=2 dist/Homebrain.app
-          bun run smoke:macos --app dist/Homebrain.app
+          codesign --verify --deep --strict --verbose=2 dist/HomeAgent.app
+          bun run smoke:macos --app dist/HomeAgent.app
 
       - name: Create, sign, notarize, and staple DMG
         env:
@@ -92,11 +92,11 @@ jobs:
         run: |
           VERSION="${VERSION#v}"
           STAGE="$RUNNER_TEMP/dmg-root"
-          DMG="dist/Homebrain-${VERSION}-macos-${TARGET}.dmg"
+          DMG="dist/HomeAgent-${VERSION}-macos-${TARGET}.dmg"
           mkdir -p "$STAGE"
-          cp -R dist/Homebrain.app "$STAGE/Homebrain.app"
+          cp -R dist/HomeAgent.app "$STAGE/HomeAgent.app"
           ln -s /Applications "$STAGE/Applications"
-          hdiutil create -volname Homebrain -srcfolder "$STAGE" -ov -format UDZO "$DMG"
+          hdiutil create -volname HomeAgent -srcfolder "$STAGE" -ov -format UDZO "$DMG"
           codesign --force --timestamp --sign "$SIGNING_IDENTITY" "$DMG"
           xcrun notarytool submit "$DMG" --apple-id "$APPLE_ID" --password "$APPLE_APP_PASSWORD" --team-id "$APPLE_TEAM_ID" --wait
           xcrun stapler staple "$DMG"
@@ -109,14 +109,14 @@ jobs:
           }
           trap cleanup_dmg EXIT
           hdiutil attach "$DMG" -nobrowse -readonly -mountpoint "$MOUNT_DIR"
-          bun run smoke:macos --app "$MOUNT_DIR/Homebrain.app"
+          bun run smoke:macos --app "$MOUNT_DIR/HomeAgent.app"
           cleanup_dmg
           trap - EXIT
 
       - uses: actions/upload-artifact@v4
         with:
-          name: Homebrain-macos-${{ matrix.target }}
-          path: dist/Homebrain-*-macos-${{ matrix.target }}.dmg
+          name: HomeAgent-macos-${{ matrix.target }}
+          path: dist/HomeAgent-*-macos-${{ matrix.target }}.dmg
           if-no-files-found: error
 
   publish:
@@ -129,7 +129,7 @@ jobs:
           bun-version: 1.3.14
       - uses: actions/download-artifact@v4
         with:
-          pattern: Homebrain-macos-*
+          pattern: HomeAgent-macos-*
           path: dist/release
           merge-multiple: true
       - name: Write signed update manifest
@@ -140,8 +140,8 @@ jobs:
           bun run scripts/write-update-manifest.ts \
             --version "$VERSION" \
             --repository "$GITHUB_REPOSITORY" \
-            --arm64 "dist/release/Homebrain-${VERSION}-macos-arm64.dmg" \
-            --x64 "dist/release/Homebrain-${VERSION}-macos-x64.dmg" \
+            --arm64 "dist/release/HomeAgent-${VERSION}-macos-arm64.dmg" \
+            --x64 "dist/release/HomeAgent-${VERSION}-macos-x64.dmg" \
             --output dist/release/update-manifest.json
       - uses: softprops/action-gh-release@v2
         with:

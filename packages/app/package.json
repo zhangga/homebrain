@@ -1,16 +1,16 @@
 {
-  "name": "@homebrain/app",
+  "name": "@homeagent/app",
   "version": "0.0.0",
   "private": true,
   "type": "module",
   "main": "src/main.ts",
   "dependencies": {
-    "@homebrain/shared": "workspace:*",
-    "@homebrain/llm": "workspace:*",
-    "@homebrain/core": "workspace:*",
-    "@homebrain/connectors": "workspace:*",
-    "@homebrain/orchestrator": "workspace:*",
-    "@homebrain/web": "workspace:*",
+    "@homeagent/shared": "workspace:*",
+    "@homeagent/llm": "workspace:*",
+    "@homeagent/core": "workspace:*",
+    "@homeagent/connectors": "workspace:*",
+    "@homeagent/orchestrator": "workspace:*",
+    "@homeagent/web": "workspace:*",
     "hono": "^4.6.0"
   }
 }

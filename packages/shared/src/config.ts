@@ -5,7 +5,7 @@
  * over env defaults for the editable subset; host-injected secrets
  * (ANTHROPIC_BASE_URL / ANTHROPIC_AUTH_TOKEN) are optional, env-only, and never
  * persisted. They are validated lazily by the legacy gateway client; the main
- * homebrain runtime uses local agent CLIs and does not need them.
+ * homeagent runtime uses local agent CLIs and does not need them.
  *
  * Model IDs are the gateway's real identifiers (verified against /v1/models):
  * haiku is used for cheap classification, the default (sonnet) for ask, and a
@@ -13,6 +13,7 @@
  */
 import { resolve, join } from "node:path";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { brandedEnv } from "./brand.ts";
 
 export interface Config {
   gatewayBaseUrl: string;
@@ -108,11 +109,13 @@ export const EDITABLE_KEYS: (keyof PersistedSettings)[] = [
   "onboardingStartedAt",
 ];
 
-function num(env: NodeJS.ProcessEnv, name: string, fallback: number): number {
-  const raw = env[name];
+function num(env: NodeJS.ProcessEnv, suffix: string, fallback: number): number {
+  const raw = brandedEnv(env, suffix);
   if (raw === undefined || raw === "") return fallback;
   const n = Number(raw);
-  if (!Number.isFinite(n)) throw new Error(`env ${name} must be a number, got ${raw}`);
+  if (!Number.isFinite(n)) {
+    throw new Error(`env HOMEAGENT_${suffix} must be a number, got ${raw}`);
+  }
   return n;
 }
 
@@ -158,26 +161,26 @@ export function readSettings(dataDir: string): PersistedSettings {
 let cached: Config | undefined;
 
 export function loadConfig(env = process.env): Config {
-  const dataDir = resolve(env.HOMEBRAIN_DATA_DIR ?? "./data");
+  const dataDir = resolve(brandedEnv(env, "DATA_DIR") ?? "./data");
   const persisted = readSettings(dataDir);
 
   const base: Config = {
     gatewayBaseUrl: (env.ANTHROPIC_BASE_URL ?? "").replace(/\/+$/, ""),
     gatewayToken: env.ANTHROPIC_AUTH_TOKEN ?? "",
     dataDir,
-    model: env.HOMEBRAIN_LLM_MODEL ?? "claude-sonnet-5",
-    modelFast: env.HOMEBRAIN_LLM_MODEL_FAST ?? "claude-haiku-4-5-20251001",
-    modelHeavy: env.HOMEBRAIN_LLM_MODEL_HEAVY ?? "claude-opus-4-8",
-    dailyBudgetUsd: num(env, "HOMEBRAIN_DAILY_BUDGET_USD", 5),
-    webHost: env.HOMEBRAIN_WEB_HOST?.trim() || "127.0.0.1",
-    webPort: num(env, "HOMEBRAIN_WEB_PORT", 3000),
-    webAdminToken: env.HOMEBRAIN_WEB_ADMIN_TOKEN?.trim() || undefined,
-    dreamHour: num(env, "HOMEBRAIN_DREAM_HOUR", 3),
-    rawRetentionDays: nonnegativeInt(num(env, "HOMEBRAIN_RAW_RETENTION_DAYS", 90), 90),
-    defaultProvider: env.HOMEBRAIN_DEFAULT_PROVIDER || "claude",
-    defaultModel: env.HOMEBRAIN_DEFAULT_MODEL || "",
-    feishuBotName: env.HOMEBRAIN_FEISHU_BOT_NAME || undefined,
-    feishuBotOpenId: env.HOMEBRAIN_FEISHU_BOT_OPEN_ID || undefined,
+    model: brandedEnv(env, "LLM_MODEL") ?? "claude-sonnet-5",
+    modelFast: brandedEnv(env, "LLM_MODEL_FAST") ?? "claude-haiku-4-5-20251001",
+    modelHeavy: brandedEnv(env, "LLM_MODEL_HEAVY") ?? "claude-opus-4-8",
+    dailyBudgetUsd: num(env, "DAILY_BUDGET_USD", 5),
+    webHost: brandedEnv(env, "WEB_HOST")?.trim() || "127.0.0.1",
+    webPort: num(env, "WEB_PORT", 3000),
+    webAdminToken: brandedEnv(env, "WEB_ADMIN_TOKEN")?.trim() || undefined,
+    dreamHour: num(env, "DREAM_HOUR", 3),
+    rawRetentionDays: nonnegativeInt(num(env, "RAW_RETENTION_DAYS", 90), 90),
+    defaultProvider: brandedEnv(env, "DEFAULT_PROVIDER") || "claude",
+    defaultModel: brandedEnv(env, "DEFAULT_MODEL") || "",
+    feishuBotName: brandedEnv(env, "FEISHU_BOT_NAME") || undefined,
+    feishuBotOpenId: brandedEnv(env, "FEISHU_BOT_OPEN_ID") || undefined,
     feishuExternalSharingAppId: undefined,
     feishuExternalSharingStartedAt: undefined,
     feishuExternalSharingVerifiedAt: undefined,

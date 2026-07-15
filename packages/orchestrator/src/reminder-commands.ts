@@ -1,7 +1,7 @@
 /** Natural-language reminder commands handled before ordinary knowledge capture. */
-import type { KnowledgeEngine } from "@homebrain/core";
-import type { InboundMessage } from "@homebrain/connectors";
-import type { SpaceId } from "@homebrain/shared";
+import type { KnowledgeEngine } from "@homeagent/core";
+import type { InboundMessage } from "@homeagent/connectors";
+import type { SpaceId } from "@homeagent/shared";
 
 const UNIT_MS: Record<string, number> = {
   分钟: 60_000,

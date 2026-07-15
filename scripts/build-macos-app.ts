@@ -39,18 +39,18 @@ export function createMacOSBuildPlan(input: {
     target: input.target,
     bunTarget: input.target === "arm64" ? "bun-darwin-arm64" : "bun-darwin-x64",
     swiftTarget: input.target === "arm64" ? "arm64-apple-macos13.0" : "x86_64-apple-macos13.0",
-    appPath: join(repoRoot, "dist", "Homebrain.app"),
+    appPath: join(repoRoot, "dist", "HomeAgent.app"),
     larkVersion: LARK_VERSION,
     larkAsset: `lark-cli-${LARK_VERSION}-darwin-${upstreamArch}.tar.gz`,
     outputs: [
-      "Homebrain.app/Contents/Info.plist",
-      "Homebrain.app/Contents/MacOS/homebrain",
-      "Homebrain.app/Contents/Resources/app/homebrain.js",
-      "Homebrain.app/Contents/Resources/bin/bun",
-      "Homebrain.app/Contents/Resources/bin/lark-cli",
-      "Homebrain.app/Contents/Resources/bin/attachment-extract",
-      "Homebrain.app/Contents/Resources/LICENSE",
-      "Homebrain.app/Contents/Resources/THIRD_PARTY_NOTICES.md",
+      "HomeAgent.app/Contents/Info.plist",
+      "HomeAgent.app/Contents/MacOS/homeagent",
+      "HomeAgent.app/Contents/Resources/app/homeagent.js",
+      "HomeAgent.app/Contents/Resources/bin/bun",
+      "HomeAgent.app/Contents/Resources/bin/lark-cli",
+      "HomeAgent.app/Contents/Resources/bin/attachment-extract",
+      "HomeAgent.app/Contents/Resources/LICENSE",
+      "HomeAgent.app/Contents/Resources/THIRD_PARTY_NOTICES.md",
     ],
   };
 }
@@ -204,7 +204,7 @@ export async function buildMacOSApp(input: {
   allowDirty?: boolean;
   signingIdentity?: string;
 }): Promise<MacOSBuildPlan> {
-  if (process.platform !== "darwin") throw new Error("Homebrain.app can only be assembled on macOS");
+  if (process.platform !== "darwin") throw new Error("HomeAgent.app can only be assembled on macOS");
   const plan = createMacOSBuildPlan(input);
   await assertReleaseInputs(plan, input.allowDirty ?? false);
   const contents = join(plan.appPath, "Contents");
@@ -225,7 +225,7 @@ export async function buildMacOSApp(input: {
   if (currentTarget !== plan.target) {
     throw new Error(`build ${plan.target} on a matching macOS runner (current: ${process.arch})`);
   }
-  const executable = join(macOSDir, "homebrain");
+  const executable = join(macOSDir, "homeagent");
   await mustRun([
     "/usr/bin/xcrun",
     "swiftc",
@@ -238,7 +238,7 @@ export async function buildMacOSApp(input: {
   ], plan.repoRoot);
   chmodSync(executable, 0o755);
 
-  const appEntry = join(appDir, "homebrain.js");
+  const appEntry = join(appDir, "homeagent.js");
   await mustRun([
     process.execPath, "build", "--target=bun",
     join(plan.repoRoot, "packages", "app", "src", "main.ts"),
@@ -283,7 +283,10 @@ export async function buildMacOSApp(input: {
   copyFileSync(join(plan.repoRoot, "THIRD_PARTY_NOTICES.md"), join(resources, "THIRD_PARTY_NOTICES.md"));
   await writeDependencyLicenses(plan, resources);
 
-  const signingIdentity = input.signingIdentity ?? process.env.HOMEBRAIN_CODESIGN_IDENTITY ?? "-";
+  const signingIdentity = input.signingIdentity
+    ?? process.env.HOMEAGENT_CODESIGN_IDENTITY
+    ?? process.env.HOMEBRAIN_CODESIGN_IDENTITY
+    ?? "-";
   const signatureFlags = signingIdentity === "-"
     ? ["--timestamp=none"]
     : ["--timestamp", "--options", "runtime"];

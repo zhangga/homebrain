@@ -6,11 +6,11 @@ const status: ServiceStatus = {
   installed: true,
   loaded: true,
   running: true,
-  label: "com.homebrain.agent",
+  label: "com.homeagent.agent",
   state: "running",
   pid: 7788,
   startedAt: 1_783_932_000_000,
-  plistPath: "/tmp/com.homebrain.agent.plist",
+  plistPath: "/tmp/com.homeagent.agent.plist",
   stdoutPath: "/tmp/service.stdout.log",
   stderrPath: "/tmp/service.stderr.log",
 };
@@ -34,21 +34,21 @@ describe("service CLI", () => {
       platform: "darwin",
       uid: 501,
       homeDir: "/Users/test",
-      execPath: "/Applications/Homebrain.app/Contents/MacOS/homebrain",
+      execPath: "/Applications/HomeAgent.app/Contents/MacOS/homeagent",
       environment: { HOME: "/Users/test", PATH: "/usr/bin:/bin" },
       runtimePaths: {
         bundled: true,
-        appRoot: "/Applications/Homebrain.app",
-        resourceDir: "/Applications/Homebrain.app/Contents/Resources",
-        dataDir: "/Users/test/Library/Application Support/Homebrain",
-        logDir: "/Users/test/Library/Logs/Homebrain",
-        larkBin: "/Applications/Homebrain.app/Contents/Resources/bin/lark-cli",
+        appRoot: "/Applications/HomeAgent.app",
+        resourceDir: "/Applications/HomeAgent.app/Contents/Resources",
+        dataDir: "/Users/test/Library/Application Support/HomeAgent",
+        logDir: "/Users/test/Library/Logs/HomeAgent",
+        larkBin: "/Applications/HomeAgent.app/Contents/Resources/bin/lark-cli",
       },
     });
 
-    expect(service.plistPath).toBe("/Users/test/Library/LaunchAgents/com.homebrain.agent.plist");
-    expect(service.stdoutPath).toBe("/Users/test/Library/Logs/Homebrain/service.stdout.log");
-    expect(service.stderrPath).toBe("/Users/test/Library/Logs/Homebrain/service.stderr.log");
+    expect(service.plistPath).toBe("/Users/test/Library/LaunchAgents/com.homeagent.agent.plist");
+    expect(service.stdoutPath).toBe("/Users/test/Library/Logs/HomeAgent/service.stdout.log");
+    expect(service.stderrPath).toBe("/Users/test/Library/Logs/HomeAgent/service.stderr.log");
   });
 
   test("dispatches lifecycle commands and prints machine-readable status", async () => {

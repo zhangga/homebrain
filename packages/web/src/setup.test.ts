@@ -42,7 +42,7 @@ describe("buildSetupSnapshot", () => {
       lark: {
         state: "ready",
         verified: true,
-        botName: "Homebrain",
+        botName: "HomeAgent",
         botOpenId: "ou_bot",
         message: "ready",
       },
@@ -55,7 +55,7 @@ describe("buildSetupSnapshot", () => {
       lark: {
         state: "ready",
         verified: true,
-        botName: "Homebrain",
+        botName: "HomeAgent",
         botOpenId: "ou_bot",
         message: "ready",
       },
@@ -68,7 +68,7 @@ describe("buildSetupSnapshot", () => {
       lark: {
         state: "ready",
         verified: true,
-        botName: "Homebrain",
+        botName: "HomeAgent",
         botOpenId: "ou_bot",
         message: "ready",
       },
@@ -81,7 +81,7 @@ describe("buildSetupSnapshot", () => {
       lark: {
         state: "ready",
         verified: true,
-        botName: "Homebrain",
+        botName: "HomeAgent",
         botOpenId: "ou_bot",
         message: "ready",
       },
@@ -98,7 +98,7 @@ describe("buildSetupSnapshot", () => {
       lark: {
         state: "ready" as const,
         verified: true,
-        botName: "Homebrain",
+        botName: "HomeAgent",
         botOpenId: "ou_bot",
         message: "ready",
       },

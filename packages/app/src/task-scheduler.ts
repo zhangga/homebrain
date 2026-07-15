@@ -9,8 +9,8 @@
  * opts in and its space is bound to a feishu chat, a summary is pushed via the
  * optional notify callback (wired to connector.notice in main.ts).
  */
-import { logger } from "@homebrain/shared";
-import type { KnowledgeEngine, Task, TaskReport } from "@homebrain/core";
+import { logger } from "@homeagent/shared";
+import type { KnowledgeEngine, Task, TaskReport } from "@homeagent/core";
 import { localHour, dayKey, type RuntimeLoopHealth } from "./scheduler.ts";
 
 const log = logger.child("task-scheduler");

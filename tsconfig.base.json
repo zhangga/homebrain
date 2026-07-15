@@ -18,11 +18,12 @@
     "resolveJsonModule": true,
     "baseUrl": ".",
     "paths": {
-      "@homebrain/shared": ["packages/shared/src/index.ts"],
-      "@homebrain/llm": ["packages/llm/src/index.ts"],
-      "@homebrain/core": ["packages/core/src/index.ts"],
-      "@homebrain/connectors": ["packages/connectors/src/index.ts"],
-      "@homebrain/orchestrator": ["packages/orchestrator/src/index.ts"]
+      "@homeagent/shared": ["packages/shared/src/index.ts"],
+      "@homeagent/llm": ["packages/llm/src/index.ts"],
+      "@homeagent/core": ["packages/core/src/index.ts"],
+      "@homeagent/connectors": ["packages/connectors/src/index.ts"],
+      "@homeagent/orchestrator": ["packages/orchestrator/src/index.ts"],
+      "@homeagent/web": ["packages/web/src/index.ts"]
     }
   }
 }

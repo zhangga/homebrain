@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Ship a signed Homebrain macOS application that a normal user downloads, drags to Applications, launches, signs into ChatGPT and Feishu in the browser, and leaves running without installing Git, Bun, Node, npm, or `lark-cli`.
+**Goal:** Ship a signed HomeAgent macOS application that a normal user downloads, drags to Applications, launches, signs into ChatGPT and Feishu in the browser, and leaves running without installing Git, Bun, Node, npm, or `lark-cli`.
 
-**Architecture:** Compile a small native Swift launcher, bundle the JavaScript application plus an unmodified architecture-matched Bun executable as separate immutable resources, and place verified third-party CLIs inside `Homebrain.app/Contents/Resources`. Store mutable data under `~/Library/Application Support/Homebrain`, and point LaunchAgent at the stable native app launcher. Build architecture-specific release artifacts in CI, sign/notarize them, and expose a guarded in-app updater that stages and verifies a replacement before restart.
+**Architecture:** Compile a small native Swift launcher, bundle the JavaScript application plus an unmodified architecture-matched Bun executable as separate immutable resources, and place verified third-party CLIs inside `HomeAgent.app/Contents/Resources`. Store mutable data under `~/Library/Application Support/HomeAgent`, and point LaunchAgent at the stable native app launcher. Build architecture-specific release artifacts in CI, sign/notarize them, and expose a guarded in-app updater that stages and verifies a replacement before restart.
 
 **Tech Stack:** Native Swift launcher, separately bundled Bun runtime and JavaScript application, macOS `.app`/DMG, LaunchAgent, GitHub Actions, Apple codesign/notarytool, bundled `lark-cli`, consent-based official Codex download, Bun test.
 
@@ -12,14 +12,14 @@
 
 ## Release contract
 
-- Primary artifact: `Homebrain-<version>-macos-<arm64|x64>.dmg`.
+- Primary artifact: `HomeAgent-<version>-macos-<arm64|x64>.dmg`.
 - First launch opens `http://127.0.0.1:<port>/setup` automatically.
 - No repository checkout or global package install is required.
-- Default data root: `~/Library/Application Support/Homebrain`.
-- Logs: `~/Library/Logs/Homebrain`.
-- LaunchAgent: `~/Library/LaunchAgents/com.homebrain.agent.plist` pointing inside `/Applications/Homebrain.app`.
+- Default data root: `~/Library/Application Support/HomeAgent`.
+- Logs: `~/Library/Logs/HomeAgent`.
+- LaunchAgent: `~/Library/LaunchAgents/com.homeagent.agent.plist` pointing inside `/Applications/HomeAgent.app`.
 - Bundled `lark-cli` is the only Feishu executable used by production. PATH fallback remains for source development.
-- Do not redistribute Codex in the first release. The setup screen installs an official Codex standalone release into `~/Library/Application Support/Homebrain/bin` only after explicit user consent and checksum verification.
+- Do not redistribute Codex in the first release. The setup screen installs an official Codex standalone release into `~/Library/Application Support/HomeAgent/bin` only after explicit user consent and checksum verification.
 - Claude and TRAE remain optional externally managed providers.
 
 ## File structure
@@ -63,7 +63,7 @@ Update root `package.json`:
 
 ```json
 {
-  "name": "homebrain",
+  "name": "homeagent",
   "version": "0.1.0-beta.1",
   "private": true,
   "type": "module",
@@ -91,7 +91,7 @@ Add the unmodified Apache License 2.0 text as `LICENSE`. Record Bun, Hono, `lark
 bun install --frozen-lockfile
 bun test
 git add package.json .gitignore bun.lock LICENSE THIRD_PARTY_NOTICES.md
-git commit -m "build: make Homebrain releases reproducible"
+git commit -m "build: make HomeAgent releases reproducible"
 ```
 
 ### Task 2: Resolve runtime paths independently of the repository
@@ -106,13 +106,13 @@ git commit -m "build: make Homebrain releases reproducible"
 
 - [ ] **Step 1: Write failing bundled-path tests**
 
-Create tests that pass `/Applications/Homebrain.app/Contents/MacOS/homebrain` and assert:
+Create tests that pass `/Applications/HomeAgent.app/Contents/MacOS/homeagent` and assert:
 
 ```ts
-expect(paths.dataDir).toBe(join(home, "Library", "Application Support", "Homebrain"));
-expect(paths.logDir).toBe(join(home, "Library", "Logs", "Homebrain"));
-expect(paths.larkBin).toBe("/Applications/Homebrain.app/Contents/Resources/bin/lark-cli");
-expect(paths.attachmentHelper).toBe("/Applications/Homebrain.app/Contents/Resources/bin/attachment-extract");
+expect(paths.dataDir).toBe(join(home, "Library", "Application Support", "HomeAgent"));
+expect(paths.logDir).toBe(join(home, "Library", "Logs", "HomeAgent"));
+expect(paths.larkBin).toBe("/Applications/HomeAgent.app/Contents/Resources/bin/lark-cli");
+expect(paths.attachmentHelper).toBe("/Applications/HomeAgent.app/Contents/Resources/bin/attachment-extract");
 ```
 
 - [ ] **Step 2: Run the test and verify failure**
@@ -155,16 +155,16 @@ export function resolveRuntimePaths(input: {
   const bundled = markerAt >= 0;
   const appRoot = bundled ? execPath.slice(0, markerAt + 4) : resolve(input.repoRoot ?? join(import.meta.dir, "../../.."));
   const resourceDir = bundled ? join(appRoot, "Contents", "Resources") : join(appRoot, "packages", "orchestrator", "src");
-  const dataDir = resolve(env.HOMEBRAIN_DATA_DIR ?? (bundled
-    ? join(home, "Library", "Application Support", "Homebrain")
+  const dataDir = resolve(env.HOMEAGENT_DATA_DIR ?? (bundled
+    ? join(home, "Library", "Application Support", "HomeAgent")
     : join(appRoot, "data")));
   return {
     bundled,
     appRoot,
     resourceDir,
     dataDir,
-    logDir: bundled ? join(home, "Library", "Logs", "Homebrain") : join(dataDir, "logs"),
-    larkBin: env.HOMEBRAIN_LARK_BIN ?? (bundled ? join(resourceDir, "bin", "lark-cli") : "lark-cli"),
+    logDir: bundled ? join(home, "Library", "Logs", "HomeAgent") : join(dataDir, "logs"),
+    larkBin: env.HOMEAGENT_LARK_BIN ?? (bundled ? join(resourceDir, "bin", "lark-cli") : "lark-cli"),
     attachmentHelper: bundled ? join(resourceDir, "bin", "attachment-extract") : undefined,
   };
 }
@@ -172,17 +172,17 @@ export function resolveRuntimePaths(input: {
 
 - [ ] **Step 4: Inject binary paths and remove the end-user Swift compiler dependency**
 
-Add `larkBin` constructor options where already supported and pass `resolveRuntimePaths().larkBin` from `main.ts`. Add `HOMEBRAIN_CODEX_BIN`, `HOMEBRAIN_CLAUDE_BIN`, and `HOMEBRAIN_TRAE_BIN` overrides to provider specs instead of hard-coding command names. In bundled mode, execute `attachmentHelper` directly; retain the current temporary Swift compilation only for source-development mode. Reject a helper path outside `Homebrain.app/Contents/Resources/bin` when bundled.
+Add `larkBin` constructor options where already supported and pass `resolveRuntimePaths().larkBin` from `main.ts`. Add `HOMEAGENT_CODEX_BIN`, `HOMEAGENT_CLAUDE_BIN`, and `HOMEAGENT_TRAE_BIN` overrides to provider specs instead of hard-coding command names. In bundled mode, execute `attachmentHelper` directly; retain the current temporary Swift compilation only for source-development mode. Reject a helper path outside `HomeAgent.app/Contents/Resources/bin` when bundled.
 
 - [ ] **Step 5: Run tests and commit**
 
 ```bash
 bun test packages/app/src/runtime-paths.test.ts packages/connectors/src/lark-setup.test.ts packages/connectors/src/feishu.test.ts packages/llm/src/providers.test.ts packages/orchestrator/src/attachment-extractor.test.ts
 git add packages/app/src/runtime-paths.ts packages/app/src/runtime-paths.test.ts packages/connectors/src/feishu.ts packages/connectors/src/lark-setup.ts packages/orchestrator/src/attachment-extractor.ts packages/llm/src/providers.ts
-git commit -m "refactor: resolve bundled Homebrain runtime paths"
+git commit -m "refactor: resolve bundled HomeAgent runtime paths"
 ```
 
-### Task 3: Assemble a self-contained `Homebrain.app`
+### Task 3: Assemble a self-contained `HomeAgent.app`
 
 **Files:**
 - Create: `scripts/build-macos-app.ts`
@@ -195,13 +195,13 @@ git commit -m "refactor: resolve bundled Homebrain runtime paths"
 Assert that a dry-run build plan contains:
 
 ```text
-Homebrain.app/Contents/Info.plist
-Homebrain.app/Contents/MacOS/homebrain
-Homebrain.app/Contents/Resources/app/homebrain.js
-Homebrain.app/Contents/Resources/bin/bun
-Homebrain.app/Contents/Resources/bin/lark-cli
-Homebrain.app/Contents/Resources/bin/attachment-extract
-Homebrain.app/Contents/Resources/THIRD_PARTY_NOTICES.md
+HomeAgent.app/Contents/Info.plist
+HomeAgent.app/Contents/MacOS/homeagent
+HomeAgent.app/Contents/Resources/app/homeagent.js
+HomeAgent.app/Contents/Resources/bin/bun
+HomeAgent.app/Contents/Resources/bin/lark-cli
+HomeAgent.app/Contents/Resources/bin/attachment-extract
+HomeAgent.app/Contents/Resources/THIRD_PARTY_NOTICES.md
 ```
 
 - [ ] **Step 2: Run the test and verify failure**
@@ -217,20 +217,20 @@ Expected: missing build module.
 The build script must:
 
 1. Refuse a dirty lockfile or unsupported target.
-2. Compile the native launcher, then run `bun build --target=bun packages/app/src/main.ts` into `Contents/Resources/app/homebrain.js` and copy the matching official Bun executable to `Contents/Resources/bin/bun`.
+2. Compile the native launcher, then run `bun build --target=bun packages/app/src/main.ts` into `Contents/Resources/app/homeagent.js` and copy the matching official Bun executable to `Contents/Resources/bin/bun`.
 3. Compile `packages/orchestrator/src/attachment-extract.swift` once for the target architecture, link Vision/PDFKit, and place the helper at `Contents/Resources/bin/attachment-extract`.
 4. Download the exact `lark-cli` release for the target architecture from GitHub Releases.
 5. Download its published checksum file over HTTPS and verify SHA-256 before extraction.
-6. Write `Info.plist` with bundle id `com.homebrain.desktop`, semantic version from `package.json`, minimum macOS 13, and URL scheme `homebrain`.
+6. Write `Info.plist` with bundle id `com.homeagent.desktop`, semantic version from `package.json`, minimum macOS 13, and URL scheme `homeagent`.
 7. Set both executables to `0755`, resources to `0644`, and sign the extraction helper before signing the outer app.
-8. Emit `dist/Homebrain.app` and no mutable data inside it.
+8. Emit `dist/HomeAgent.app` and no mutable data inside it.
 
 - [ ] **Step 4: Build locally and inspect**
 
 ```bash
 bun run build:macos --target "$(uname -m)"
-plutil -lint dist/Homebrain.app/Contents/Info.plist
-codesign --verify --deep --strict dist/Homebrain.app || true
+plutil -lint dist/HomeAgent.app/Contents/Info.plist
+codesign --verify --deep --strict dist/HomeAgent.app || true
 ```
 
 Expected: build and plist lint pass; unsigned local builds may fail codesign verification until Task 7.
@@ -239,7 +239,7 @@ Expected: build and plist lint pass; unsigned local builds may fail codesign ver
 
 ```bash
 git add scripts/build-macos-app.ts scripts/build-macos-app.test.ts assets/macos
-git commit -m "build: assemble standalone Homebrain macOS app"
+git commit -m "build: assemble standalone HomeAgent macOS app"
 ```
 
 ### Task 4: Make first launch install and open the managed service
@@ -272,12 +272,12 @@ When bundled, plist ProgramArguments must be:
 
 ```xml
 <array>
-  <string>/Applications/Homebrain.app/Contents/MacOS/homebrain</string>
+  <string>/Applications/HomeAgent.app/Contents/MacOS/homeagent</string>
   <string>serve</string>
 </array>
 ```
 
-Do not include the repository working directory. Write logs to `~/Library/Logs/Homebrain` and data to `~/Library/Application Support/Homebrain`.
+Do not include the repository working directory. Write logs to `~/Library/Logs/HomeAgent` and data to `~/Library/Application Support/HomeAgent`.
 
 - [ ] **Step 4: Add CLI dispatch to the compiled entrypoint**
 
@@ -288,7 +288,7 @@ Support `serve`, `desktop`, `service <command>` and `doctor --json` from one bin
 ```bash
 bun test packages/app/src/desktop.test.ts packages/app/src/service.test.ts packages/app/src/service-cli.test.ts
 git add packages/app/src/desktop.ts packages/app/src/desktop.test.ts packages/app/src/service.ts packages/app/src/service.test.ts packages/app/src/service-cli.ts
-git commit -m "feat: launch Homebrain as a macOS desktop service"
+git commit -m "feat: launch HomeAgent as a macOS desktop service"
 ```
 
 ### Task 5: Add a user-facing installation doctor and data migration
@@ -315,14 +315,14 @@ Each check returns `pass`, `action`, or `fail`, a human sentence and a setup URL
 
 - [ ] **Step 3: Migrate source-install data safely**
 
-On first bundled launch, if the new data directory is empty and the old `~/Applications/homebrain/data` exists, show a browser confirmation. After confirmation, copy to a sibling staging directory, fsync, atomically rename, and leave the source untouched. Record `migration-v1.json` with source, destination, time and result.
+On first bundled launch, if the new data directory is empty and the old `~/Applications/homeagent/data` exists, show a browser confirmation. After confirmation, copy to a sibling staging directory, fsync, atomically rename, and leave the source untouched. Record `migration-v1.json` with source, destination, time and result.
 
 - [ ] **Step 4: Run and commit**
 
 ```bash
 bun test packages/app/src/doctor.test.ts packages/app/src/data-migration.test.ts
 git add packages/app/src/doctor.ts packages/app/src/doctor.test.ts packages/app/src/data-migration.ts packages/app/src/data-migration.test.ts
-git commit -m "feat: diagnose and migrate Homebrain installations"
+git commit -m "feat: diagnose and migrate HomeAgent installations"
 ```
 
 ### Task 6: Provide a zero-terminal AI provider path
@@ -336,7 +336,7 @@ git commit -m "feat: diagnose and migrate Homebrain installations"
 
 - [ ] **Step 1: Install Codex from the official release after user consent**
 
-Do not place Codex inside `Homebrain.app`. On the explicit `连接 ChatGPT` action, download the official architecture-specific Codex executable, verify the release checksum over HTTPS, record the installed version and source URL, then atomically install it to `~/Library/Application Support/Homebrain/bin/codex` with mode `0755`.
+Do not place Codex inside `HomeAgent.app`. On the explicit `连接 ChatGPT` action, download the official architecture-specific Codex executable, verify the release checksum over HTTPS, record the installed version and source URL, then atomically install it to `~/Library/Application Support/HomeAgent/bin/codex` with mode `0755`.
 
 - [ ] **Step 2: Write failing device-login tests**
 
@@ -388,8 +388,8 @@ Publish JSON shaped exactly as:
   "version": "0.1.0-beta.1",
   "minimumMacOS": "13.0",
   "artifacts": {
-    "arm64": { "url": "https://github.com/zhangga/homebrain/releases/download/v0.1.0-beta.1/Homebrain-0.1.0-beta.1-macos-arm64.dmg", "sha256": "64-lowercase-hex" },
-    "x64": { "url": "https://github.com/zhangga/homebrain/releases/download/v0.1.0-beta.1/Homebrain-0.1.0-beta.1-macos-x64.dmg", "sha256": "64-lowercase-hex" }
+    "arm64": { "url": "https://github.com/zhangga/homeagent/releases/download/v0.1.0-beta.1/HomeAgent-0.1.0-beta.1-macos-arm64.dmg", "sha256": "64-lowercase-hex" },
+    "x64": { "url": "https://github.com/zhangga/homeagent/releases/download/v0.1.0-beta.1/HomeAgent-0.1.0-beta.1-macos-x64.dmg", "sha256": "64-lowercase-hex" }
   }
 }
 ```
@@ -404,7 +404,7 @@ Mount the DMG, copy the app to a temporary Applications directory, launch with t
 
 ```bash
 git add .github/workflows/release-macos.yml scripts/write-update-manifest.ts scripts/smoke-macos-bundle.ts
-git commit -m "ci: publish signed Homebrain macOS releases"
+git commit -m "ci: publish signed HomeAgent macOS releases"
 ```
 
 ### Task 8: Add guarded update and uninstall UX
@@ -422,7 +422,7 @@ Cover invalid signature, wrong architecture, downgrade, checksum mismatch, inter
 
 - [ ] **Step 2: Implement safe staging**
 
-Download to `~/Library/Application Support/Homebrain/updates/<version>`, verify manifest URL, SHA-256, Apple signature and bundle id, then ask for explicit confirmation. Stop the service, replace the app atomically through a helper process, restart, wait for `/readyz`, and restore the previous bundle if health does not return.
+Download to `~/Library/Application Support/HomeAgent/updates/<version>`, verify manifest URL, SHA-256, Apple signature and bundle id, then ask for explicit confirmation. Stop the service, replace the app atomically through a helper process, restart, wait for `/readyz`, and restore the previous bundle if health does not return.
 
 - [ ] **Step 3: Implement uninstall choices**
 
@@ -433,7 +433,7 @@ Offer two actions:
 彻底移除应用和所有本地知识
 ```
 
-The destructive option requires typing `删除 Homebrain` and creates a final export prompt before deletion.
+The destructive option requires typing `删除 HomeAgent` and creates a final export prompt before deletion.
 
 - [ ] **Step 4: Run full verification**
 
@@ -450,12 +450,12 @@ Expected: all tests pass, bundle launches from outside the repository, setup ren
 
 ```bash
 git add packages/app/src/updater.ts packages/app/src/updater.test.ts packages/web/src/views.ts packages/web/src/app.ts packages/app/src/service.ts
-git commit -m "feat: update and uninstall Homebrain safely"
+git commit -m "feat: update and uninstall HomeAgent safely"
 ```
 
 ## Acceptance checklist
 
-- A clean macOS 13+ account can install Homebrain without Terminal, Git, Bun, Node or npm.
+- A clean macOS 13+ account can install HomeAgent without Terminal, Git, Bun, Node or npm.
 - Dragging or updating the app does not move or delete knowledge data.
 - First launch opens the guided setup and can connect ChatGPT plus create a Feishu bot through browser authorization.
 - Every redistributed binary has a pinned version, verified checksum and license notice.

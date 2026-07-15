@@ -5,7 +5,7 @@
  * glossary) have no folder. Centralizing this keeps the LLM's free-form slug
  * suggestions from producing unsafe or inconsistent paths.
  */
-import type { PageType } from "@homebrain/shared";
+import type { PageType } from "@homeagent/shared";
 
 /** Folder each content type lives in. */
 export const TYPE_FOLDER: Record<Exclude<PageType, "index" | "overview" | "log" | "glossary">, string> = {
