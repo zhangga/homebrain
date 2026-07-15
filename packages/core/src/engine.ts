@@ -44,7 +44,7 @@ import type {
 import { SpaceRegistry } from "./registry.ts";
 import { AgentStore, type Agent } from "./agents.ts";
 import { TaskStore, type Task } from "./tasks.ts";
-import { ReminderStore } from "./reminders.ts";
+import { ReminderStore, type Reminder } from "./reminders.ts";
 import { runDreamCycle } from "./dream.ts";
 import { refreshDigest } from "./digest.ts";
 import { ask as askImpl } from "./ask.ts";
@@ -153,6 +153,7 @@ export class KnowledgeEngine implements Knowledge {
   private providerRuns = new Map<ProviderId, ProviderRunHealth>();
   private dreamCycles = new Map<SpaceId, DreamCycleHealth>();
   private runningTaskCounts = new Map<string, number>();
+  private deliveringReminderCounts = new Map<string, number>();
 
   constructor(opts: EngineOptions = {}) {
     this.dataDir = opts.dataDir ?? config().dataDir;
@@ -455,6 +456,11 @@ export class KnowledgeEngine implements Knowledge {
       if (tasks.some((task) => (this.runningTaskCounts.get(task.id) ?? 0) > 0)) {
         throw new Error(`space has running tasks: ${space}`);
       }
+      if (reminders.some(
+        (reminder) => (this.deliveringReminderCounts.get(reminder.id) ?? 0) > 0,
+      )) {
+        throw new Error(`space has delivering reminders: ${space}`);
+      }
       if (this.dreamCycles.get(space)?.running) {
         throw new Error(`space has a running dream cycle: ${space}`);
       }
@@ -484,6 +490,32 @@ export class KnowledgeEngine implements Knowledge {
         remindersDeleted,
       };
     });
+  }
+
+  /**
+   * Deliver one scheduled reminder as a guarded state transition. The running
+   * marker is installed before the first await so space deletion cannot race a
+   * transport already in flight. State advances only after delivery succeeds.
+   */
+  async deliverReminder(
+    reminderId: string,
+    notifiedAt: number,
+    deliver: (reminder: Reminder) => void | Promise<void>,
+  ): Promise<boolean> {
+    const reminder = this.reminders.get(reminderId);
+    if (!reminder || reminder.status !== "scheduled") return false;
+    this.deliveringReminderCounts.set(
+      reminderId,
+      (this.deliveringReminderCounts.get(reminderId) ?? 0) + 1,
+    );
+    try {
+      await deliver({ ...reminder });
+      return Boolean(this.reminders.markNotified(reminderId, notifiedAt));
+    } finally {
+      const remaining = (this.deliveringReminderCounts.get(reminderId) ?? 1) - 1;
+      if (remaining > 0) this.deliveringReminderCounts.set(reminderId, remaining);
+      else this.deliveringReminderCounts.delete(reminderId);
+    }
   }
 
   async pruneRawMessages(retentionDays: number, now = Date.now()): Promise<RawRetentionReport> {
@@ -636,6 +668,14 @@ export class KnowledgeEngine implements Knowledge {
         return { id: space.id, ok: false, error: String(err), lastDreamAt: space.lastDreamAt };
       }
     });
+    const reminders = this.reminders.list();
+    const reminderCounts = reminders.reduce(
+      (counts, reminder) => {
+        counts[reminder.status] += 1;
+        return counts;
+      },
+      { scheduled: 0, completed: 0, cancelled: 0 },
+    );
     return {
       ok,
       spaces: spaces.length,
@@ -657,16 +697,13 @@ export class KnowledgeEngine implements Knowledge {
           lastStatus: task.lastStatus,
           lastError: task.lastError,
         })),
-        reminders: this.reminders.list().map((reminder) => ({
-          id: reminder.id,
-          title: reminder.title,
-          space: reminder.space,
-          status: reminder.status,
-          nextTriggerAt: reminder.nextTriggerAt,
-          repeatEveryMs: reminder.repeatEveryMs,
-          untilConfirmed: reminder.untilConfirmed,
-          lastNotifiedAt: reminder.lastNotifiedAt,
-        })),
+        reminders: {
+          total: reminders.length,
+          ...reminderCounts,
+          delivering: reminders.filter(
+            (reminder) => (this.deliveringReminderCounts.get(reminder.id) ?? 0) > 0,
+          ).length,
+        },
         spaces: spaceDetails,
       },
     };

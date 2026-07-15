@@ -527,6 +527,15 @@ describe("FeishuConnector outbound", () => {
     expect(cmd).toContain("欢迎语");
   });
 
+  test("notice propagates delivery failures so durable callers can retry", async () => {
+    connector = new FeishuConnector({
+      spawner: new FakeSpawner(),
+      runCommand: async () => { throw new Error("authentication expired"); },
+    });
+
+    await expect(connector.notice("oc_group", "提醒")).rejects.toThrow("authentication expired");
+  });
+
   test("adds and removes a native message reaction", async () => {
     const spawner = new FakeSpawner();
     const commands: string[][] = [];

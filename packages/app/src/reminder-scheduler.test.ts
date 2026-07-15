@@ -84,4 +84,31 @@ describe("ReminderScheduler", () => {
       lastError: expect.stringContaining("network unavailable"),
     }));
   });
+
+  test("prevents deleting a space while one of its reminders is being delivered", async () => {
+    engine.reminders.create({
+      title: "并发投递",
+      space: SPACE,
+      chatId: "oc_reminder_scheduler",
+      creatorId: "ou_me",
+      triggerAt: NOW,
+    }, NOW);
+    let releaseDelivery!: () => void;
+    let deliveryStarted!: () => void;
+    const started = new Promise<void>((resolve) => { deliveryStarted = resolve; });
+    const released = new Promise<void>((resolve) => { releaseDelivery = resolve; });
+    const scheduler = new ReminderScheduler(engine, {
+      notify: async () => {
+        deliveryStarted();
+        await released;
+      },
+    });
+
+    const tick = scheduler.tick("test", new Date(NOW));
+    await started;
+    await expect(engine.deleteSpace(SPACE)).rejects.toThrow("space has delivering reminders");
+    releaseDelivery();
+    await tick;
+    expect((await engine.deleteSpace(SPACE)).status).toBe("deleted");
+  });
 });

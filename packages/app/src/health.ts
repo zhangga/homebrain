@@ -214,12 +214,13 @@ export function createSystemHealthReporter(
       details: { tasks },
     };
 
-    const reminders = (core.details?.reminders as Array<Record<string, unknown>> | undefined) ?? [];
-    const scheduledReminders = reminders.filter((reminder) => reminder.status === "scheduled");
+    const reminders = (core.details?.reminders as Record<string, unknown> | undefined) ?? {};
+    const scheduledReminders = typeof reminders.scheduled === "number" ? reminders.scheduled : 0;
+    const totalReminders = typeof reminders.total === "number" ? reminders.total : 0;
     components.reminders = {
       status: "ok",
-      summary: `${scheduledReminders.length} 个待提醒，${reminders.length} 个提醒记录`,
-      details: { reminders },
+      summary: `${scheduledReminders} 个待提醒，${totalReminders} 个提醒记录`,
+      details: { counts: reminders },
     };
 
     const dreamLoop = probeLoopComponent("Dream Cycle 调度器", sources.dreamSchedulerHealth);

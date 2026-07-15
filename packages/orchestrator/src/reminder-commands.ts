@@ -79,7 +79,9 @@ function shanghaiCalendarInstant(text: string, now: number): number | undefined 
       const targetMondayIndex = (target + 6) % 7;
       dayOffset = 7 - currentMondayIndex + targetMondayIndex;
     } else if (prefix === "本周" || prefix === "这周") {
-      dayOffset = target - currentWeekday;
+      const currentMondayIndex = (currentWeekday + 6) % 7;
+      const targetMondayIndex = (target + 6) % 7;
+      dayOffset = targetMondayIndex - currentMondayIndex;
     } else {
       dayOffset = (target - currentWeekday + 7) % 7;
     }
@@ -183,11 +185,12 @@ function reminderRange(text: string, now: number): { from: number; to: number; l
 function formatReminderList(
   engine: KnowledgeEngine,
   space: SpaceId,
+  actorId: string,
   text: string,
   now: number,
 ): string {
   const range = reminderRange(text, now);
-  const reminders = engine.reminders.upcoming(space, range.from, range.to);
+  const reminders = engine.reminders.upcoming(space, range.from, range.to, actorId);
   if (reminders.length === 0) return `🗓 ${range.label}：暂无提醒。`;
   return [
     `🗓 ${range.label}：`,
@@ -204,7 +207,8 @@ function matchingOwnedReminder(
   actorId: string,
   text: string,
 ): ReturnType<KnowledgeEngine["reminders"]["get"]> {
-  const query = cleanMessage(text)
+  const raw = cleanMessage(text).replace(/[。.!！]+$/u, "").trim();
+  const query = raw
     .replace(/^把/u, "")
     .replace(/^(?:我已?|已经)?(?:确认|完成|办好|收到)(?:了)?/u, "")
     .replace(/^(?:请)?(?:取消|删除|不要再)/u, "")
@@ -217,9 +221,14 @@ function matchingOwnedReminder(
       && reminder.status === "scheduled",
   );
   if (!query && candidates.length === 1) return candidates[0];
-  return candidates.find(
+  const exactRaw = candidates.filter((reminder) => reminder.title === raw);
+  if (exactRaw.length === 1) return exactRaw[0];
+  const exactQuery = candidates.filter((reminder) => reminder.title === query);
+  if (exactQuery.length === 1) return exactQuery[0];
+  const partial = candidates.filter(
     (reminder) => reminder.title.includes(query) || query.includes(reminder.title),
   );
+  return partial.length === 1 ? partial[0] : undefined;
 }
 
 function isReminderCompletion(text: string): boolean {
@@ -245,7 +254,7 @@ export function handleReminderMessage(
   now = Date.now(),
 ): string | null {
   if (isReminderListQuery(msg.text)) {
-    return formatReminderList(engine, space, msg.text, now);
+    return formatReminderList(engine, space, msg.senderId, msg.text, now);
   }
   const snoozeMs = snoozeDuration(msg.text);
   if (snoozeMs) {

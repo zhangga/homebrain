@@ -357,6 +357,7 @@ export class FeishuConnector implements Connector {
       await this.runCommand(cmd);
     } catch (err) {
       log.error("notice failed", { err: String(err) });
+      throw err;
     }
   }
 

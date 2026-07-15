@@ -97,10 +97,17 @@ export class ReminderScheduler {
     try {
       for (const reminder of this.engine.reminders.due(now.getTime())) {
         try {
-          if (!this.notify) throw new Error("reminder notification transport is unavailable");
-          await this.notify(reminder, reminderNotification(reminder));
-          this.engine.reminders.markNotified(reminder.id, now.getTime());
-          delivered.push(reminder.id);
+          const advanced = await this.engine.deliverReminder(
+            reminder.id,
+            now.getTime(),
+            async (current) => {
+              if (!this.notify) {
+                throw new Error("reminder notification transport is unavailable");
+              }
+              await this.notify(current, reminderNotification(current));
+            },
+          );
+          if (advanced) delivered.push(reminder.id);
         } catch (err) {
           errors.push(`${reminder.id}: ${String(err)}`);
           log.error("reminder delivery failed", { reminderId: reminder.id, err: String(err) });

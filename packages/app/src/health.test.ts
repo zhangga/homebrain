@@ -23,6 +23,13 @@ describe("system health reporter", () => {
     dirs.push(dir);
     const engine = new KnowledgeEngine({ dataDir: dir, runProvider: async () => "ok" });
     engine.ensureSpace("team/oc_health", { chatId: "oc_health" });
+    engine.reminders.create({
+      title: "私密体检预约",
+      space: "team/oc_health",
+      chatId: "oc_health_private",
+      creatorId: "ou_private",
+      triggerAt: 1_783_932_100_000,
+    }, 1_783_932_000_000);
 
     const reportHealth = createSystemHealthReporter({
       engine,
@@ -53,6 +60,9 @@ describe("system health reporter", () => {
     const snapshot = await reportHealth();
     expect(snapshot.ready).toBe(true);
     expect(snapshot.status).toBe("ok");
+    expect(snapshot.components.reminders?.summary).toBe("1 个待提醒，1 个提醒记录");
+    expect(JSON.stringify(snapshot)).not.toContain("私密体检预约");
+    expect(JSON.stringify(snapshot)).not.toContain("oc_health_private");
     expect(snapshot.components).toEqual(
       expect.objectContaining({
         knowledge: expect.objectContaining({ status: "ok" }),

@@ -3,9 +3,19 @@
  * knowledge: they have a precise delivery time, an owner, and an explicit
  * lifecycle that survives service restarts.
  */
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  closeSync,
+  existsSync,
+  fsyncSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  renameSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { randomUUID } from "node:crypto";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { isSpaceId, type SpaceId } from "@homebrain/shared";
 
 export type ReminderStatus = "scheduled" | "completed" | "cancelled";
@@ -57,23 +67,30 @@ function finite(value: unknown): value is number {
 function validStoredReminder(value: unknown): value is Reminder {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const reminder = value as Partial<Reminder>;
-  return typeof reminder.id === "string"
-    && typeof reminder.title === "string"
+  return typeof reminder.id === "string" && reminder.id.length > 0
+    && typeof reminder.title === "string" && reminder.title.length > 0
     && typeof reminder.space === "string"
     && isSpaceId(reminder.space)
-    && typeof reminder.chatId === "string"
-    && typeof reminder.creatorId === "string"
+    && typeof reminder.chatId === "string" && reminder.chatId.length > 0
+    && typeof reminder.creatorId === "string" && reminder.creatorId.length > 0
     && finite(reminder.triggerAt)
     && finite(reminder.nextTriggerAt)
     && ["scheduled", "completed", "cancelled"].includes(reminder.status ?? "")
     && typeof reminder.untilConfirmed === "boolean"
+    && (reminder.repeatEveryMs === undefined
+      || (finite(reminder.repeatEveryMs) && reminder.repeatEveryMs >= MIN_REPEAT_MS))
+    && (!reminder.untilConfirmed || reminder.repeatEveryMs !== undefined)
+    && (reminder.sourceMessageId === undefined || typeof reminder.sourceMessageId === "string")
+    && (reminder.lastNotifiedAt === undefined || finite(reminder.lastNotifiedAt))
+    && (reminder.completedAt === undefined || finite(reminder.completedAt))
+    && (reminder.cancelledAt === undefined || finite(reminder.cancelledAt))
     && finite(reminder.createdAt)
     && finite(reminder.updatedAt);
 }
 
 export class ReminderStore {
   private readonly configPath: string;
-  private readonly reminders: Map<string, Reminder>;
+  private reminders: Map<string, Reminder>;
 
   constructor(dataDir: string) {
     this.configPath = join(dataDir, "config", "reminders.json");
@@ -95,10 +112,48 @@ export class ReminderStore {
     return reminders;
   }
 
-  private persist(): void {
-    mkdirSync(join(this.configPath, ".."), { recursive: true });
-    const file: RemindersFile = { reminders: Object.fromEntries(this.reminders) };
-    writeFileSync(this.configPath, JSON.stringify(file, null, 2), "utf8");
+  private persist(reminders = this.reminders): void {
+    const configDir = dirname(this.configPath);
+    mkdirSync(configDir, { recursive: true });
+    const file: RemindersFile = { reminders: Object.fromEntries(reminders) };
+    const temporaryPath = `${this.configPath}.${process.pid}.${randomUUID()}.tmp`;
+    try {
+      writeFileSync(temporaryPath, JSON.stringify(file, null, 2), {
+        encoding: "utf8",
+        mode: 0o600,
+      });
+      const fileDescriptor = openSync(temporaryPath, "r");
+      try {
+        fsyncSync(fileDescriptor);
+      } finally {
+        closeSync(fileDescriptor);
+      }
+      renameSync(temporaryPath, this.configPath);
+      const directoryDescriptor = openSync(configDir, "r");
+      try {
+        fsyncSync(directoryDescriptor);
+      } finally {
+        closeSync(directoryDescriptor);
+      }
+    } catch (err) {
+      try {
+        unlinkSync(temporaryPath);
+      } catch {
+        // The rename may already have consumed the temporary path.
+      }
+      throw err;
+    }
+  }
+
+  /** Persist a detached candidate before making it visible to readers. */
+  private commit<T>(change: (candidate: Map<string, Reminder>) => T): T {
+    const candidate = new Map(
+      [...this.reminders].map(([id, reminder]) => [id, { ...reminder }]),
+    );
+    const result = change(candidate);
+    this.persist(candidate);
+    this.reminders = candidate;
+    return result;
   }
 
   list(): Reminder[] {
@@ -123,6 +178,15 @@ export class ReminderStore {
     if (!title || !isSpaceId(space) || !chatId || !creatorId || !finite(input.triggerAt)) {
       return undefined;
     }
+    const sourceMessageId = input.sourceMessageId?.trim() || undefined;
+    if (sourceMessageId) {
+      const existing = this.list().find(
+        (reminder) => reminder.space === space
+          && reminder.chatId === chatId
+          && reminder.sourceMessageId === sourceMessageId,
+      );
+      if (existing) return existing;
+    }
     const repeatEveryMs = finite(input.repeatEveryMs) && input.repeatEveryMs >= MIN_REPEAT_MS
       ? input.repeatEveryMs
       : undefined;
@@ -137,13 +201,14 @@ export class ReminderStore {
       repeatEveryMs,
       untilConfirmed: Boolean(input.untilConfirmed && repeatEveryMs),
       status: "scheduled",
-      sourceMessageId: input.sourceMessageId?.trim() || undefined,
+      sourceMessageId,
       createdAt: now,
       updatedAt: now,
     };
-    this.reminders.set(reminder.id, reminder);
-    this.persist();
-    return reminder;
+    return this.commit((candidate) => {
+      candidate.set(reminder.id, reminder);
+      return reminder;
+    });
   }
 
   due(now = Date.now()): Reminder[] {
@@ -152,9 +217,10 @@ export class ReminderStore {
     );
   }
 
-  upcoming(space: SpaceId, from: number, to: number): Reminder[] {
+  upcoming(space: SpaceId, from: number, to: number, creatorId?: string): Reminder[] {
     return this.list().filter(
       (reminder) => reminder.space === space
+        && (creatorId === undefined || reminder.creatorId === creatorId)
         && reminder.status === "scheduled"
         && reminder.nextTriggerAt >= from
         && reminder.nextTriggerAt <= to,
@@ -164,16 +230,18 @@ export class ReminderStore {
   markNotified(id: string, at = Date.now()): Reminder | undefined {
     const reminder = this.reminders.get(id);
     if (!reminder || reminder.status !== "scheduled") return undefined;
-    reminder.lastNotifiedAt = at;
-    reminder.updatedAt = at;
-    if (reminder.untilConfirmed && reminder.repeatEveryMs) {
-      reminder.nextTriggerAt = at + reminder.repeatEveryMs;
-    } else {
-      reminder.status = "completed";
-      reminder.completedAt = at;
-    }
-    this.persist();
-    return reminder;
+    return this.commit((candidate) => {
+      const updated = candidate.get(id)!;
+      updated.lastNotifiedAt = at;
+      updated.updatedAt = at;
+      if (updated.untilConfirmed && updated.repeatEveryMs) {
+        updated.nextTriggerAt = at + updated.repeatEveryMs;
+      } else {
+        updated.status = "completed";
+        updated.completedAt = at;
+      }
+      return updated;
+    });
   }
 
   complete(id: string, actorId: string, at = Date.now()): Reminder | undefined {
@@ -181,11 +249,13 @@ export class ReminderStore {
     if (!reminder || reminder.creatorId !== actorId || reminder.status !== "scheduled") {
       return undefined;
     }
-    reminder.status = "completed";
-    reminder.completedAt = at;
-    reminder.updatedAt = at;
-    this.persist();
-    return reminder;
+    return this.commit((candidate) => {
+      const updated = candidate.get(id)!;
+      updated.status = "completed";
+      updated.completedAt = at;
+      updated.updatedAt = at;
+      return updated;
+    });
   }
 
   cancel(id: string, actorId: string, at = Date.now()): Reminder | undefined {
@@ -193,11 +263,13 @@ export class ReminderStore {
     if (!reminder || reminder.creatorId !== actorId || reminder.status !== "scheduled") {
       return undefined;
     }
-    reminder.status = "cancelled";
-    reminder.cancelledAt = at;
-    reminder.updatedAt = at;
-    this.persist();
-    return reminder;
+    return this.commit((candidate) => {
+      const updated = candidate.get(id)!;
+      updated.status = "cancelled";
+      updated.cancelledAt = at;
+      updated.updatedAt = at;
+      return updated;
+    });
   }
 
   snooze(id: string, actorId: string, nextTriggerAt: number, at = Date.now()): Reminder | undefined {
@@ -211,40 +283,41 @@ export class ReminderStore {
     ) {
       return undefined;
     }
-    reminder.nextTriggerAt = nextTriggerAt;
-    reminder.updatedAt = at;
-    this.persist();
-    return reminder;
+    return this.commit((candidate) => {
+      const updated = candidate.get(id)!;
+      updated.nextTriggerAt = nextTriggerAt;
+      updated.updatedAt = at;
+      return updated;
+    });
   }
 
   remove(id: string): boolean {
-    const removed = this.reminders.delete(id);
-    if (removed) this.persist();
-    return removed;
+    if (!this.reminders.has(id)) return false;
+    return this.commit((candidate) => candidate.delete(id));
   }
 
   restore(reminders: Reminder[]): Reminder[] {
-    const restored: Reminder[] = [];
     for (const reminder of reminders) {
       if (this.reminders.has(reminder.id)) {
         throw new Error(`reminder id already exists: ${reminder.id}`);
       }
-      const copy = { ...reminder };
-      this.reminders.set(copy.id, copy);
-      restored.push(copy);
     }
-    if (restored.length > 0) this.persist();
-    return restored;
+    if (reminders.length === 0) return [];
+    return this.commit((candidate) => reminders.map((reminder) => {
+      const copy = { ...reminder };
+      candidate.set(copy.id, copy);
+      return copy;
+    }));
   }
 
   removeBySpace(space: SpaceId): number {
-    let removed = 0;
-    for (const [id, reminder] of this.reminders) {
-      if (reminder.space !== space) continue;
-      this.reminders.delete(id);
-      removed += 1;
-    }
-    if (removed > 0) this.persist();
-    return removed;
+    const ids = [...this.reminders]
+      .filter(([, reminder]) => reminder.space === space)
+      .map(([id]) => id);
+    if (ids.length === 0) return 0;
+    return this.commit((candidate) => {
+      for (const id of ids) candidate.delete(id);
+      return ids.length;
+    });
   }
 }

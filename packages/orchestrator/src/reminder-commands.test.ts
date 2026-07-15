@@ -30,4 +30,13 @@ describe("parseReminderRequest", () => {
       new Date("2026-07-26T09:00:00+08:00").getTime(),
     );
   });
+
+  test("resolves this-week weekdays on a Monday-based calendar", () => {
+    expect(parseReminderRequest("本周日上午提醒我去茶饼斋", NOW)?.triggerAt).toBe(
+      new Date("2026-07-19T09:00:00+08:00").getTime(),
+    );
+
+    const sundayNoon = new Date("2026-07-19T12:00:00+08:00").getTime();
+    expect(parseReminderRequest("本周一上午提醒我开会", sundayNoon)).toBeUndefined();
+  });
 });

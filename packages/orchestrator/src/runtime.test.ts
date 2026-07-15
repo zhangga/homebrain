@@ -179,11 +179,19 @@ describe("orchestrator trunk (cli connector, no feishu)", () => {
       creatorId: "ou_me",
       triggerAt: now + 2 * 3600_000,
     }, now);
+    engine.reminders.create({
+      title: "他人的私密安排",
+      space: "team/oc_team",
+      chatId: "oc_team",
+      creatorId: "ou_other",
+      triggerAt: now + 3 * 3600_000,
+    }, now);
     await orch.start();
     await connector.sendGroup("@agent 我最近一周有什么安排吗", true);
 
     expect(connector.sent.at(-1)?.markdown).toContain("未来 7 天的安排");
     expect(connector.sent.at(-1)?.markdown).toContain("去茶饼斋");
+    expect(connector.sent.at(-1)?.markdown).not.toContain("他人的私密安排");
     expect(engine.registry.store("team/oc_team").index().countRaw()).toBe(0);
   });
 
@@ -204,6 +212,31 @@ describe("orchestrator trunk (cli connector, no feishu)", () => {
     expect(engine.reminders.get(reminder.id)?.status).toBe("completed");
     expect(connector.sent.at(-1)?.markdown).toContain("已完成提醒");
     expect(connector.sent.at(-1)?.markdown).toContain("确认去大同");
+  });
+
+  test("confirmation prefers the exact reminder title over an ambiguous partial match", async () => {
+    const now = Date.now();
+    const shorter = engine.reminders.create({
+      title: "去大同",
+      space: "team/oc_team",
+      chatId: "oc_team",
+      creatorId: "ou_me",
+      triggerAt: now + 1800_000,
+    }, now)!;
+    const exact = engine.reminders.create({
+      title: "确认去大同",
+      space: "team/oc_team",
+      chatId: "oc_team",
+      creatorId: "ou_me",
+      triggerAt: now + 3600_000,
+      repeatEveryMs: 3 * 3600_000,
+      untilConfirmed: true,
+    }, now)!;
+    await orch.start();
+    await connector.sendGroup("@agent 确认去大同", true);
+
+    expect(engine.reminders.get(shorter.id)?.status).toBe("scheduled");
+    expect(engine.reminders.get(exact.id)?.status).toBe("completed");
   });
 
   test("the creator can cancel a scheduled reminder in natural language", async () => {

@@ -40,6 +40,22 @@ describe("ReminderStore", () => {
     expect(new ReminderStore(dir).get(reminder!.id)).toEqual(reminder);
   });
 
+  test("deduplicates a redelivered source message after restart", () => {
+    const input = {
+      title: "去茶饼斋",
+      space: SPACE,
+      chatId: "oc_reminders",
+      creatorId: "ou_me",
+      triggerAt: NOW + 3600_000,
+      sourceMessageId: "om_redelivered",
+    };
+    const first = new ReminderStore(dir).create(input, NOW)!;
+    const afterRestart = new ReminderStore(dir);
+
+    expect(afterRestart.create(input, NOW + 1000)?.id).toBe(first.id);
+    expect(afterRestart.list()).toHaveLength(1);
+  });
+
   test("a one-shot reminder completes after its notification is recorded", () => {
     const store = new ReminderStore(dir);
     const reminder = store.create({
@@ -78,6 +94,36 @@ describe("ReminderStore", () => {
     }));
     expect(store.complete(reminder.id, "ou_other", NOW + 1000)).toBeUndefined();
     expect(store.complete(reminder.id, "ou_me", NOW + 1000)?.status).toBe("completed");
+  });
+
+  test("keeps memory unchanged when durable persistence fails", () => {
+    const store = new ReminderStore(dir);
+    const reminder = store.create({
+      title: "不能半成功",
+      space: SPACE,
+      chatId: "oc_reminders",
+      creatorId: "ou_me",
+      triggerAt: NOW,
+    }, NOW)!;
+    Object.defineProperty(store, "persist", {
+      value: () => { throw new Error("disk full"); },
+    });
+
+    expect(() => store.markNotified(reminder.id, NOW)).toThrow("disk full");
+    expect(store.get(reminder.id)).toEqual(expect.objectContaining({
+      status: "scheduled",
+      nextTriggerAt: NOW,
+    }));
+    expect(store.get(reminder.id)?.lastNotifiedAt).toBeUndefined();
+    expect(() => store.create({
+      title: "不能留在内存",
+      space: SPACE,
+      chatId: "oc_reminders",
+      creatorId: "ou_me",
+      triggerAt: NOW + 1000,
+      sourceMessageId: "om_failed_write",
+    }, NOW)).toThrow("disk full");
+    expect(store.list()).toHaveLength(1);
   });
 
   test("lists only scheduled reminders in the requested space and time range", () => {
