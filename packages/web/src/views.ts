@@ -20,6 +20,7 @@ import type { SpaceMeta, Agent, Task } from "@homebrain/core";
 import { AGENT_PERMISSIONS, TASK_CADENCES } from "@homebrain/core";
 import type { DetectedProvider } from "@homebrain/llm";
 import type { FeishuRuntimeStatus } from "./integrations.ts";
+import type { FeishuExternalSharingStatus } from "./external-sharing.ts";
 import {
   feishuProvisioningPollScript,
   isFeishuProvisioningActive,
@@ -616,17 +617,61 @@ function feishuProvisioningControl(
   </form>`;
 }
 
-export function integrationsView(
-  botName: string,
-  botOpenId: string,
-  setup: LarkSetupStatus,
-  provisioning: LarkProvisioningSession,
-  restartRequired: boolean,
-  runtime: FeishuRuntimeStatus | undefined,
-  groups: SpaceMeta[],
-  agents: Agent[],
-  flashMsg?: string,
+function externalSharingControl(
+  sharing: FeishuExternalSharingStatus,
 ): HtmlEscapedString | Promise<HtmlEscapedString> {
+  if (sharing.state === "verified") {
+    return html`<div class="integration-actions"><span class="badge ok">对外共享已验证</span><span class="muted">${sharing.verifiedGroupName ?? sharing.verifiedChatId ?? "外部群消息已收到"}</span></div>`;
+  }
+  if (sharing.state === "awaiting_external_message") {
+    return html`<div class="integration-actions"><span class="badge degraded">等待外部群消息</span>${sharing.consoleUrl ? html`<a class="btn secondary" href="${sharing.consoleUrl}" target="_blank" rel="noreferrer">打开飞书应用</a>` : ""}<a class="btn secondary" href="/integrations">重新检查</a></div>`;
+  }
+  if (sharing.state === "skipped") {
+    return html`<div class="integration-actions"><span class="muted">当前仅供企业内部使用</span>
+      ${sharing.consoleUrl ? html`<a class="btn secondary" href="${sharing.consoleUrl}" target="_blank" rel="noreferrer">打开飞书应用</a>` : ""}
+      <form method="post" action="/setup/feishu/external-sharing/start">
+        <input type="hidden" name="returnTo" value="/integrations" />
+        <button type="submit" class="secondary">我已提交，开始验证</button>
+      </form>
+    </div>`;
+  }
+  return html`<div class="integration-actions">
+    ${sharing.consoleUrl ? html`<a class="btn secondary" href="${sharing.consoleUrl}" target="_blank" rel="noreferrer">打开当前飞书应用</a>` : ""}
+    <form method="post" action="/setup/feishu/external-sharing/start">
+      <input type="hidden" name="returnTo" value="/integrations" />
+      <button type="submit">开始对外共享验证</button>
+    </form>
+  </div>`;
+}
+
+export interface IntegrationsViewInput {
+  botName: string;
+  botOpenId: string;
+  setup: LarkSetupStatus;
+  provisioning: LarkProvisioningSession;
+  restartRequired: boolean;
+  runtime?: FeishuRuntimeStatus;
+  externalSharing: FeishuExternalSharingStatus;
+  groups: SpaceMeta[];
+  agents: Agent[];
+  flashMsg?: string;
+}
+
+export function integrationsView(
+  input: IntegrationsViewInput,
+): HtmlEscapedString | Promise<HtmlEscapedString> {
+  const {
+    botName,
+    botOpenId,
+    setup,
+    provisioning,
+    restartRequired,
+    runtime,
+    externalSharing,
+    groups,
+    agents,
+    flashMsg,
+  } = input;
   const shownBotName = setup.botName ?? botName;
   const shownBotOpenId = setup.botOpenId ?? botOpenId;
   const agentName = (id?: string) => agents.find((a) => a.id === id)?.name;
@@ -720,8 +765,15 @@ export function integrationsView(
         </div>
         <div class="integration-actions">${runtimeBadge}${runtimeRecovery}</div>
       </div>
+      ${setup.state === "ready" && setup.verified && setup.brand !== "lark" ? html`<div class="integration-row">
+        <div>
+          <strong>对外共享</strong>
+          <div class="muted">允许机器人加入外部群，并接受外部用户私聊。</div>
+        </div>
+        ${externalSharingControl(externalSharing)}
+      </div>` : ""}
       <div class="integration-detail">
-        <div class="muted">首次确认会申请完整权限：消息收发、群消息读取、附件、表情、群信息和两条事件订阅。企业管理员可能需要在这次确认中批准敏感权限；无需事后进入开放平台补配置。手动连接已有应用时仍需自行确认权限。</div>
+        <div class="muted">首次确认会申请完整权限：消息收发、群消息读取、附件、表情、群信息和两条事件订阅。企业管理员可能需要在这次确认中批准敏感权限；上述权限无需事后进入开放平台补配置。手动连接已有应用时仍需自行确认权限。对外共享由飞书限制在版本发布流程中：创建版本时开启“允许机器人被添加到外部群中使用”和“允许外部用户与机器人单聊”，再提交发布并完成管理员审批。</div>
       </div>
     </section>
 

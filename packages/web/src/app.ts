@@ -39,6 +39,10 @@ import type { CodexSetupPort, FeishuRuntimeStatus, LarkSetupPort } from "./integ
 import { buildSetupSnapshot } from "./setup.ts";
 import { restartingView, setupLayout, setupView } from "./setup-view.ts";
 import {
+  resolveExternalSharingState,
+  type FeishuExternalSharingStatus,
+} from "./external-sharing.ts";
+import {
   agentsView,
   askView,
   integrationsView,
@@ -304,6 +308,61 @@ export function createWebApp(opts: WebOptions): Hono {
       };
     }
   };
+  const getExternalSharing = async (
+    status: LarkSetupStatus,
+  ): Promise<FeishuExternalSharingStatus> => {
+    if (
+      status.state !== "ready"
+      || !status.verified
+      || !status.appId
+      || status.brand === "lark"
+    ) {
+      return { state: "skipped" };
+    }
+    let sharing = resolveExternalSharingState(config(), status.appId);
+    if (
+      sharing.state === "awaiting_external_message"
+      && sharing.startedAt
+      && opts.larkSetup?.chatIsExternal
+    ) {
+      const candidates = new Map<string, string | undefined>();
+      for (const meta of engine.registry.list().filter((entry) => entry.id.startsWith("team/"))) {
+        const messages = engine.registry.store(meta.id).index().listRaw({}).filter(
+          (entry) => entry.source === "message" && entry.createdAt >= sharing.startedAt!,
+        );
+        for (const entry of messages) {
+          const chatId = entry.chatId ?? meta.chatId ?? meta.id.slice("team/".length);
+          if (chatId) candidates.set(chatId, meta.name);
+        }
+      }
+      for (const [chatId, groupName] of candidates) {
+        let external = false;
+        try {
+          external = await opts.larkSetup.chatIsExternal(chatId);
+        } catch {
+          external = false;
+        }
+        if (!external) continue;
+        saveSettings({
+          feishuExternalSharingVerifiedAt: Date.now(),
+          feishuExternalSharingVerifiedChatId: chatId,
+        });
+        sharing = {
+          ...resolveExternalSharingState(config(), status.appId),
+          ...(groupName ? { verifiedGroupName: groupName } : {}),
+        };
+        break;
+      }
+    }
+    if (sharing.state === "verified" && !sharing.verifiedGroupName && sharing.verifiedChatId) {
+      const group = engine.registry.list().find((meta) =>
+        meta.chatId === sharing.verifiedChatId
+        || meta.id === `team/${sharing.verifiedChatId}`
+      );
+      if (group?.name) sharing = { ...sharing, verifiedGroupName: group.name };
+    }
+    return sharing;
+  };
   const integrationIdentityState = (status: LarkSetupStatus) => {
     const setupIdentity = verifiedBotIdentity(status);
     const activeIdentity = opts.activeFeishuIdentity;
@@ -343,6 +402,7 @@ export function createWebApp(opts: WebOptions): Hono {
       )
     ).length;
     const { restartRequired } = integrationIdentityState(lark);
+    const externalSharing = await getExternalSharing(lark);
     const health = await getHealth();
     const restartable = health.components.service?.details?.managed === true
       && opts.onServiceRestart !== undefined;
@@ -355,11 +415,13 @@ export function createWebApp(opts: WebOptions): Hono {
         restartRequired,
         groups: groupsWithMessages,
         completedAt: cfg.onboardingCompletedAt,
+        externalSharing: externalSharing.state,
       }),
       providers,
       lark,
       provisioning,
       runtime,
+      externalSharing,
       groups,
       restartRequired,
       restartable,
@@ -523,6 +585,50 @@ export function createWebApp(opts: WebOptions): Hono {
       persistVerifiedBot(status);
     }
     return c.json(session);
+  });
+
+  app.post("/setup/feishu/external-sharing/start", async (c) => {
+    const body = await c.req.parseBody();
+    const returnTo = str(body, "returnTo") === "/integrations" ? "/integrations" : "/setup";
+    const status = await getLarkStatus();
+    if (
+      status.state !== "ready"
+      || !status.verified
+      || !status.appId
+      || status.brand === "lark"
+    ) {
+      return c.redirect(`${returnTo}?ok=${encodeURIComponent("请先完成飞书机器人连接，再配置对外共享")}`);
+    }
+    saveSettings({
+      feishuExternalSharingAppId: status.appId,
+      feishuExternalSharingStartedAt: Date.now(),
+      feishuExternalSharingVerifiedAt: 0,
+      feishuExternalSharingVerifiedChatId: "",
+      feishuExternalSharingSkippedAppId: "",
+    });
+    return c.redirect(`${returnTo}?ok=${encodeURIComponent("已开始验证；如提示需要重启，请先激活消息监听")}`);
+  });
+
+  app.post("/setup/feishu/external-sharing/skip", async (c) => {
+    const body = await c.req.parseBody();
+    const returnTo = str(body, "returnTo") === "/integrations" ? "/integrations" : "/setup";
+    const status = await getLarkStatus();
+    if (
+      status.state !== "ready"
+      || !status.verified
+      || !status.appId
+      || status.brand === "lark"
+    ) {
+      return c.redirect(`${returnTo}?ok=${encodeURIComponent("请先完成飞书机器人连接")}`);
+    }
+    saveSettings({
+      feishuExternalSharingAppId: "",
+      feishuExternalSharingStartedAt: 0,
+      feishuExternalSharingVerifiedAt: 0,
+      feishuExternalSharingVerifiedChatId: "",
+      feishuExternalSharingSkippedAppId: status.appId,
+    });
+    return c.redirect(`${returnTo}?ok=${encodeURIComponent("当前机器人将暂时仅供企业内部使用")}`);
   });
 
   app.post("/setup/restart", async (c) => {
@@ -863,21 +969,23 @@ export function createWebApp(opts: WebOptions): Hono {
     const ok = c.req.query("ok") ?? undefined;
     const setupStatus = await getLarkStatus();
     const { restartRequired } = integrationIdentityState(setupStatus);
+    const externalSharing = await getExternalSharing(setupStatus);
     return c.html(
       await layout(
         "Integrations",
         [{ label: "Integrations" }],
-        await integrationsView(
-          cfg.feishuBotName ?? "",
-          cfg.feishuBotOpenId ?? "",
-          setupStatus,
-          getProvisioning(),
+        await integrationsView({
+          botName: cfg.feishuBotName ?? "",
+          botOpenId: cfg.feishuBotOpenId ?? "",
+          setup: setupStatus,
+          provisioning: getProvisioning(),
           restartRequired,
-          getFeishuRuntime(),
+          runtime: getFeishuRuntime(),
+          externalSharing,
           groups,
           agents,
-          ok,
-        ),
+          flashMsg: ok,
+        }),
         "integrations",
       ),
     );

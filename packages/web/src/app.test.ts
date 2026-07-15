@@ -412,6 +412,97 @@ describe("web backend (read-only)", () => {
     expect(await (await setupApp.request("/setup")).text()).toContain("一切就绪");
   });
 
+  test("guides and verifies external sharing with a new external-group message", async () => {
+    saveSettings({ defaultProvider: "claude" });
+    const checkedChats: string[] = [];
+    const setupApp = createWebApp({
+      engine,
+      detectProviders: async () => [
+        { id: "claude", name: "Claude Code", bin: "claude", available: true, detail: "ready" },
+      ],
+      providerModels: async () => ({ claude: ["sonnet"] }),
+      larkSetup: {
+        status: async () => ({
+          state: "ready",
+          verified: true,
+          appId: "cli_external",
+          brand: "feishu",
+          botName: "Homebrain",
+          botOpenId: "ou_ready",
+          message: "ready",
+        }),
+        configure: async () => { throw new Error("unused"); },
+        chatIsExternal: async (chatId) => {
+          checkedChats.push(chatId);
+          return chatId === "oc_external";
+        },
+      },
+      activeFeishuIdentity: { botName: "Homebrain", botOpenId: "ou_ready" },
+      feishuRuntime: () => ({ ready: true, consumers: [] }),
+    });
+
+    const guide = await (await setupApp.request("/setup")).text();
+    expect(guide).toContain("发布对外共享版本");
+    expect(guide).toContain("https://open.feishu.cn/app/cli_external");
+
+    const start = await setupApp.request("/setup/feishu/external-sharing/start", {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: "returnTo=%2Fsetup",
+    });
+    expect(start.headers.get("location")).toStartWith("/setup?ok=");
+    const started = readSettings(dir);
+    expect(started.feishuExternalSharingAppId).toBe("cli_external");
+    expect(started.feishuExternalSharingStartedAt).toEqual(expect.any(Number));
+
+    await engine.remember({
+      space: SPACE,
+      source: "message",
+      chatId: "oc_external",
+      content: "@Homebrain 对外共享测试",
+      createdAt: started.feishuExternalSharingStartedAt! + 1,
+    });
+    await setupApp.request("/setup");
+
+    expect(checkedChats).toContain("oc_external");
+    expect(readSettings(dir)).toEqual(expect.objectContaining({
+      feishuExternalSharingVerifiedAt: expect.any(Number),
+      feishuExternalSharingVerifiedChatId: "oc_external",
+    }));
+    const integrations = await (await setupApp.request("/integrations")).text();
+    expect(integrations).toContain("对外共享已验证");
+  });
+
+  test("can explicitly keep the current Feishu app internal-only", async () => {
+    const setupApp = createWebApp({
+      engine,
+      larkSetup: {
+        status: async () => ({
+          state: "ready",
+          verified: true,
+          appId: "cli_internal",
+          brand: "feishu",
+          botName: "Homebrain",
+          botOpenId: "ou_ready",
+          message: "ready",
+        }),
+        configure: async () => { throw new Error("unused"); },
+      },
+    });
+
+    const response = await setupApp.request("/setup/feishu/external-sharing/skip", {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: "returnTo=%2Fintegrations",
+    });
+    expect(response.headers.get("location")).toStartWith("/integrations?ok=");
+    expect(readSettings(dir).feishuExternalSharingSkippedAppId).toBe("cli_internal");
+    const integrations = await (await setupApp.request("/integrations")).text();
+    expect(integrations).toContain("https://open.feishu.cn/app/cli_internal");
+    expect(integrations).toContain("允许机器人被添加到外部群中使用");
+    expect(integrations).toContain("允许外部用户与机器人单聊");
+  });
+
   test("admin token protects management routes but leaves probes public", async () => {
     const secureApp = createWebApp({ engine, adminToken: "admin-secret" });
 

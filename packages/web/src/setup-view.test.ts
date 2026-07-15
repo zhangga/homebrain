@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import type { LarkProvisioningSession, LarkSetupStatus } from "@homebrain/shared";
 import { restartingView, setupLayout, setupView } from "./setup-view.ts";
 import type { SetupSnapshot, SetupStep } from "./setup.ts";
+import type { FeishuExternalSharingStatus } from "./external-sharing.ts";
 
 const providers = [
   { id: "codex" as const, name: "Codex", bin: "codex", available: true, detail: "0.144.1" },
@@ -9,12 +10,12 @@ const providers = [
 ];
 
 function snapshot(current: SetupStep): SetupSnapshot {
-  const order: SetupStep[] = ["ai", "feishu", "activate", "invite", "done"];
+  const order: SetupStep[] = ["ai", "feishu", "external_share", "activate", "invite", "done"];
   return {
     current,
     completed: order.slice(0, order.indexOf(current)),
     selectedProviderReady: current !== "ai",
-    larkReady: ["activate", "invite", "done"].includes(current),
+    larkReady: ["external_share", "activate", "invite", "done"].includes(current),
     runtimeReady: ["invite", "done"].includes(current),
     groupReady: current === "done",
   };
@@ -32,6 +33,12 @@ const idle: LarkProvisioningSession = {
   message: "尚未开始",
 };
 
+const externalSharing: FeishuExternalSharingStatus = {
+  state: "not_started",
+  appId: "cli_safe",
+  consoleUrl: "https://open.feishu.cn/app/cli_safe",
+};
+
 function render(current: SetupStep, overrides: Partial<Parameters<typeof setupView>[0]> = {}): string {
   return String(setupLayout(setupView({
     snapshot: snapshot(current),
@@ -40,6 +47,7 @@ function render(current: SetupStep, overrides: Partial<Parameters<typeof setupVi
     lark,
     provisioning: idle,
     runtime: { ready: false, consumers: [] },
+    externalSharing,
     groups: [],
     restartRequired: false,
     restartable: true,
@@ -163,6 +171,48 @@ describe("guided setup view", () => {
     expect(body).toContain("请在飞书确认完整权限和事件订阅");
     expect(body).toContain("打开飞书并确认");
     expect(body).not.toContain("进入飞书开放平台");
+  });
+
+  test("external sharing step guides publishing and real-group verification", () => {
+    const publish = render("external_share", {
+      lark: {
+        state: "ready",
+        verified: true,
+        appId: "cli_safe",
+        brand: "feishu",
+        botName: "小脑",
+        botOpenId: "ou_bot",
+        message: "ready",
+      },
+    });
+    expect(publish).toContain("发布对外共享版本");
+    expect(publish).toContain("https://open.feishu.cn/app/cli_safe");
+    expect(publish).toContain("允许机器人被添加到外部群中使用");
+    expect(publish).toContain("允许外部用户与机器人单聊");
+    expect(publish).toContain("提交发布并完成管理员审批");
+    expect(publish).toContain('action="/setup/feishu/external-sharing/start"');
+    expect(publish).toContain('action="/setup/feishu/external-sharing/skip"');
+
+    const awaiting = render("external_share", {
+      lark: {
+        state: "ready",
+        verified: true,
+        appId: "cli_safe",
+        brand: "feishu",
+        botName: "小脑",
+        botOpenId: "ou_bot",
+        message: "ready",
+      },
+      externalSharing: {
+        ...externalSharing,
+        state: "awaiting_external_message",
+        startedAt: 100,
+      },
+      runtime: { ready: true, consumers: [] },
+    });
+    expect(awaiting).toContain("用外部群消息验证");
+    expect(awaiting).toContain("@小脑 对外共享测试");
+    expect(awaiting).toContain("我已发送，重新检查");
   });
 
   test("activation and invitation are written in user language", () => {
