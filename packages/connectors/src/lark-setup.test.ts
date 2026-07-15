@@ -5,6 +5,10 @@ import {
   type LarkSetupCommand,
   type LarkSetupCommandRunner,
 } from "./lark-setup.ts";
+import type {
+  LarkAppRegistrar,
+  LarkAppRegistrationResult,
+} from "./lark-app-registration.ts";
 
 async function* chunks(...values: string[]): AsyncGenerator<Uint8Array> {
   for (const value of values) yield new TextEncoder().encode(value);
@@ -23,6 +27,87 @@ async function waitForProvisioningState(
 }
 
 describe("LarkCliSetup", () => {
+  test("creates through the official SDK and hands credentials to lark-cli through stdin", async () => {
+    const secret = "sdk-secret-never-rendered";
+    let resolveRegistration!: (result: LarkAppRegistrationResult) => void;
+    const registration = new Promise<LarkAppRegistrationResult>((resolve) => {
+      resolveRegistration = resolve;
+    });
+    let registrationSignal: AbortSignal | undefined;
+    const registrar: LarkAppRegistrar = {
+      register(input) {
+        registrationSignal = input.signal;
+        input.onVerificationUrl({
+          url: "https://open.feishu.cn/page/launcher?user_code=SDK-SAFE",
+          expiresInSeconds: 600,
+        });
+        return registration;
+      },
+    };
+    const calls: LarkSetupCommand[] = [];
+    const runner: LarkSetupCommandRunner = {
+      async run(command) {
+        calls.push(command);
+        if (command.argv.includes("config")) {
+          return { code: 0, stdout: "configured", stderr: "" };
+        }
+        return {
+          code: 0,
+          stdout: JSON.stringify({
+            appId: "cli_sdk",
+            brand: "feishu",
+            identities: {
+              bot: {
+                status: "ready",
+                available: true,
+                verified: true,
+                openId: "ou_sdk",
+                appName: "Homebrain",
+              },
+            },
+          }),
+          stderr: "",
+        };
+      },
+    };
+    const setup = new LarkCliSetup({ runner, registrar });
+
+    const waiting = await setup.startAutomatic("feishu");
+    const duplicate = await setup.startAutomatic("feishu");
+
+    expect(waiting.state).toBe("waiting_for_user");
+    expect(waiting.verificationUrl).toBe(
+      "https://open.feishu.cn/page/launcher?user_code=SDK-SAFE",
+    );
+    expect(duplicate.startedAt).toBe(waiting.startedAt);
+    expect(registrationSignal?.aborted).toBeFalse();
+
+    resolveRegistration({
+      appId: "cli_sdk",
+      appSecret: secret,
+      brand: "feishu",
+    });
+
+    const ready = await waitForProvisioningState(setup, "ready");
+    expect(calls[0]).toEqual({
+      argv: [
+        "lark-cli",
+        "config",
+        "init",
+        "--app-id",
+        "cli_sdk",
+        "--app-secret-stdin",
+        "--brand",
+        "feishu",
+      ],
+      stdin: `${secret}\n`,
+      timeoutMs: 30_000,
+    });
+    expect(calls[0]?.argv.join(" ")).not.toContain(secret);
+    expect(ready.message).toBe("飞书机器人已连接");
+    expect(JSON.stringify(ready)).not.toContain(secret);
+  });
+
   test("starts one-click app provisioning and exposes only the verification URL", async () => {
     let spawned: string[] | undefined;
     let spawnCount = 0;

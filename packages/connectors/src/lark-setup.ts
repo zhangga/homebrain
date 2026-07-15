@@ -11,6 +11,10 @@ import type {
   LarkSetupStatus,
 } from "@homebrain/shared";
 import { runFeishuCommand } from "./feishu.ts";
+import {
+  sdkLarkAppRegistrar,
+  type LarkAppRegistrar,
+} from "./lark-app-registration.ts";
 
 export interface LarkSetupCommand {
   argv: string[];
@@ -42,6 +46,7 @@ export interface LarkProvisioningSpawner {
 export interface LarkCliSetupOptions {
   larkBin?: string;
   runner?: LarkSetupCommandRunner;
+  registrar?: LarkAppRegistrar;
   provisioningSpawner?: LarkProvisioningSpawner;
   urlWaitMs?: number;
   provisioningTtlMs?: number;
@@ -102,11 +107,13 @@ export const bunLarkSetupRunner: LarkSetupCommandRunner = {
 export class LarkCliSetup {
   private readonly larkBin: string;
   private readonly runner: LarkSetupCommandRunner;
-  private readonly provisioningSpawner: LarkProvisioningSpawner;
+  private readonly registrar: LarkAppRegistrar;
+  private readonly provisioningSpawner?: LarkProvisioningSpawner;
   private readonly urlWaitMs: number;
   private readonly provisioningTtlMs: number;
   private provisioningGeneration = 0;
   private provisioningProcess?: LarkProvisioningProcess;
+  private provisioningAbort?: AbortController;
   private provisioning: LarkProvisioningSession = {
     state: "idle",
     brand: "feishu",
@@ -116,12 +123,148 @@ export class LarkCliSetup {
   constructor(opts: LarkCliSetupOptions = {}) {
     this.larkBin = opts.larkBin ?? "lark-cli";
     this.runner = opts.runner ?? bunLarkSetupRunner;
-    this.provisioningSpawner = opts.provisioningSpawner ?? bunLarkProvisioningSpawner;
+    this.registrar = opts.registrar ?? sdkLarkAppRegistrar;
+    this.provisioningSpawner = opts.provisioningSpawner;
     this.urlWaitMs = opts.urlWaitMs ?? URL_WAIT_MS;
     this.provisioningTtlMs = opts.provisioningTtlMs ?? PROVISIONING_TTL_MS;
   }
 
   async startAutomatic(brand: "feishu" | "lark"): Promise<LarkProvisioningSession> {
+    if (this.provisioningSpawner) return this.startAutomaticViaCli(brand);
+    return this.startAutomaticViaSdk(brand);
+  }
+
+  private async startAutomaticViaSdk(
+    brand: "feishu" | "lark",
+  ): Promise<LarkProvisioningSession> {
+    if (
+      this.provisioning.state === "starting" ||
+      this.provisioning.state === "waiting_for_user" ||
+      this.provisioning.state === "verifying"
+    ) {
+      return this.provisioningStatus();
+    }
+
+    const generation = ++this.provisioningGeneration;
+    this.provisioningAbort?.abort();
+    if (this.provisioningProcess) safelyKill(this.provisioningProcess);
+
+    const controller = new AbortController();
+    this.provisioningAbort = controller;
+    const startedAt = Date.now();
+    this.provisioning = {
+      state: "starting",
+      brand,
+      startedAt,
+      expiresAt: startedAt + this.provisioningTtlMs,
+      message: "正在启动飞书应用创建",
+    };
+
+    let resolveUrl!: () => void;
+    const urlReady = new Promise<void>((resolve) => {
+      resolveUrl = resolve;
+    });
+    const ttlTimer = setTimeout(() => {
+      if (
+        this.provisioningGeneration === generation &&
+        (this.provisioning.state === "starting" ||
+          this.provisioning.state === "waiting_for_user" ||
+          this.provisioning.state === "verifying")
+      ) {
+        this.provisioning = {
+          ...this.provisioning,
+          state: "expired",
+          message: EXPIRED_MESSAGE,
+        };
+        controller.abort();
+      }
+    }, this.provisioningTtlMs);
+    (ttlTimer as unknown as { unref?: () => void }).unref?.();
+
+    const handledRegistration = this.registrar.register({
+      brand,
+      signal: controller.signal,
+      onVerificationUrl: ({ url, expiresInSeconds }) => {
+        if (
+          this.provisioningGeneration !== generation ||
+          this.provisioning.state !== "starting"
+        ) {
+          return;
+        }
+        this.provisioning = {
+          ...this.provisioning,
+          state: "waiting_for_user",
+          verificationUrl: url,
+          expiresAt: Math.min(
+            this.provisioning.expiresAt ?? Number.POSITIVE_INFINITY,
+            Date.now() + expiresInSeconds * 1000,
+          ),
+          message: "请在飞书页面确认创建和完整授权",
+        };
+        resolveUrl();
+      },
+    }).then(async (result) => {
+      if (this.provisioningGeneration !== generation) return;
+      this.provisioning = {
+        ...this.provisioning,
+        state: "verifying",
+        brand: result.brand,
+        message: "正在验证飞书机器人和授权",
+      };
+      const status = await this.configure({
+        appId: result.appId,
+        appSecret: result.appSecret,
+        brand: result.brand,
+      });
+      if (this.provisioningGeneration !== generation) return;
+      this.provisioning = status.state === "ready" && status.verified
+        ? {
+            ...this.provisioning,
+            state: "ready",
+            message: "飞书机器人已连接",
+          }
+        : {
+            ...this.provisioning,
+            state: "failed",
+            message: FAILED_MESSAGE,
+          };
+    }).catch(() => {
+      if (
+        this.provisioningGeneration === generation &&
+        this.provisioning.state !== "expired"
+      ) {
+        this.provisioning = {
+          ...this.provisioning,
+          state: controller.signal.aborted ? "expired" : "failed",
+          message: controller.signal.aborted ? EXPIRED_MESSAGE : FAILED_MESSAGE,
+        };
+      }
+    }).finally(() => {
+      clearTimeout(ttlTimer);
+      if (this.provisioningAbort === controller) this.provisioningAbort = undefined;
+    });
+
+    let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<void>((resolve) => {
+      deadlineTimer = setTimeout(resolve, this.urlWaitMs);
+    });
+    await Promise.race([urlReady, handledRegistration, deadline]);
+    if (deadlineTimer) clearTimeout(deadlineTimer);
+    if (
+      this.provisioningGeneration === generation &&
+      this.provisioning.state === "starting"
+    ) {
+      this.provisioning = {
+        ...this.provisioning,
+        state: "failed",
+        message: FAILED_MESSAGE,
+      };
+      controller.abort();
+    }
+    return this.provisioningStatus();
+  }
+
+  private async startAutomaticViaCli(brand: "feishu" | "lark"): Promise<LarkProvisioningSession> {
     if (
       this.provisioning.state === "starting" ||
       this.provisioning.state === "waiting_for_user" ||
@@ -143,7 +286,7 @@ export class LarkCliSetup {
     };
     let proc: LarkProvisioningProcess;
     try {
-      proc = this.provisioningSpawner.spawn([
+      proc = this.provisioningSpawner!.spawn([
         this.larkBin,
         "config",
         "init",
