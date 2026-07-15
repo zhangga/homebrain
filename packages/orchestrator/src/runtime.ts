@@ -35,6 +35,12 @@ import { formatAnswer } from "./format.ts";
 import { GROUP_ADDED_NOTICE, coldStartNote, providerNotice } from "./messages.ts";
 import { parseTaskCommand, handleTaskCommand } from "./task-commands.ts";
 import {
+  handleLearningAnswer,
+  handleLearningCommand,
+  parseLearningAnswer,
+  parseLearningCommand,
+} from "./learning-commands.ts";
+import {
   REMINDER_TIME_CLARIFICATION,
   formatReminderTime,
   handleReminderMessage,
@@ -217,6 +223,34 @@ export class Orchestrator {
       });
     }
 
+    // Guided-learning controls are explicit instructions too. They bypass the
+    // capture and group-mention gates, just like task controls. Creating a plan
+    // binds to the original message the command replies to.
+    const learningCmd = parseLearningCommand(msg.text);
+    if (learningCmd) {
+      return this.withThinking(msg, async () => {
+        this.engine.ensureSpace(writeSpace, { chatId: msg.chatId });
+        let sourceMessageId: string | undefined;
+        if (learningCmd.verb === "new") {
+          try {
+            sourceMessageId = (await this.connector.resolveReplyTarget?.(msg.messageId))?.messageId;
+          } catch (err) {
+            log.warn("learning source resolution failed", {
+              messageId: msg.messageId,
+              err: String(err),
+            });
+          }
+        }
+        const reply = await handleLearningCommand(this.engine, learningCmd, {
+          space: writeSpace,
+          chatId: msg.chatId,
+          actorId: msg.senderId,
+          sourceMessageId,
+        });
+        await this.send(msg, reply);
+      });
+    }
+
     // A staged model interpretation is scoped to this chat and sender. Explicit
     // confirmation/cancellation is a control message, so it bypasses group @ gating
     // and is never captured as knowledge.
@@ -236,6 +270,30 @@ export class Orchestrator {
     }
     if (decision.respond && retractionCommand) {
       return this.withThinking(msg, () => this.handleRetraction(msg, writeSpace));
+    }
+
+    // Answers use an explicit prefix so an ordinary conversation cannot
+    // accidentally advance a lesson. Like other controls, an answer is not
+    // captured itself; the engine persists the structured learning record.
+    const learningAnswer = decision.respond ? parseLearningAnswer(msg.text) : null;
+    if (learningAnswer) {
+      return this.withThinking(msg, async () => {
+        this.engine.ensureSpace(writeSpace, { chatId: msg.chatId });
+        try {
+          const reply = await handleLearningAnswer(this.engine, learningAnswer, {
+            space: writeSpace,
+            chatId: msg.chatId,
+            actorId: msg.senderId,
+          });
+          await this.send(msg, reply);
+        } catch (err) {
+          log.warn("learning feedback provider unavailable", {
+            space: writeSpace,
+            err: String(err),
+          });
+          await this.send(msg, providerNotice(err));
+        }
+      });
     }
 
     if (decision.respond) {

@@ -43,6 +43,17 @@ export const TASK_HELP = [
   "· `/task help` — 显示本帮助",
 ].join("\n");
 
+export const LEARNING_HELP = [
+  "📚 学习命令：",
+  "· `/learn` 或 `/learn list` — 查看我的学习计划",
+  "· `/learn new <书名>` — 回复书籍附件或飞书文档后创建计划",
+  "· `/learn pause <名称或序号>` — 暂停计划",
+  "· `/learn resume <名称或序号>` — 恢复计划",
+  "· `/learn skip <名称或序号>` — 跳过当前一课",
+  "· `/learn delete <名称或序号>` — 删除计划",
+  "· `学习回答：<内容>` — 回答当前课程并获取点评",
+].join("\n");
+
 export function coldStartNote(): string {
   return [
     "（目前这个空间的知识库还是空的，所以上面是我的一般性回答。",

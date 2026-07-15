@@ -64,7 +64,9 @@ function makeFake(): FakeLlm {
     }
     throw new Error("unexpected schema");
   });
-  f.onText(() => "这不在知识库记录中，以下是我的一般性回答：暂无更多信息。");
+  f.onText((opts) => String(opts.prompt).includes("## 学习者回答")
+    ? "## 回应点评\n理解正确\n\n## 今日总结\n掌握重点"
+    : "这不在知识库记录中，以下是我的一般性回答：暂无更多信息。");
   return f;
 }
 
@@ -1174,5 +1176,58 @@ describe("orchestrator trunk (cli connector, no feishu)", () => {
     expect(connector.sent.length).toBe(1);
     expect(connector.sent[0]!.markdown).toContain("还没有任务");
     expect(engine.tasks.list().length).toBe(0);
+  });
+
+  test("/learn new creates a plan from the replied source without capturing the command", async () => {
+    await engine.remember({
+      space: "team/oc_team",
+      source: "message",
+      author: "ou_me",
+      chatId: "oc_team",
+      messageId: "om_book",
+      content: "# 附件：principles.md\n\n# 第一章\n\n这是书籍正文。",
+    });
+    const reactive = connector as CliConnector & Connector;
+    reactive.resolveReplyTarget = async () => ({ messageId: "om_book", senderId: "ou_me" });
+
+    await orch.start();
+    await connector.sendGroup("/learn new 原则", false);
+
+    expect(connector.sent.at(-1)?.markdown).toContain("已创建学习计划「原则」");
+    expect(engine.learning.listBySpace("team/oc_team")).toEqual([
+      expect.objectContaining({ name: "原则", creatorId: "ou_me" }),
+    ]);
+    expect(engine.registry.store("team/oc_team").index().countRaw()).toBe(1);
+  });
+
+  test("an explicit learning answer receives feedback and is not captured as ordinary knowledge", async () => {
+    const plan = engine.learning.create({
+      name: "原则",
+      space: "personal/ou_me",
+      creatorId: "ou_me",
+      chatId: "oc_dm",
+      sourceTitle: "原则",
+      sourceContent: "# 第一章\n\n这是书籍正文。",
+      sourceRawIds: ["raw_book"],
+      sourceMessageId: "om_book",
+    }, 1);
+    const session = engine.learning.prepareSession(plan.id, {
+      startOffset: 0,
+      endOffset: plan.sourceLength,
+      sectionTitle: "第一章",
+      excerpt: "# 第一章\n\n这是书籍正文。",
+      guide: "## 思考题\n作者为什么强调原则？",
+      preparedAt: 2,
+    })!;
+    engine.learning.markDelivered(session.id, 3);
+    await orch.start();
+    await connector.sendP2P("学习回答：原则帮助我稳定地做决策");
+
+    expect(connector.sent.at(-1)?.markdown).toContain("已记录「原则」第 1 课");
+    expect(connector.sent.at(-1)?.markdown).toContain("理解正确");
+    expect(engine.learning.currentSession(plan.id)).toBeUndefined();
+    const raws = engine.registry.store("personal/ou_me").index().listRaw({});
+    expect(raws).toHaveLength(1);
+    expect(raws[0]).toEqual(expect.objectContaining({ source: "learning" }));
   });
 });
