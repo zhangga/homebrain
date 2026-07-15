@@ -53,7 +53,7 @@ const NO_NOTIFIER_ENV = {
 };
 
 const VERIFICATION_URL =
-  /https:\/\/(?:open\.feishu\.cn|open\.larksuite\.com)\/page\/cli\?[^\s<>'"]+/;
+  /https:\/\/(?:open\.feishu\.cn|open\.larksuite\.com)\/page\/(?:cli|launcher)\?[^\s<>'"]+/;
 const EXPIRED_OUTPUT = /expired|timed?\s*out|timeout|过期|超时/i;
 const URL_WAIT_MS = 15_000;
 const PROVISIONING_TTL_MS = 10 * 60_000;

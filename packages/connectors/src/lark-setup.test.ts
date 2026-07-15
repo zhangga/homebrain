@@ -99,6 +99,35 @@ describe("LarkCliSetup", () => {
     resolveExit(143);
   });
 
+  test("recognizes a Feishu launcher provisioning URL split across chunks", async () => {
+    let resolveExit!: (code: number) => void;
+    const exited = new Promise<number>((resolve) => {
+      resolveExit = resolve;
+    });
+    const setup = new LarkCliSetup({
+      urlWaitMs: 200,
+      provisioningSpawner: {
+        spawn: () => ({
+          stdout: chunks(
+            "Open the provisioning page:\nhttps://open.feishu.cn/page/laun",
+            "cher?app_id=cli_launcher&source=lark-cli\n",
+          ),
+          stderr: chunks(""),
+          exited,
+          kill: () => resolveExit(143),
+        }),
+      },
+    });
+
+    const session = await setup.startAutomatic("feishu");
+
+    expect(session.state).toBe("waiting_for_user");
+    expect(session.verificationUrl).toBe(
+      "https://open.feishu.cn/page/launcher?app_id=cli_launcher&source=lark-cli",
+    );
+    resolveExit(143);
+  });
+
   test(
     "rejects an untrusted URL without surfacing child-process output",
     async () => {
