@@ -13,6 +13,7 @@ import type {
   SpaceId,
   Page,
   SystemHealthSnapshot,
+  LarkProvisioningSession,
   LarkSetupStatus,
 } from "@homebrain/shared";
 import type { SpaceMeta, Agent, Task } from "@homebrain/core";
@@ -589,6 +590,7 @@ export function integrationsView(
   botName: string,
   botOpenId: string,
   setup: LarkSetupStatus,
+  provisioning: LarkProvisioningSession,
   restartRequired: boolean,
   runtime: FeishuRuntimeStatus | undefined,
   groups: SpaceMeta[],
@@ -666,6 +668,7 @@ export function integrationsView(
   return html`<h1>飞书连接</h1>
     <p class="subtitle">查看机器人、事件监听和群聊状态。首次连接建议使用引导模式。</p>
     ${flash(flashMsg)}
+    ${provisioning.state !== "idle" ? html`<div class="card"><div class="muted">${provisioning.message}</div></div>` : ""}
 
     <div class="card">
       <div class="row">

@@ -501,16 +501,17 @@ export function createWebApp(opts: WebOptions): Hono {
   });
 
   app.post("/setup/feishu/automatic", async (c) => {
-    if (!opts.larkSetup?.startAutomatic) {
-      return c.redirect(`/setup?ok=${encodeURIComponent("当前版本未检测到一键创建组件，请使用手动配置")}`);
-    }
     const body = await c.req.parseBody();
+    const returnTo = str(body, "returnTo") === "/integrations" ? "/integrations" : "/setup";
+    if (!opts.larkSetup?.startAutomatic) {
+      return c.redirect(`${returnTo}?ok=${encodeURIComponent("当前版本未检测到一键创建组件，请使用已有应用连接")}`);
+    }
     const brand = str(body, "brand") === "lark" ? "lark" : "feishu";
     try {
       const session = await opts.larkSetup.startAutomatic(brand);
-      return c.redirect(`/setup?ok=${encodeURIComponent(session.message)}`);
+      return c.redirect(`${returnTo}?ok=${encodeURIComponent(session.message)}`);
     } catch {
-      return c.redirect(`/setup?ok=${encodeURIComponent("无法启动飞书应用创建，请检查 lark-cli 和网络")}`);
+      return c.redirect(`${returnTo}?ok=${encodeURIComponent("无法启动飞书应用创建，请检查网络后重试")}`);
     }
   });
 
@@ -870,6 +871,7 @@ export function createWebApp(opts: WebOptions): Hono {
           cfg.feishuBotName ?? "",
           cfg.feishuBotOpenId ?? "",
           setupStatus,
+          getProvisioning(),
           restartRequired,
           getFeishuRuntime(),
           groups,

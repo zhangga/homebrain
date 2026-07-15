@@ -158,6 +158,39 @@ describe("web backend (read-only)", () => {
     expect(await poll.json()).toEqual(session);
   });
 
+  test("starts official one-click Feishu creation from Integrations", async () => {
+    let starts = 0;
+    const session = {
+      state: "waiting_for_user" as const,
+      brand: "feishu" as const,
+      verificationUrl: "https://open.feishu.cn/page/cli?user_code=SAFE",
+      message: "请在飞书页面完成授权",
+    };
+    const setupApp = createWebApp({
+      engine,
+      detectProviders: async () => [],
+      providerModels: async () => ({}),
+      larkSetup: {
+        status: async () => ({ state: "unconfigured", verified: false, message: "missing" }),
+        configure: async () => { throw new Error("unused"); },
+        startAutomatic: async () => { starts += 1; return session; },
+        provisioningStatus: () => session,
+      },
+    });
+
+    const response = await setupApp.request("/setup/feishu/automatic", {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: "brand=feishu&returnTo=%2Fintegrations",
+    });
+
+    expect(response.status).toBe(302);
+    expect(response.headers.get("location")).toStartWith("/integrations?ok=");
+    expect(starts).toBe(1);
+    const page = await (await setupApp.request("/integrations")).text();
+    expect(page).toContain("请在飞书页面完成授权");
+  });
+
   test("recovers the verified bot identity after an automatic session is lost on restart", async () => {
     const idleSession = {
       state: "idle" as const,
