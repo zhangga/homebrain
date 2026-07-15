@@ -853,7 +853,7 @@ describe("management backend (read-write)", () => {
       detectProviders: async () => [],
       providerModels: async () => ({}),
       larkSetup: {
-        status: async () => ({ state: "unconfigured", verified: false, message: "missing" }),
+        status: async () => ({ state: "unconfigured", verified: false, brand: "lark", message: "missing" }),
         configure: async (input) => {
           configured.push(input);
           return {
@@ -872,7 +872,7 @@ describe("management backend (read-write)", () => {
     const page = await (await setupApp.request("/integrations")).text();
     expect(page).toContain('<select name="brand">');
     expect(page).toContain('<option value="feishu">飞书</option>');
-    expect(page).toContain('<option value="lark">Lark</option>');
+    expect(page).toContain('<option value="lark" selected>Lark</option>');
 
     const response = await setupApp.request("/integrations/bot/setup", {
       method: "POST",
@@ -972,7 +972,7 @@ describe("management backend (read-write)", () => {
     expect(page).toContain("创建并切换机器人");
     expect(page).toContain("新机器人");
     expect(page).toContain("ou_new");
-    expect(page).toContain('<span class="muted">当前</span>');
+    expect(page).toContain('<span class="muted">待启用</span>');
     expect(page).not.toContain("⌄");
     expect(page).not.toContain("top-secret-value");
   });
@@ -1062,6 +1062,29 @@ describe("management backend (read-write)", () => {
     expect(page).not.toContain("im.chat.member.bot.added_v1");
   });
 
+  test("integration setup surfaces failed Feishu consumers with a recovery action", async () => {
+    const setupApp = createWebApp({
+      engine,
+      detectProviders: async () => [],
+      providerModels: async () => ({}),
+      feishuRuntime: () => ({
+        ready: true,
+        consumers: [
+          { key: "im.message.receive_v1", state: "failed", lastError: "raw secret" },
+          { key: "im.chat.member.bot.added_v1", state: "ready" },
+        ],
+      }),
+    });
+
+    const page = await (await setupApp.request("/integrations")).text();
+
+    expect(page).toContain("消息监听异常");
+    expect(page).toContain('href="/health"');
+    expect(page).toContain("前往运行状态恢复");
+    expect(page).not.toContain("等待连接");
+    expect(page).not.toContain("raw secret");
+  });
+
   test("integration setup keeps a restart warning until the active connector uses the new identity", async () => {
     const setupApp = createWebApp({
       engine,
@@ -1093,7 +1116,11 @@ describe("management backend (read-write)", () => {
 
     const page = await (await setupApp.request("/integrations")).text();
 
-    expect(page).toContain("重启后生效");
+    expect(page).toContain('<span class="muted">待启用</span>');
+    expect(page).not.toContain('<span class="muted">当前</span>');
+    expect(page).toContain("需要重启");
+    expect(page).toContain('href="/health"');
+    expect(page).toContain("前往运行状态重启");
     expect(page).toContain("创建并切换机器人");
     expect(page).not.toContain("消息监听已就绪");
   });

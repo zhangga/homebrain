@@ -123,6 +123,15 @@ describe("guided setup view", () => {
     expect(body).toContain('<option value="lark">Lark</option>');
   });
 
+  test("manual existing-app setup preselects the configured Lark brand", () => {
+    const body = render("feishu", {
+      lark: { state: "unconfigured", verified: false, brand: "lark", message: "尚未配置" },
+    });
+
+    expect(body).toContain('<option value="lark" selected>Lark</option>');
+    expect(body).not.toContain('<option value="feishu" selected>飞书</option>');
+  });
+
   test("waiting provisioning renders the safe URL and polling", () => {
     const body = render("feishu", {
       provisioning: {
@@ -146,15 +155,20 @@ describe("guided setup view", () => {
     expect(activation).toContain("接收飞书消息");
     expect(activation).toContain("激活消息监听");
 
-    const permissionFailure = render("activate", {
+    const runtimeFailure = render("activate", {
       lark: { state: "ready", verified: true, botName: "小脑", botOpenId: "ou_bot", message: "ready" },
       runtime: { ready: false, consumers: [{ key: "im.message.receive_v1", state: "failed", lastError: "raw secret" }] },
     });
-    expect(permissionFailure).toContain("连接还没有通过企业确认");
-    expect(permissionFailure).toContain("飞书管理员批准");
-    expect(permissionFailure).not.toContain("进入飞书开放平台手动创建");
-    expect(permissionFailure).not.toContain("raw secret");
-    expect(permissionFailure).toContain('action="/setup/restart"');
+    expect(runtimeFailure).toContain("消息监听异常");
+    expect(runtimeFailure).toContain("服务进程");
+    expect(runtimeFailure).toContain("网络连接");
+    expect(runtimeFailure).toContain("应用权限");
+    expect(runtimeFailure).toContain("企业审批");
+    expect(runtimeFailure).not.toContain("连接还没有通过企业确认");
+    expect(runtimeFailure).not.toContain("进入飞书开放平台手动创建");
+    expect(runtimeFailure).not.toContain("raw secret");
+    expect(runtimeFailure).toContain('action="/setup/restart"');
+    expect(runtimeFailure).toContain('href="/health"');
 
     const invite = render("invite", {
       lark: { state: "ready", verified: true, botName: "小脑", botOpenId: "ou_bot", message: "ready" },

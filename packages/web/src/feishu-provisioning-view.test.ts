@@ -34,7 +34,9 @@ describe("Feishu provisioning view helpers", () => {
     const script = String(feishuProvisioningPollScript());
 
     expect(script).toContain('fetch("/setup/feishu/session", { cache:"no-store" })');
-    expect(script).toContain('["ready","failed","expired"].includes(session.state)');
+    expect(script).toContain('const terminalStates = ["ready","failed","expired"];');
+    expect(script).toContain("terminalStates.includes(session.state)");
+    expect(script.match(/\["ready","failed","expired"\]/g)).toHaveLength(1);
     expect(script).toContain("setTimeout(poll, 1500)");
     expect(script).toContain("setTimeout(poll, 2500)");
   });

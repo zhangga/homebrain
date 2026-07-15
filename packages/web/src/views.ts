@@ -630,6 +630,19 @@ export function integrationsView(
   const shownBotName = setup.botName ?? botName;
   const shownBotOpenId = setup.botOpenId ?? botOpenId;
   const agentName = (id?: string) => agents.find((a) => a.id === id)?.name;
+  const runtimeFailed = runtime?.consumers.some((consumer) => consumer.state === "failed") ?? false;
+  const runtimeBadge = restartRequired
+    ? html`<span class="badge degraded">需要重启</span>`
+    : runtimeFailed
+      ? html`<span class="badge down">消息监听异常</span>`
+      : runtime?.ready
+        ? html`<span class="badge ok">消息监听已就绪</span>`
+        : html`<span class="badge degraded">等待连接</span>`;
+  const runtimeRecovery = restartRequired
+    ? html`<a class="btn secondary" href="/health">前往运行状态重启</a>`
+    : runtimeFailed
+      ? html`<a class="btn secondary" href="/health">前往运行状态恢复</a>`
+      : "";
 
   const groupCards = groups.length
     ? groups.map((g) => {
@@ -690,7 +703,7 @@ export function integrationsView(
           <div class="muted">接收群消息、发送回答，并建立群知识空间。</div>
         </div>
         ${setup.state === "ready" && setup.verified
-          ? html`<div class="connection-pill"><span><span class="dot"></span>${shownBotName || "已连接机器人"}</span><span class="muted">当前</span></div>`
+          ? html`<div class="connection-pill"><span><span class="dot"></span>${shownBotName || "已连接机器人"}</span><span class="muted">${restartRequired ? "待启用" : "当前"}</span></div>`
           : feishuProvisioningControl(setup, provisioning)}
       </div>
       ${setup.state === "ready" && setup.verified ? html`<div class="integration-row">
@@ -705,9 +718,7 @@ export function integrationsView(
           <strong>飞书群聊</strong>
           <div class="muted">机器人加入群后自动建立对应工作空间。</div>
         </div>
-        <span class="badge ${!restartRequired && runtime?.ready ? "ok" : "degraded"}">
-          ${!restartRequired && runtime?.ready ? "消息监听已就绪" : restartRequired ? "重启后生效" : "等待连接"}
-        </span>
+        <div class="integration-actions">${runtimeBadge}${runtimeRecovery}</div>
       </div>
       <div class="integration-detail">
         <div class="muted">使用官方一键创建时，飞书会自动配置所需权限和事件订阅；手动连接已有应用前，请确认该应用已开通所需权限，并核对消息与机器人入群事件订阅。默认接收私聊和群内 @ 机器人的消息。</div>
@@ -724,7 +735,7 @@ export function integrationsView(
       <form method="post" action="/integrations/bot/setup" class="stack">
         <div class="field">
           <label>应用平台</label>
-          <select name="brand"><option value="feishu">飞书</option><option value="lark">Lark</option></select>
+          <select name="brand"><option value="feishu">飞书</option><option value="lark"${setup.brand === "lark" ? " selected" : ""}>Lark</option></select>
         </div>
         <div class="grid2">
           <div class="field">
