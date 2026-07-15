@@ -46,6 +46,16 @@ export interface Config {
   feishuBotName?: string;
   /** feishu bot open_id, for precise @-mention detection (optional) */
   feishuBotOpenId?: string;
+  /** app id whose external-sharing publishing flow is being tracked */
+  feishuExternalSharingAppId?: string;
+  /** timestamp after which an external-group message may verify sharing */
+  feishuExternalSharingStartedAt?: number;
+  /** timestamp when a real external-group message verified sharing */
+  feishuExternalSharingVerifiedAt?: number;
+  /** external chat that verified sharing for the tracked app */
+  feishuExternalSharingVerifiedChatId?: string;
+  /** current app explicitly kept internal-only by the administrator */
+  feishuExternalSharingSkippedAppId?: string;
   /** timestamp recorded after the guided first-run setup is completed */
   onboardingCompletedAt?: number;
   /** timestamp used to require a real message received during this setup run */
@@ -68,6 +78,11 @@ export interface PersistedSettings {
   defaultModel?: string;
   feishuBotName?: string;
   feishuBotOpenId?: string;
+  feishuExternalSharingAppId?: string;
+  feishuExternalSharingStartedAt?: number;
+  feishuExternalSharingVerifiedAt?: number;
+  feishuExternalSharingVerifiedChatId?: string;
+  feishuExternalSharingSkippedAppId?: string;
   onboardingCompletedAt?: number;
   onboardingStartedAt?: number;
 }
@@ -84,6 +99,11 @@ export const EDITABLE_KEYS: (keyof PersistedSettings)[] = [
   "defaultModel",
   "feishuBotName",
   "feishuBotOpenId",
+  "feishuExternalSharingAppId",
+  "feishuExternalSharingStartedAt",
+  "feishuExternalSharingVerifiedAt",
+  "feishuExternalSharingVerifiedChatId",
+  "feishuExternalSharingSkippedAppId",
   "onboardingCompletedAt",
   "onboardingStartedAt",
 ];
@@ -140,6 +160,11 @@ export function loadConfig(env = process.env): Config {
     defaultModel: env.HOMEBRAIN_DEFAULT_MODEL || "",
     feishuBotName: env.HOMEBRAIN_FEISHU_BOT_NAME || undefined,
     feishuBotOpenId: env.HOMEBRAIN_FEISHU_BOT_OPEN_ID || undefined,
+    feishuExternalSharingAppId: undefined,
+    feishuExternalSharingStartedAt: undefined,
+    feishuExternalSharingVerifiedAt: undefined,
+    feishuExternalSharingVerifiedChatId: undefined,
+    feishuExternalSharingSkippedAppId: undefined,
     onboardingCompletedAt: undefined,
     onboardingStartedAt: undefined,
   };
@@ -158,6 +183,27 @@ export function loadConfig(env = process.env): Config {
   if (persisted.defaultModel !== undefined) base.defaultModel = persisted.defaultModel;
   if (persisted.feishuBotName !== undefined) base.feishuBotName = persisted.feishuBotName || undefined;
   if (persisted.feishuBotOpenId !== undefined) base.feishuBotOpenId = persisted.feishuBotOpenId || undefined;
+  if (persisted.feishuExternalSharingAppId !== undefined) {
+    base.feishuExternalSharingAppId = persisted.feishuExternalSharingAppId || undefined;
+  }
+  if (
+    typeof persisted.feishuExternalSharingStartedAt === "number"
+    && Number.isFinite(persisted.feishuExternalSharingStartedAt)
+  ) {
+    base.feishuExternalSharingStartedAt = persisted.feishuExternalSharingStartedAt;
+  }
+  if (
+    typeof persisted.feishuExternalSharingVerifiedAt === "number"
+    && Number.isFinite(persisted.feishuExternalSharingVerifiedAt)
+  ) {
+    base.feishuExternalSharingVerifiedAt = persisted.feishuExternalSharingVerifiedAt;
+  }
+  if (persisted.feishuExternalSharingVerifiedChatId !== undefined) {
+    base.feishuExternalSharingVerifiedChatId = persisted.feishuExternalSharingVerifiedChatId || undefined;
+  }
+  if (persisted.feishuExternalSharingSkippedAppId !== undefined) {
+    base.feishuExternalSharingSkippedAppId = persisted.feishuExternalSharingSkippedAppId || undefined;
+  }
   if (typeof persisted.onboardingCompletedAt === "number" && Number.isFinite(persisted.onboardingCompletedAt)) {
     base.onboardingCompletedAt = persisted.onboardingCompletedAt;
   }

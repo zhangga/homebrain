@@ -108,6 +108,23 @@ describe("editable settings overlay", () => {
     expect(cfg.feishuBotOpenId).toBe("ou_x");
   });
 
+  test("persists external sharing progress for the current Feishu app", () => {
+    saveSettings({
+      feishuExternalSharingAppId: "cli_external",
+      feishuExternalSharingStartedAt: 100,
+      feishuExternalSharingVerifiedAt: 200,
+      feishuExternalSharingVerifiedChatId: "oc_external",
+      feishuExternalSharingSkippedAppId: "",
+    }, dir);
+
+    const cfg = loadConfig();
+    expect(cfg.feishuExternalSharingAppId).toBe("cli_external");
+    expect(cfg.feishuExternalSharingStartedAt).toBe(100);
+    expect(cfg.feishuExternalSharingVerifiedAt).toBe(200);
+    expect(cfg.feishuExternalSharingVerifiedChatId).toBe("oc_external");
+    expect(cfg.feishuExternalSharingSkippedAppId).toBeUndefined();
+  });
+
   test("readSettings tolerates a corrupt file", () => {
     saveSettings({ model: "claude-sonnet-5" }, dir);
     // corrupt it
