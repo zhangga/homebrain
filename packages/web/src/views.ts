@@ -318,6 +318,7 @@ export function agentsView(
   selected: Agent | null,
   providers: DetectedProvider[],
   models: Record<string, string[]>,
+  defaults: { provider: string; model: string },
   flashMsg?: string,
 ): HtmlEscapedString | Promise<HtmlEscapedString> {
   const listItems = agents.map((a) => {
@@ -374,12 +375,16 @@ export function agentsView(
   if (modelVal && !initialModels.includes(modelVal)) {
     modelOpts.push(html`<option value="${modelVal}" selected>${modelVal}（自定义）</option>`);
   }
-  const reasoningModels = [...new Set(["", ...(models.codex ?? [])])];
+  const inheritedCodexModel = defaults.provider === "codex" ? defaults.model : "";
+  const reasoningModels = [...new Set(["", ...(models.codex ?? []), ...(modelVal ? [modelVal] : [])])];
   const reasoningCatalog = Object.fromEntries(
-    reasoningModels.map((model) => [model, codexReasoningEffortsForModel(model || undefined)]),
+    reasoningModels.map((model) => [
+      model,
+      codexReasoningEffortsForModel(model || inheritedCodexModel || undefined),
+    ]),
   );
   const initialReasoningEfforts = providerVal === "codex"
-    ? codexReasoningEffortsForModel(modelVal || undefined)
+    ? codexReasoningEffortsForModel(modelVal || inheritedCodexModel || undefined)
     : [];
 
   // A tiny client script: on provider change, rebuild the Model <select> from
@@ -404,7 +409,7 @@ export function agentsView(
     inherited.value = ''; inherited.textContent = '默认（继承 Codex 配置）';
     reasoning.appendChild(inherited);
     if (reasoning.disabled) return;
-    var list = REASONING[model.value] || REASONING[''] || [];
+    var list = model.value === '' ? (REASONING[''] || []) : (REASONING[model.value] || []);
     list.forEach(function(effort){
       var option = document.createElement('option');
       option.value = effort; option.textContent = REASONING_LABELS[effort] || effort;

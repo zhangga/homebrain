@@ -46,11 +46,14 @@ const LEGACY_CODEX_REASONING_EFFORTS: readonly CodexReasoningEffort[] = [
 export function codexReasoningEffortsForModel(
   model?: string,
 ): readonly CodexReasoningEffort[] {
-  if (model?.startsWith("gpt-5.6")) return CODEX_REASONING_EFFORTS;
+  if (model === "gpt-5.6-sol" || model === "gpt-5.6-terra" || model === "gpt-5.6-luna") {
+    return CODEX_REASONING_EFFORTS;
+  }
   if (model === "gpt-5.5" || model === "gpt-5.4" || model === "gpt-5.4-mini") {
     return STANDARD_REASONING_EFFORTS;
   }
-  return LEGACY_CODEX_REASONING_EFFORTS;
+  if (model === "gpt-5.3-codex-spark") return LEGACY_CODEX_REASONING_EFFORTS;
+  return [];
 }
 
 export function isCodexReasoningEffortSupported(

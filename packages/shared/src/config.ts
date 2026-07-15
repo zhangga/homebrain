@@ -229,6 +229,8 @@ export function loadConfig(env = process.env): Config {
     base.onboardingStartedAt = persisted.onboardingStartedAt;
   }
 
+  base.defaultModel = canonicalModelId(base.defaultModel);
+
   return base;
 }
 

@@ -845,6 +845,47 @@ describe("management backend (read-write)", () => {
     expect(engine.agents.list().find((item) => item.name === "旧模型助手")?.reasoningEffort).toBe("");
   });
 
+  test("uses the inherited global Codex model to offer reasoning efforts", async () => {
+    saveSettings({ defaultProvider: "codex", defaultModel: "gpt-5.6-sol" }, dir);
+    const form = new URLSearchParams({
+      name: "继承 Sol",
+      provider: "codex",
+      model: "",
+      reasoningEffort: "max",
+    });
+    const response = await app.request("/agents", {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: form.toString(),
+    });
+
+    expect([302, 303]).toContain(response.status);
+    const agent = engine.agents.list().find((item) => item.name === "继承 Sol");
+    expect(agent?.reasoningEffort).toBe("max");
+    const view = await (await app.request(`/agents/${encodeURIComponent(agent!.id)}`)).text();
+    expect(view).toContain('value="max" selected');
+  });
+
+  test("does not offer inherited reasoning efforts to an unknown custom model", async () => {
+    saveSettings({ defaultProvider: "codex", defaultModel: "gpt-5.6-sol" }, dir);
+    const response = await app.request("/agents", {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        name: "自定义模型",
+        provider: "codex",
+        model: "gpt-5.6-custom",
+        reasoningEffort: "max",
+      }).toString(),
+    });
+
+    expect([302, 303]).toContain(response.status);
+    const agent = engine.agents.list().find((item) => item.name === "自定义模型");
+    expect(agent?.reasoningEffort).toBe("");
+    const view = await (await app.request(`/agents/${encodeURIComponent(agent!.id)}`)).text();
+    expect(view).toContain('"gpt-5.6-custom":[]');
+  });
+
   test("agents page shows detected providers; unavailable ones are disabled", async () => {
     const body = await (await app.request("/agents")).text();
     expect(body).toContain("Claude Code");

@@ -828,7 +828,22 @@ export function createWebApp(opts: WebOptions): Hono {
   app.get("/agents", async (c) => {
     const agents = engine.agents.list();
     const ok = c.req.query("ok") ?? undefined;
-    return c.html(await layout("Agents", [{ label: "Agents" }], await agentsView(agents, null, await getProviders(), await getModels(), ok), "agents"));
+    const cfg = config();
+    return c.html(
+      await layout(
+        "Agents",
+        [{ label: "Agents" }],
+        await agentsView(
+          agents,
+          null,
+          await getProviders(),
+          await getModels(),
+          { provider: cfg.defaultProvider, model: cfg.defaultModel },
+          ok,
+        ),
+        "agents",
+      ),
+    );
   });
 
   app.get("/agents/:id", async (c) => {
@@ -836,11 +851,19 @@ export function createWebApp(opts: WebOptions): Hono {
     const agent = engine.agents.get(id);
     if (!agent) return c.notFound();
     const ok = c.req.query("ok") ?? undefined;
+    const cfg = config();
     return c.html(
       await layout(
         agent.name,
         [{ label: "Agents", href: "/agents" }, { label: agent.name }],
-        await agentsView(engine.agents.list(), agent, await getProviders(), await getModels(), ok),
+        await agentsView(
+          engine.agents.list(),
+          agent,
+          await getProviders(),
+          await getModels(),
+          { provider: cfg.defaultProvider, model: cfg.defaultModel },
+          ok,
+        ),
         "agents",
       ),
     );

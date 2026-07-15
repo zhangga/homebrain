@@ -18,6 +18,7 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { CodexReasoningEffort, ProviderId } from "@homebrain/llm";
 import {
+  CODEX_REASONING_EFFORTS,
   DEFAULT_CLI_PROVIDER,
   isCliProvider,
   isCodexReasoningEffortSupported,
@@ -86,7 +87,9 @@ function normalizePermission(raw?: string): AgentPermission {
 /** Normalize a Codex reasoning level; unknown/empty => inherit the CLI default. */
 function normalizeReasoningEffort(raw: string | undefined, model: string): CodexReasoningEffort | "" {
   const value = raw?.trim() as CodexReasoningEffort | undefined;
-  return value && isCodexReasoningEffortSupported(model || undefined, value) ? value : "";
+  if (!value) return "";
+  if (!model) return CODEX_REASONING_EFFORTS.includes(value) ? value : "";
+  return isCodexReasoningEffortSupported(model, value) ? value : "";
 }
 
 /** Store the explicit GPT-5.6 Sol id instead of its shorter routing alias. */

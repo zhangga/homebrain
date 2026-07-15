@@ -48,6 +48,7 @@ describe("AgentStore", () => {
     expect(agent.reasoningEffort).toBe("high");
     expect(new AgentStore(dir).get(agent.id)?.reasoningEffort).toBe("high");
     expect(store.create({ name: "无效配置", reasoningEffort: "extreme" }).reasoningEffort).toBe("");
+    expect(store.create({ name: "继承模型", reasoningEffort: "max" }).reasoningEffort).toBe("max");
     expect(
       store.create({ name: "旧模型", model: "gpt-5.5", reasoningEffort: "max" }).reasoningEffort,
     ).toBe("");

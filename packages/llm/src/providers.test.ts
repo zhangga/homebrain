@@ -31,6 +31,9 @@ describe("Codex model capabilities", () => {
       "high",
       "xhigh",
     ]);
+    expect(codexReasoningEffortsForModel("custom-codex-model")).toEqual([]);
+    expect(codexReasoningEffortsForModel("gpt-5.6-custom")).toEqual([]);
+    expect(codexReasoningEffortsForModel()).toEqual([]);
   });
 });
 

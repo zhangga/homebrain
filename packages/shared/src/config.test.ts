@@ -76,6 +76,15 @@ describe("editable settings overlay", () => {
     expect(loadConfig().defaultModel).toBe("gpt-5.6-sol");
     expect(readSettings(dir).defaultModel).toBe("gpt-5.6-sol");
     expect(JSON.parse(readFileSync(path, "utf8")).defaultModel).toBe("gpt-5.6-sol");
+
+    rmSync(path);
+    expect(
+      loadConfig({
+        ...process.env,
+        HOMEBRAIN_DEFAULT_PROVIDER: "codex",
+        HOMEBRAIN_DEFAULT_MODEL: "gpt-5.6",
+      }).defaultModel,
+    ).toBe("gpt-5.6-sol");
   });
 
   test("saveSettings writes config/settings.json and overlays it", () => {

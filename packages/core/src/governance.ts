@@ -7,7 +7,11 @@ import {
   type RawSource,
   type SpaceId,
 } from "@homebrain/shared";
-import { isCliProvider, isCodexReasoningEffortSupported } from "@homebrain/llm";
+import {
+  CODEX_REASONING_EFFORTS,
+  isCliProvider,
+  isCodexReasoningEffortSupported,
+} from "@homebrain/llm";
 import type { Agent } from "./agents.ts";
 import { AGENT_PERMISSIONS } from "./agents.ts";
 import { TASK_CADENCES, type Task } from "./tasks.ts";
@@ -122,7 +126,10 @@ function optionalText(value: unknown, label: string): string | undefined {
 function reasoningEffort(value: unknown, model: string): Agent["reasoningEffort"] {
   if (value === undefined || value === "") return "";
   const effort = text(value, "agent.reasoningEffort") as Agent["reasoningEffort"];
-  if (!isCodexReasoningEffortSupported(model || undefined, effort)) {
+  const valid = model
+    ? isCodexReasoningEffortSupported(model, effort)
+    : CODEX_REASONING_EFFORTS.includes(effort as (typeof CODEX_REASONING_EFFORTS)[number]);
+  if (!valid) {
     throw new Error("agent.reasoningEffort is invalid");
   }
   return effort;

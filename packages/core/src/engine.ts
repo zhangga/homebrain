@@ -205,7 +205,10 @@ export class KnowledgeEngine implements Knowledge {
     const agent = this.agentForSpace(space);
     const cfg = config();
     const provider = agent?.provider || cfg.defaultProvider;
-    const selectedModel = agent?.model || cfg.defaultModel || undefined;
+    const inheritedModel = !agent || agent.provider === cfg.defaultProvider
+      ? cfg.defaultModel
+      : "";
+    const selectedModel = agent?.model || inheritedModel || undefined;
     const model = provider === "codex" && selectedModel
       ? canonicalModelId(selectedModel)
       : selectedModel;
