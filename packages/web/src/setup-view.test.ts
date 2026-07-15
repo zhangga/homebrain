@@ -122,11 +122,11 @@ describe("guided setup view", () => {
       provisioning: {
         state: "waiting_for_user",
         brand: "feishu",
-        verificationUrl: "https://open.feishu.cn/page/cli?user_code=safe",
+        verificationUrl: "https://open.feishu.cn/page/launcher?user_code=safe",
         message: "请完成授权",
       },
     });
-    expect(body).toContain("https://open.feishu.cn/page/cli?user_code=safe");
+    expect(body).toContain("https://open.feishu.cn/page/launcher?user_code=safe");
     expect(body).toContain("/setup/feishu/session");
   });
 

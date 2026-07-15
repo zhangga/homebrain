@@ -5,6 +5,7 @@ import type { SpaceMeta } from "@homebrain/core";
 import type { CodexLoginSession, DetectedProvider } from "@homebrain/llm";
 import type { FeishuRuntimeStatus } from "./integrations.ts";
 import type { SetupSnapshot, SetupStep } from "./setup.ts";
+import { safeLarkVerificationUrl } from "./verification-url.ts";
 
 export interface SetupViewInput {
   snapshot: SetupSnapshot;
@@ -137,18 +138,6 @@ export function setupLayout(body: HtmlEscapedString | Promise<HtmlEscapedString>
     </head>
     <body>${body}</body>
   </html>`;
-}
-
-function safeVerificationUrl(value?: string): string | undefined {
-  if (!value) return undefined;
-  try {
-    const parsed = new URL(value);
-    if (parsed.protocol !== "https:" || parsed.pathname !== "/page/cli") return undefined;
-    if (!["open.feishu.cn", "open.larksuite.com"].includes(parsed.hostname)) return undefined;
-    return parsed.toString();
-  } catch {
-    return undefined;
-  }
 }
 
 function safeCodexVerificationUrl(value?: string): string | undefined {
@@ -289,7 +278,7 @@ function provisioningPollScript(): HtmlEscapedString | Promise<HtmlEscapedString
 }
 
 function feishuStep(input: SetupViewInput): HtmlEscapedString | Promise<HtmlEscapedString> {
-  const url = safeVerificationUrl(input.provisioning.verificationUrl);
+  const url = safeLarkVerificationUrl(input.provisioning.verificationUrl);
   const waiting = ["starting", "waiting_for_user", "verifying"].includes(input.provisioning.state);
   const failure = ["failed", "expired"].includes(input.provisioning.state)
     ? html`<div class="flash">${input.provisioning.message}</div>`
