@@ -126,6 +126,7 @@ const NAV: { key: string; label: string; href: string; ico: string }[] = [
   { key: "spaces", label: "空间 / 知识", href: "/", ico: "🗂" },
   { key: "agents", label: "Agents", href: "/agents", ico: "🤖" },
   { key: "tasks", label: "任务", href: "/tasks", ico: "⏰" },
+  { key: "learning", label: "学习", href: "/learning", ico: "📖" },
   { key: "reminders", label: "提醒", href: "/reminders", ico: "🔔" },
   { key: "integrations", label: "飞书连接", href: "/integrations", ico: "🔌" },
   { key: "governance", label: "数据治理", href: "/governance", ico: "🛡" },

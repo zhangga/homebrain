@@ -46,6 +46,7 @@ import {
   agentsView,
   askView,
   integrationsView,
+  learningView,
   healthView,
   governanceView,
   logsView,
@@ -984,6 +985,73 @@ export function createWebApp(opts: WebOptions): Hono {
       })
       .catch(() => {});
     return c.redirect(`/tasks/${encodeURIComponent(id)}?ok=${encodeURIComponent("任务已开始，完成后刷新查看结果")}`);
+  });
+
+  // ---- Guided learning ----------------------------------------------------
+
+  app.get("/learning", async (c) => {
+    const ok = c.req.query("ok") ?? undefined;
+    return c.html(
+      await layout(
+        "学习计划",
+        [{ label: "学习计划" }],
+        await learningView(engine.learning.list(), null, undefined, [], ok),
+        "learning",
+      ),
+    );
+  });
+
+  app.get("/learning/:id", async (c) => {
+    const id = decodeURIComponent(c.req.param("id"));
+    const plan = engine.learning.get(id);
+    if (!plan) return c.notFound();
+    const ok = c.req.query("ok") ?? undefined;
+    return c.html(
+      await layout(
+        plan.name,
+        [{ label: "学习计划", href: "/learning" }, { label: plan.name }],
+        await learningView(
+          engine.learning.list(),
+          plan,
+          engine.learning.source(id),
+          engine.learning.sessionsForPlan(id),
+          ok,
+        ),
+        "learning",
+      ),
+    );
+  });
+
+  app.post("/learning/:id", async (c) => {
+    const id = decodeURIComponent(c.req.param("id"));
+    if (!engine.learning.has(id)) return c.notFound();
+    const body = await c.req.parseBody();
+    engine.learning.update(id, undefined, {
+      hour: Number(str(body, "hour")),
+      dailyCharacters: Number(str(body, "dailyCharacters")),
+    });
+    return c.redirect(`/learning/${encodeURIComponent(id)}?ok=${encodeURIComponent("已保存")}`);
+  });
+
+  app.post("/learning/:id/pause", async (c) => {
+    const id = decodeURIComponent(c.req.param("id"));
+    if (!engine.learning.has(id)) return c.notFound();
+    engine.learning.pause(id);
+    return c.redirect(`/learning/${encodeURIComponent(id)}?ok=${encodeURIComponent("已暂停")}`);
+  });
+
+  app.post("/learning/:id/resume", async (c) => {
+    const id = decodeURIComponent(c.req.param("id"));
+    if (!engine.learning.has(id)) return c.notFound();
+    engine.learning.resume(id);
+    return c.redirect(`/learning/${encodeURIComponent(id)}?ok=${encodeURIComponent("已恢复")}`);
+  });
+
+  app.post("/learning/:id/delete", async (c) => {
+    const id = decodeURIComponent(c.req.param("id"));
+    if (!engine.learning.has(id)) return c.notFound();
+    engine.learning.remove(id);
+    return c.redirect(`/learning?ok=${encodeURIComponent("已删除")}`);
   });
 
   // ---- Reminders -----------------------------------------------------------

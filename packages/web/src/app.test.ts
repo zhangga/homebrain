@@ -1398,6 +1398,53 @@ describe("management backend (read-write)", () => {
     expect(engine.tasks.has(task.id)).toBe(false);
   });
 
+  test("learning: nav, list, detail, and administrative controls reflect durable state", async () => {
+    const plan = engine.learning.create({
+      name: "读《原则》",
+      space: SPACE,
+      creatorId: "ou_reader",
+      chatId: "oc_web",
+      sourceTitle: "principles.md",
+      sourceContent: "# 第一章\n\n书籍正文",
+      sourceRawIds: ["raw_book"],
+      sourceMessageId: "om_book",
+      hour: 8,
+      dailyCharacters: 800,
+    }, 1);
+
+    const list = await (await app.request("/learning")).text();
+    expect(list).toContain("学习计划");
+    expect(list).toContain("读《原则》");
+    expect(list).toContain('href="/learning"');
+
+    const detail = await (await app.request(`/learning/${encodeURIComponent(plan.id)}`)).text();
+    expect(detail).toContain("principles.md");
+    expect(detail).toContain("ou_reader");
+    expect(detail).toContain('name="dailyCharacters"');
+    expect(detail).not.toContain('name="actorId"');
+
+    const updated = await app.request(`/learning/${encodeURIComponent(plan.id)}`, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ hour: "10", dailyCharacters: "1200" }).toString(),
+    });
+    expect([302, 303]).toContain(updated.status);
+    expect(engine.learning.get(plan.id)).toEqual(expect.objectContaining({
+      hour: 10,
+      dailyCharacters: 1200,
+    }));
+
+    await app.request(`/learning/${encodeURIComponent(plan.id)}/pause`, { method: "POST" });
+    expect(engine.learning.get(plan.id)?.status).toBe("paused");
+    await app.request(`/learning/${encodeURIComponent(plan.id)}/resume`, { method: "POST" });
+    expect(engine.learning.get(plan.id)?.status).toBe("active");
+    const removed = await app.request(`/learning/${encodeURIComponent(plan.id)}/delete`, {
+      method: "POST",
+    });
+    expect([302, 303]).toContain(removed.status);
+    expect(engine.learning.has(plan.id)).toBe(false);
+  });
+
   test("reminders: list and administrative controls reflect durable reminder state", async () => {
     const reminder = engine.reminders.create({
       title: "去茶饼斋",

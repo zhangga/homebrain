@@ -16,7 +16,15 @@ import type {
   LarkProvisioningSession,
   LarkSetupStatus,
 } from "@homeagent/shared";
-import type { SpaceMeta, Agent, Task, Reminder } from "@homeagent/core";
+import type {
+  SpaceMeta,
+  Agent,
+  Task,
+  Reminder,
+  LearningPlan,
+  LearningSession,
+  LearningSource,
+} from "@homeagent/core";
 import { AGENT_PERMISSIONS, TASK_CADENCES } from "@homeagent/core";
 import { codexReasoningEffortsForModel, type DetectedProvider } from "@homeagent/llm";
 import type { FeishuRuntimeStatus } from "./integrations.ts";
@@ -690,6 +698,92 @@ export function remindersView(
           ${rows}
         </table>`
       : html`<div class="empty">还没有提醒。</div>`}`;
+}
+
+// ---- Guided learning ------------------------------------------------------
+
+const LEARNING_STATUS_LABELS: Record<LearningPlan["status"], string> = {
+  active: "进行中",
+  paused: "已暂停",
+  completed: "已完成",
+};
+
+const LEARNING_SESSION_LABELS: Record<LearningSession["status"], string> = {
+  prepared: "待推送",
+  awaiting_reply: "等待回答",
+  completed: "已完成",
+  skipped: "已跳过",
+};
+
+export function learningView(
+  plans: LearningPlan[],
+  selected: LearningPlan | null,
+  source?: LearningSource,
+  sessions: LearningSession[] = [],
+  flashMsg?: string,
+): HtmlEscapedString | Promise<HtmlEscapedString> {
+  const listItems = plans.map((plan) => {
+    const progress = Math.min(100, Math.floor((plan.cursor / plan.sourceLength) * 100));
+    return html`<a class="item ${selected?.id === plan.id ? "active" : ""}" href="/learning/${encodeURIComponent(plan.id)}">
+      <div class="name"><span class="dot" style="${plan.status === "active" ? "" : "background:#cbd5e1"}"></span>${plan.name}</div>
+      <div class="sub">${LEARNING_STATUS_LABELS[plan.status]} · ${progress}% · 每天 ${plan.hour}:00</div>
+    </a>`;
+  });
+
+  const detail = selected
+    ? html`<div>
+        ${flash(flashMsg)}
+        <form method="post" action="/learning/${encodeURIComponent(selected.id)}" class="stack card">
+          <h2 style="margin-top:0">${selected.name}</h2>
+          <div class="grid2">
+            <div class="field"><label>来源</label><div>${source?.title ?? "来源已不可用"}</div></div>
+            <div class="field"><label>状态</label><div>${LEARNING_STATUS_LABELS[selected.status]}</div></div>
+            <div class="field"><label>空间</label><div>${selected.space}</div></div>
+            <div class="field"><label>创建者</label><div>${selected.creatorId}</div></div>
+            <div class="field">
+              <label>每天几点 <span class="hint">北京时间，0–23</span></label>
+              <input type="number" min="0" max="23" name="hour" value="${selected.hour}" required />
+            </div>
+            <div class="field">
+              <label>每课字数 <span class="hint">500–8000 字</span></label>
+              <input type="number" min="500" max="8000" name="dailyCharacters" value="${selected.dailyCharacters}" required />
+            </div>
+          </div>
+          <div class="muted">阅读进度：${selected.cursor} / ${selected.sourceLength} 字</div>
+          <div class="actions" style="margin-top:14px">
+            <button type="submit">保存设置</button>
+            ${selected.status === "active"
+              ? html`<button type="submit" class="secondary" formaction="/learning/${encodeURIComponent(selected.id)}/pause">暂停</button>`
+              : selected.status === "paused"
+                ? html`<button type="submit" class="secondary" formaction="/learning/${encodeURIComponent(selected.id)}/resume">恢复</button>`
+                : ""}
+            <button type="submit" class="danger" formaction="/learning/${encodeURIComponent(selected.id)}/delete" onclick="return confirm('删除该学习计划？')">删除</button>
+          </div>
+        </form>
+        <h2>课程记录</h2>
+        ${sessions.length > 0
+          ? html`<table>
+              <tr><th>课次</th><th>阅读范围</th><th>状态</th><th>时间</th></tr>
+              ${sessions.map((session) => html`<tr>
+                <td>第 ${session.sequence} 课</td>
+                <td>${session.sectionTitle}<div class="muted">${session.startOffset}–${session.endOffset} 字</div></td>
+                <td>${LEARNING_SESSION_LABELS[session.status]}</td>
+                <td>${fmtTime(session.completedAt ?? session.deliveredAt ?? session.preparedAt)}</td>
+              </tr>`)}
+            </table>`
+          : html`<div class="empty">还没有课程记录。</div>`}
+      </div>`
+    : html`<div class="card">
+        ${flash(flashMsg)}
+        <h2 style="margin-top:0">在飞书里创建学习计划</h2>
+        <p class="muted">回复包含书籍附件或飞书文档的原消息，发送 <code>/learn new &lt;书名&gt;</code>。创建后可在这里查看进度和调整推送时间。</p>
+      </div>`;
+
+  return html`<h1>学习计划</h1>
+    <p class="subtitle">Agent 每天按固定进度带读原文、提出思考题，并根据你的回答给出反馈。</p>
+    ${plans.length > 0
+      ? html`<div class="split"><div class="listcol">${listItems}</div>${detail}</div>`
+      : html`${flash(flashMsg)}<div class="empty">还没有学习计划。请先在飞书里回复一本书并发送 <code>/learn new &lt;书名&gt;</code>。</div>`}`;
 }
 
 // ---- Integrations (mew: Lark bot + Lark groups) ----------------------------
