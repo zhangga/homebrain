@@ -846,6 +846,33 @@ describe("management backend (read-write)", () => {
     expect(page).toContain("飞书群聊");
   });
 
+  test("integration page shows a safe retry after Feishu creation fails", async () => {
+    const failed = {
+      state: "failed" as const,
+      brand: "feishu" as const,
+      verificationUrl: "https://attacker.example/page/launcher?user_code=LEAK",
+      message: "创建失败，请重试",
+    };
+    const setupApp = createWebApp({
+      engine,
+      detectProviders: async () => [],
+      providerModels: async () => ({}),
+      larkSetup: {
+        status: async () => ({ state: "unconfigured", verified: false, message: "raw-status-secret" }),
+        configure: async () => { throw new Error("unused"); },
+        startAutomatic: async () => failed,
+        provisioningStatus: () => failed,
+      },
+    });
+
+    const page = await (await setupApp.request("/integrations")).text();
+    expect(page).toContain("创建失败，请重试");
+    expect(page).toContain("一键创建并连接");
+    expect(page).not.toContain("attacker.example");
+    expect(page).not.toContain("LEAK");
+    expect(page).not.toContain("raw-status-secret");
+  });
+
   test("integration setup verifies app credentials and discovers the bot identity", async () => {
     const configured: { appId: string; appSecret: string; brand: string }[] = [];
     const setupApp = createWebApp({
@@ -901,6 +928,8 @@ describe("management backend (read-write)", () => {
     expect(page).toContain("创建并切换机器人");
     expect(page).toContain("新机器人");
     expect(page).toContain("ou_new");
+    expect(page).toContain('<span class="muted">当前</span>');
+    expect(page).not.toContain("⌄");
     expect(page).not.toContain("top-secret-value");
   });
 

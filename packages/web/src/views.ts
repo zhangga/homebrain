@@ -612,6 +612,9 @@ function feishuProvisioningControl(
   }
   const label = setup.state === "ready" && setup.verified ? "创建并切换机器人" : "一键创建并连接";
   return html`<form method="post" action="/setup/feishu/automatic" class="integration-actions">
+    ${["failed", "expired"].includes(provisioning.state)
+      ? html`<span class="muted">${provisioning.message}</span>`
+      : ""}
     <input type="hidden" name="brand" value="feishu" />
     <input type="hidden" name="returnTo" value="/integrations" />
     <button type="submit">${label}</button>
@@ -692,7 +695,7 @@ export function integrationsView(
           <div class="muted">接收群消息、发送回答，并建立群知识空间。</div>
         </div>
         ${setup.state === "ready" && setup.verified
-          ? html`<div class="connection-pill"><span><span class="dot"></span>${shownBotName || "已连接机器人"}</span><span>⌄</span></div>`
+          ? html`<div class="connection-pill"><span><span class="dot"></span>${shownBotName || "已连接机器人"}</span><span class="muted">当前</span></div>`
           : feishuProvisioningControl(setup, provisioning)}
       </div>
       ${setup.state === "ready" && setup.verified ? html`<div class="integration-row">
