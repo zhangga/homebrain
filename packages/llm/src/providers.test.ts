@@ -72,6 +72,11 @@ describe("provider detection", () => {
     expect(m.gateway).toBeUndefined();
     expect(m["trae-cli"]).toContain("openrouter-3o");
     // codex list mirrors mew's menu
+    expect(m.codex?.slice(0, 3)).toEqual([
+      "gpt-5.6",
+      "gpt-5.6-terra",
+      "gpt-5.6-luna",
+    ]);
     expect(m.codex).toContain("gpt-5.5");
     expect(m.codex).toContain("gpt-5.3-codex-spark");
     expect(m.claude?.length).toBeGreaterThan(0);

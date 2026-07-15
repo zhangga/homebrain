@@ -903,6 +903,30 @@ describe("orchestrator trunk (cli connector, no feishu)", () => {
     expect(cliConnector.sent[0]!.markdown).toContain("回答 Agent 暂时不可用");
   });
 
+  test("CLI-only runtime distinguishes a provider timeout from missing configuration", async () => {
+    let calls = 0;
+    const cliEngine = new KnowledgeEngine({
+      dataDir: dir,
+      runProvider: async () => {
+        calls += 1;
+        if (calls === 1) return JSON.stringify({ intent: "question" });
+        throw new Error("provider codex timed out after 120000ms");
+      },
+    });
+    const { connector: cliConnector, orchestrator: cliOrch } = makeCliOnlyRuntime(
+      cliEngine,
+      "personal/ou_me",
+      { name: "快速助手", provider: "codex", model: "gpt-5.6-luna" },
+    );
+
+    await cliOrch.start();
+    await cliConnector.sendP2P("谁负责后端服务");
+
+    expect(cliConnector.sent[0]!.markdown).toContain("回答超时");
+    expect(cliConnector.sent[0]!.markdown).toContain("gpt-5.6-luna");
+    expect(cliConnector.sent[0]!.markdown).not.toContain("未配置");
+  });
+
   test("CLI-only runtime answers a prefiltered greeting without resolving a provider", async () => {
     saveSettings({ defaultProvider: "gateway" }, dir);
     resetConfig();

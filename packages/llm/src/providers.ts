@@ -96,8 +96,16 @@ const KNOWN: CliSpec[] = [
     bin: "codex",
     envBin: "HOMEBRAIN_CODEX_BIN",
     versionArgs: ["--version"],
-    // Curated to match mew's Codex model menu (CLIs expose no list command).
-    models: ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex-spark"],
+    // Curated from OpenAI's current model catalog (CLIs expose no list command).
+    models: [
+      "gpt-5.6",
+      "gpt-5.6-terra",
+      "gpt-5.6-luna",
+      "gpt-5.5",
+      "gpt-5.4",
+      "gpt-5.4-mini",
+      "gpt-5.3-codex-spark",
+    ],
     buildRun: ({ prompt, model }) => {
       // Read-only sandbox + never ask for approval: pure Q&A, no side effects.
       const args = ["exec", "--sandbox", "read-only", prompt];

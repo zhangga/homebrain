@@ -32,7 +32,7 @@ import { attribute } from "./attribution.ts";
 import { gate } from "./gateway.ts";
 import { classifyIntent, type Intent } from "./intent.ts";
 import { formatAnswer } from "./format.ts";
-import { GROUP_ADDED_NOTICE, NO_PROVIDER_NOTICE, coldStartNote } from "./messages.ts";
+import { GROUP_ADDED_NOTICE, coldStartNote, providerNotice } from "./messages.ts";
 import { parseTaskCommand, handleTaskCommand } from "./task-commands.ts";
 
 const log = logger.child("orchestrator");
@@ -205,7 +205,7 @@ export class Orchestrator {
           space: writeSpace,
           err: String(err),
         });
-        await this.send(msg, NO_PROVIDER_NOTICE);
+        await this.send(msg, providerNotice(err));
         return;
       }
       log.debug("classified intent", { intent, chatType: msg.chatType });
@@ -239,7 +239,7 @@ export class Orchestrator {
       // No runnable provider (unset agent + no usable default CLI), or the CLI
       // failed to answer. Tell the user to configure, rather than fail silently.
       log.warn("ask failed; prompting to configure a provider", { space: writeSpace, err: String(err) });
-      await this.send(msg, NO_PROVIDER_NOTICE);
+      await this.send(msg, providerNotice(err));
       return;
     }
     // Cold-start honesty (Q3): if general and the KB is essentially empty, add a

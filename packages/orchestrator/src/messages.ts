@@ -23,6 +23,17 @@ export const NO_PROVIDER_NOTICE = [
   "请在管理后台检查当前空间的 Agent，或在设置里更换默认的本机 CLI。",
 ].join("\n");
 
+export const PROVIDER_TIMEOUT_NOTICE = [
+  "⚠️ 回答超时：当前 Agent 已配置，但本机 AI 没有在 120 秒内完成这次回答。",
+  "可以稍后重试或改用更快的模型；Codex 推荐在“设置”或当前空间的 Agent 中选择 gpt-5.6-luna。",
+].join("\n");
+
+export function providerNotice(error: unknown): string {
+  return /timed?\s*out|timeout|超时/i.test(String(error))
+    ? PROVIDER_TIMEOUT_NOTICE
+    : NO_PROVIDER_NOTICE;
+}
+
 /** Usage help for the /task chat commands. */
 export const TASK_HELP = [
   "🗓 任务命令：",
