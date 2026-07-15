@@ -8,6 +8,7 @@
     ".": "./src/index.ts"
   },
   "dependencies": {
-    "@homebrain/shared": "workspace:*"
+    "@homebrain/shared": "workspace:*",
+    "@larksuiteoapi/node-sdk": "^1.71.1"
   }
 }
