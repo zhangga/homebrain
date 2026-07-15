@@ -334,13 +334,15 @@ describe("FeishuConnector outbound", () => {
     try {
       await expect(
         runFeishuCommand([executable], {
-          timeoutMs: 300,
+          // Keep the command timeout well beyond the 25 ms size polling loop;
+          // a loaded full-suite run must still prove the size guard wins.
+          timeoutMs: 2_000,
           terminationGraceMs: 50,
           outputPath,
           maxOutputBytes: 1_024,
         }),
       ).rejects.toThrow("output exceeded");
-      expect(Date.now() - startedAt).toBeLessThan(1_000);
+      expect(Date.now() - startedAt).toBeLessThan(3_000);
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }

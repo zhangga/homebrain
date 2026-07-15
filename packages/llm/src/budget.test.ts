@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { resetConfig } from "@homebrain/shared";
@@ -62,9 +62,11 @@ describe("budget", () => {
     expect(checkBudget("ask").allowed).toBe(false);
   });
 
-  test("tolerates malformed log lines", () => {
+  test("tolerates malformed log lines", async () => {
     const { config } = require("@homebrain/shared");
-    Bun.write(join(config().dataDir, "logs", `llm-${localDay()}.jsonl`), "not json\n{bad}\n");
+    const logs = join(config().dataDir, "logs");
+    mkdirSync(logs, { recursive: true });
+    await Bun.write(join(logs, `llm-${localDay()}.jsonl`), "not json\n{bad}\n");
     // spentToday should not throw; may be 0
     expect(() => spentToday()).not.toThrow();
   });
