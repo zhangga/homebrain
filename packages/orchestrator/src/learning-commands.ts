@@ -16,6 +16,10 @@ export interface LearningCommandContext {
   sourceMessageId?: string;
 }
 
+export function learningCommandNeedsSource(command: LearningCommand): boolean {
+  return command.verb === "new" || command.verb === "add";
+}
+
 function withoutMentions(text: string): string {
   return text.trim().replace(/^(?:@\S+\s*)+/u, "").trim();
 }
@@ -159,7 +163,7 @@ export async function handleLearningCommand(
       ...target.route.map((step) =>
         `${routeStatusIcon(step.status)} ${step.title} — ${step.objective}${step.attempts > 0 ? `（已学习 ${step.attempts} 次）` : ""}`
       ),
-      target.adaptiveFocus ? `\n当前补强重点：${target.adaptiveFocus}` : "",
+      target.adaptiveFocus ? `\n下一课重点：${target.adaptiveFocus}` : "",
     ].filter(Boolean).join("\n");
   }
   if (command.verb === "add") {

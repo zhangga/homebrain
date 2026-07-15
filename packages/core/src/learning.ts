@@ -20,6 +20,7 @@ export type LearningPlanMode = "reading" | "topic";
 export type LearningRouteStepStatus = "pending" | "active" | "completed" | "skipped";
 export type LearningMastery = "review" | "ready";
 export const MAX_LEARNING_SOURCE_CHARACTERS = 2_000_000;
+export const MAX_LEARNING_MATERIALS = 24;
 
 export interface LearningMaterial {
   title: string;
@@ -205,8 +206,23 @@ function normalizeSource(value: unknown): LearningSource | undefined {
     : source.materials;
   if (
     !Array.isArray(materials)
+    || materials.length > MAX_LEARNING_MATERIALS
     || !materials.every((material) => validMaterial(material, source.content!.length))
   ) return undefined;
+  const messageIds = new Set<string>();
+  const materialRawIds = new Set<string>();
+  if (new Set(source.rawIds).size !== source.rawIds.length) return undefined;
+  let previousEnd = 0;
+  for (const material of materials) {
+    if (messageIds.has(material.messageId) || material.startOffset < previousEnd) return undefined;
+    messageIds.add(material.messageId);
+    previousEnd = material.endOffset;
+    for (const rawId of material.rawIds) {
+      if (!source.rawIds.includes(rawId) || materialRawIds.has(rawId)) return undefined;
+      materialRawIds.add(rawId);
+    }
+  }
+  if (source.rawIds.some((rawId) => !materialRawIds.has(rawId))) return undefined;
   return {
     id: source.id,
     title: source.title,
@@ -251,6 +267,7 @@ function validRouteState(plan: Partial<LearningPlan>): boolean {
   if (plan.mode !== "topic" || !plan.topic?.trim() || !plan.route || plan.route.length === 0) {
     return false;
   }
+  if (new Set(plan.route.map((step) => step.id)).size !== plan.route.length) return false;
   if (plan.cursor !== 0 || plan.routeIndex === undefined) return false;
   for (const [index, step] of plan.route.entries()) {
     if (index < plan.routeIndex && !["completed", "skipped"].includes(step.status)) return false;
@@ -316,6 +333,50 @@ function validSession(value: unknown): value is LearningSession {
     && (session.completedAt === undefined || finite(session.completedAt));
 }
 
+function sessionFitsPlan(plan: LearningPlan, session: LearningSession): boolean {
+  if (session.planId !== plan.id || session.endOffset > plan.sourceLength) return false;
+  if (plan.mode === "reading") {
+    return session.routeStepId === undefined
+      && session.mastery === undefined
+      && session.nextFocus === undefined;
+  }
+  const stepIndex = plan.route.findIndex((step) => step.id === session.routeStepId);
+  if (
+    stepIndex < 0 || session.startOffset !== stepIndex || session.endOffset !== stepIndex + 1
+  ) return false;
+  if (
+    plan.currentSessionId === session.id
+    && session.routeStepId !== plan.route[plan.routeIndex]?.id
+  ) return false;
+  if (session.status === "completed") {
+    return ["review", "ready"].includes(session.mastery ?? "") && Boolean(session.nextFocus?.trim());
+  }
+  return session.mastery === undefined && session.nextFocus === undefined;
+}
+
+function clonePlan(plan: LearningPlan): LearningPlan {
+  return { ...plan, route: plan.route.map((step) => ({ ...step })) };
+}
+
+function cloneSource(source: LearningSource): LearningSource {
+  return {
+    ...source,
+    rawIds: [...source.rawIds],
+    materials: source.materials.map((material) => ({
+      ...material,
+      rawIds: [...material.rawIds],
+    })),
+  };
+}
+
+function cloneSession(session: LearningSession): LearningSession {
+  return { ...session };
+}
+
+function cloneMap<T>(values: Map<string, T>, clone: (value: T) => T): Map<string, T> {
+  return new Map([...values].map(([id, value]) => [id, clone(value)]));
+}
+
 export class LearningPlanStore {
   private readonly configPath: string;
   private plans = new Map<string, LearningPlan>();
@@ -340,17 +401,21 @@ export class LearningPlanStore {
       }
       for (const [id, plan] of Object.entries(parsed.plans ?? {})) {
         const normalized = normalizePlan(plan);
+        const current = normalized?.currentSessionId
+          ? this.sessions.get(normalized.currentSessionId)
+          : undefined;
         if (
           normalized?.id === id
           && this.sources.get(normalized.sourceId)?.content.length === normalized.sourceLength
           && (!normalized.currentSessionId
-            || this.sessions.get(normalized.currentSessionId)?.planId === normalized.id)
+            || (current !== undefined && sessionFitsPlan(normalized, current)))
         ) {
           this.plans.set(id, normalized);
         }
       }
       for (const [id, session] of this.sessions) {
-        if (!this.plans.has(session.planId)) this.sessions.delete(id);
+        const plan = this.plans.get(session.planId);
+        if (!plan || !sessionFitsPlan(plan, session)) this.sessions.delete(id);
       }
     } catch {
       // Optional learning state must not prevent HomeAgent from starting.
@@ -498,9 +563,11 @@ export class LearningPlanStore {
       objective: step.objective.trim(),
     }));
     if (
-      !name || !topic || topic.length > 200 || !isSpaceId(input.space)
+      !name || name.length > 100 || !topic || topic.length > 200 || !isSpaceId(input.space)
       || !creatorId || !chatId || routeInput.length < 2 || routeInput.length > 12
-      || routeInput.some((step) => !step.title || !step.objective)
+      || routeInput.some((step) =>
+        !step.title || step.title.length > 100 || !step.objective || step.objective.length > 500
+      )
     ) throw new Error("invalid topic learning plan input");
 
     const route: LearningRouteStep[] = routeInput.map((step, index) => ({
@@ -519,6 +586,9 @@ export class LearningPlanStore {
       ]),
       "说明：以上是 Agent 生成的学习路线，不是外部事实来源。",
     ].join("\n").trim();
+    if (outline.length > MAX_LEARNING_SOURCE_CHARACTERS) {
+      throw new Error("invalid topic learning plan input");
+    }
     const source: LearningSource = {
       id: `learn_source_${randomUUID()}`,
       title: `主题：${topic}`,
@@ -579,6 +649,9 @@ export class LearningPlanStore {
     if (source.materials.some((material) => material.messageId === messageId)) {
       throw new Error("这份学习材料已经添加过了");
     }
+    if (source.materials.length >= MAX_LEARNING_MATERIALS) {
+      throw new Error(`每个学习计划最多添加 ${MAX_LEARNING_MATERIALS} 份材料`);
+    }
     const prefix = `\n\n---\n\n# 来源材料：${title}\n\n`;
     const combined = `${source.content}${prefix}${content}`;
     if (combined.length > MAX_LEARNING_SOURCE_CHARACTERS) {
@@ -592,16 +665,8 @@ export class LearningPlanStore {
       endOffset: combined.length,
       createdAt: now,
     };
-    const candidatePlans = new Map(
-      [...this.plans].map(([id, value]) => [id, { ...value, route: value.route.map((step) => ({ ...step })) }]),
-    );
-    const candidateSources = new Map(
-      [...this.sources].map(([id, value]) => [id, {
-        ...value,
-        rawIds: [...value.rawIds],
-        materials: value.materials.map((item) => ({ ...item, rawIds: [...item.rawIds] })),
-      }]),
-    );
+    const candidatePlans = cloneMap(this.plans, clonePlan);
+    const candidateSources = cloneMap(this.sources, cloneSource);
     const updatedSource = candidateSources.get(source.id)!;
     updatedSource.content = combined;
     updatedSource.rawIds = [...new Set([...updatedSource.rawIds, ...rawIds])];
@@ -652,12 +717,8 @@ export class LearningPlanStore {
       status: "prepared",
       preparedAt: input.preparedAt,
     };
-    const candidatePlans = new Map(
-      [...this.plans].map(([id, value]) => [id, { ...value }]),
-    );
-    const candidateSessions = new Map(
-      [...this.sessions].map(([id, value]) => [id, { ...value }]),
-    );
+    const candidatePlans = cloneMap(this.plans, clonePlan);
+    const candidateSessions = cloneMap(this.sessions, cloneSession);
     const updatedPlan = candidatePlans.get(planId)!;
     updatedPlan.currentSessionId = session.id;
     updatedPlan.updatedAt = input.preparedAt;
@@ -671,12 +732,8 @@ export class LearningPlanStore {
   markDelivered(sessionId: string, deliveredAt = Date.now()): LearningSession | undefined {
     const session = this.sessions.get(sessionId);
     if (!session || session.status !== "prepared" || !finite(deliveredAt)) return undefined;
-    const candidatePlans = new Map(
-      [...this.plans].map(([id, value]) => [id, { ...value }]),
-    );
-    const candidateSessions = new Map(
-      [...this.sessions].map(([id, value]) => [id, { ...value }]),
-    );
+    const candidatePlans = cloneMap(this.plans, clonePlan);
+    const candidateSessions = cloneMap(this.sessions, cloneSession);
     const updatedSession = candidateSessions.get(sessionId)!;
     updatedSession.status = "awaiting_reply";
     updatedSession.deliveredAt = deliveredAt;
@@ -712,15 +769,8 @@ export class LearningPlanStore {
       ))
     ) return undefined;
 
-    const candidatePlans = new Map(
-      [...this.plans].map(([id, value]) => [
-        id,
-        { ...value, route: value.route.map((step) => ({ ...step })) },
-      ]),
-    );
-    const candidateSessions = new Map(
-      [...this.sessions].map(([id, value]) => [id, { ...value }]),
-    );
+    const candidatePlans = cloneMap(this.plans, clonePlan);
+    const candidateSessions = cloneMap(this.sessions, cloneSession);
     const updatedSession = candidateSessions.get(sessionId)!;
     updatedSession.status = "completed";
     updatedSession.learnerReply = learnerReply;
@@ -744,9 +794,7 @@ export class LearningPlanStore {
   ): LearningPlan | undefined {
     const plan = this.plans.get(id);
     if (!plan || (actorId !== undefined && plan.creatorId !== actorId)) return undefined;
-    const candidatePlans = new Map(
-      [...this.plans].map(([planId, value]) => [planId, { ...value }]),
-    );
+    const candidatePlans = cloneMap(this.plans, clonePlan);
     const updated = candidatePlans.get(id)!;
     if (patch.hour !== undefined) updated.hour = normalizeHour(patch.hour);
     if (patch.dailyCharacters !== undefined) {
@@ -764,9 +812,7 @@ export class LearningPlanStore {
       !plan || plan.status !== "active"
       || (actorId !== undefined && plan.creatorId !== actorId)
     ) return undefined;
-    const candidatePlans = new Map(
-      [...this.plans].map(([planId, value]) => [planId, { ...value }]),
-    );
+    const candidatePlans = cloneMap(this.plans, clonePlan);
     const updated = candidatePlans.get(id)!;
     updated.status = "paused";
     updated.updatedAt = at;
@@ -781,9 +827,7 @@ export class LearningPlanStore {
       !plan || plan.status !== "paused"
       || (actorId !== undefined && plan.creatorId !== actorId)
     ) return undefined;
-    const candidatePlans = new Map(
-      [...this.plans].map(([planId, value]) => [planId, { ...value }]),
-    );
+    const candidatePlans = cloneMap(this.plans, clonePlan);
     const updated = candidatePlans.get(id)!;
     updated.status = "active";
     updated.updatedAt = at;
@@ -804,15 +848,8 @@ export class LearningPlanStore {
       || session.status !== "awaiting_reply" || !finite(completedAt)
     ) return undefined;
 
-    const candidatePlans = new Map(
-      [...this.plans].map(([id, value]) => [
-        id,
-        { ...value, route: value.route.map((step) => ({ ...step })) },
-      ]),
-    );
-    const candidateSessions = new Map(
-      [...this.sessions].map(([id, value]) => [id, { ...value }]),
-    );
+    const candidatePlans = cloneMap(this.plans, clonePlan);
+    const candidateSessions = cloneMap(this.sessions, cloneSession);
     const updatedSession = candidateSessions.get(session.id)!;
     updatedSession.status = "skipped";
     updatedSession.completedAt = completedAt;
@@ -869,28 +906,18 @@ export class LearningPlanStore {
   }
 
   exportBySpace(space: SpaceId): LearningArchive {
-    const plans = this.listBySpace(space).map((plan) => ({
-      ...plan,
-      route: plan.route.map((step) => ({ ...step })),
-    }));
+    const plans = this.listBySpace(space).map(clonePlan);
     const planIds = new Set(plans.map((plan) => plan.id));
     const sourceIds = new Set(plans.map((plan) => plan.sourceId));
     return {
       plans,
       sources: [...this.sources.values()]
         .filter((source) => sourceIds.has(source.id))
-        .map((source) => ({
-          ...source,
-          rawIds: [...source.rawIds],
-          materials: source.materials.map((material) => ({
-            ...material,
-            rawIds: [...material.rawIds],
-          })),
-        })),
+        .map(cloneSource),
       sessions: [...this.sessions.values()]
         .filter((session) => planIds.has(session.planId))
         .sort((a, b) => a.sequence - b.sequence)
-        .map((session) => ({ ...session })),
+        .map(cloneSession),
     };
   }
 
@@ -944,8 +971,8 @@ export class LearningPlanStore {
     for (const session of archive.sessions) {
       const plan = archive.plans.find((candidate) => candidate.id === session.planId);
       if (!plan) throw new Error("learning session references an unknown plan");
-      if (session.endOffset > plan.sourceLength) {
-        throw new Error(`learning session exceeds source length: ${session.id}`);
+      if (!sessionFitsPlan(plan, session)) {
+        throw new Error(`learning session does not match plan mode or route step: ${session.id}`);
       }
     }
   }
@@ -958,20 +985,13 @@ export class LearningPlanStore {
     const candidateSources = new Map(this.sources);
     const candidateSessions = new Map(this.sessions);
     for (const source of archive.sources) {
-      candidateSources.set(source.id, {
-        ...source,
-        rawIds: [...source.rawIds],
-        materials: source.materials.map((material) => ({
-          ...material,
-          rawIds: [...material.rawIds],
-        })),
-      });
+      candidateSources.set(source.id, cloneSource(source));
     }
     for (const session of archive.sessions) {
-      candidateSessions.set(session.id, { ...session });
+      candidateSessions.set(session.id, cloneSession(session));
     }
     const restored = archive.plans.map((plan) => {
-      const copy = { ...plan, route: plan.route.map((step) => ({ ...step })) };
+      const copy = clonePlan(plan);
       candidatePlans.set(copy.id, copy);
       return copy;
     });

@@ -37,6 +37,7 @@ import { parseTaskCommand, handleTaskCommand } from "./task-commands.ts";
 import {
   handleLearningAnswer,
   handleLearningCommand,
+  learningCommandNeedsSource,
   parseLearningAnswer,
   parseLearningCommand,
 } from "./learning-commands.ts";
@@ -231,7 +232,7 @@ export class Orchestrator {
       return this.withThinking(msg, async () => {
         this.engine.ensureSpace(writeSpace, { chatId: msg.chatId });
         let sourceMessageId: string | undefined;
-        if (learningCmd.verb === "new") {
+        if (learningCommandNeedsSource(learningCmd)) {
           try {
             sourceMessageId = (await this.connector.resolveReplyTarget?.(msg.messageId))?.messageId;
           } catch (err) {

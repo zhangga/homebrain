@@ -1236,6 +1236,39 @@ describe("orchestrator trunk (cli connector, no feishu)", () => {
     expect(engine.registry.store("personal/ou_me").index().countRaw()).toBe(0);
   });
 
+  test("/learn add resolves the replied message and attaches it to the selected plan", async () => {
+    const plan = engine.learning.createTopic({
+      name: "Rust 异步",
+      topic: "Rust 异步编程",
+      space: "personal/ou_me",
+      creatorId: "ou_me",
+      chatId: "oc_dm",
+      route: [
+        { title: "Future", objective: "理解 Future" },
+        { title: "运行时", objective: "理解运行时" },
+      ],
+    }, 1);
+    await engine.remember({
+      space: "personal/ou_me",
+      source: "message",
+      author: "ou_me",
+      chatId: "oc_dm",
+      messageId: "om_async_source",
+      content: "# Async Book\n\nFuture 只有在 poll 时推进。",
+    });
+    const reactive = connector as CliConnector & Connector;
+    reactive.resolveReplyTarget = async () => ({
+      messageId: "om_async_source",
+      senderId: "ou_me",
+    });
+
+    await orch.start();
+    await connector.sendP2P("/learn add 1");
+
+    expect(connector.sent.at(-1)?.markdown).toContain("已添加材料「Async Book」");
+    expect(engine.learning.source(plan.id)?.materials).toHaveLength(1);
+  });
+
   test("another group member cannot control or answer an owned learning plan", async () => {
     engine.ensureSpace("team/oc_team", { chatId: "oc_team" });
     const plan = engine.learning.create({

@@ -49,7 +49,7 @@ export const LEARNING_HELP = [
   "· `/learn topic <主题>` — 生成由浅入深的主题学习路线",
   "· `/learn new <名称>` — 回复附件、文章或飞书文档后创建材料阅读计划",
   "· `/learn add <名称或序号>` — 回复另一份材料，将它加入现有计划",
-  "· `/learn route <名称或序号>` — 查看主题路线与当前补强重点",
+  "· `/learn route <名称或序号>` — 查看主题路线与下一课重点",
   "· `/learn pause <名称或序号>` — 暂停计划",
   "· `/learn resume <名称或序号>` — 恢复计划",
   "· `/learn skip <名称或序号>` — 跳过当前一课",

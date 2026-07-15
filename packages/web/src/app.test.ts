@@ -1515,7 +1515,7 @@ describe("management backend (read-write)", () => {
     expect(body).toContain("async-book.md");
     expect(body).toContain("Future");
     expect(body).toContain("理解运行时");
-    expect(body).toContain("当前补强重点：区分 Future 与线程");
+    expect(body).toContain("下一课重点：区分 Future 与线程");
 
     const updated = await app.request(`/learning/${encodeURIComponent(plan.id)}`, {
       method: "POST",

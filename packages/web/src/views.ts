@@ -790,7 +790,7 @@ export function learningView(
         ${selected.mode === "topic"
           ? html`<h2>学习路线</h2>
               ${selected.adaptiveFocus
-                ? html`<div class="flash">当前补强重点：${selected.adaptiveFocus}</div>`
+                ? html`<div class="flash">下一课重点：${selected.adaptiveFocus}</div>`
                 : ""}
               <table>
                 <tr><th>状态</th><th>步骤</th><th>目标</th><th>学习次数</th></tr>

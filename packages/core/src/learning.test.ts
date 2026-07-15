@@ -88,6 +88,23 @@ describe("LearningPlanStore", () => {
     expect(new LearningPlanStore(dir).get(plan.id)).toEqual(plan);
   });
 
+  test("rejects oversized topic route fields before persistence", () => {
+    const store = new LearningPlanStore(dir);
+
+    expect(() => store.createTopic({
+      name: "学习计划",
+      topic: "主题",
+      space: "personal/ou_me",
+      creatorId: "ou_me",
+      chatId: "oc_p2p",
+      route: [
+        { title: "第一步", objective: "甲".repeat(501) },
+        { title: "第二步", objective: "正常目标" },
+      ],
+    }, NOW)).toThrow("invalid topic learning plan input");
+    expect(store.list()).toEqual([]);
+  });
+
   test("migrates pre-topic reading state on load", () => {
     const store = new LearningPlanStore(dir);
     const plan = createPlan(store);
@@ -453,6 +470,39 @@ describe("LearningPlanStore", () => {
     expect(() => target.restore(archive)).toThrow("current session");
     expect(target.list()).toEqual([]);
     expect(source.get(first.id)).toBeDefined();
+  });
+
+  test("rejects topic archives whose sessions point at the wrong route step", () => {
+    const source = new LearningPlanStore(join(dir, "topic-source"));
+    const plan = source.createTopic({
+      name: "学习 Rust",
+      topic: "Rust 异步编程",
+      space: "personal/ou_me",
+      creatorId: "ou_me",
+      chatId: "oc_p2p",
+      route: [
+        { title: "Future", objective: "理解 Future" },
+        { title: "运行时", objective: "理解运行时" },
+      ],
+    }, NOW);
+    source.prepareSession(plan.id, {
+      startOffset: 0,
+      endOffset: 1,
+      routeStepId: plan.route[0]!.id,
+      sectionTitle: "Future",
+      excerpt: "暂无用户材料",
+      guide: "导读",
+      preparedAt: NOW + 1,
+    });
+    const archive = source.exportBySpace("personal/ou_me");
+    archive.sessions[0] = {
+      ...archive.sessions[0]!,
+      routeStepId: plan.route[1]!.id,
+    };
+
+    const target = new LearningPlanStore(join(dir, "topic-target"));
+    expect(() => target.restore(archive)).toThrow("route step");
+    expect(target.list()).toEqual([]);
   });
 
   test("removes source snapshots and sessions by provenance, owner, or space", () => {
