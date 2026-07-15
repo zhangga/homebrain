@@ -34,10 +34,34 @@ import { classifyIntent, type Intent } from "./intent.ts";
 import { formatAnswer } from "./format.ts";
 import { GROUP_ADDED_NOTICE, coldStartNote, providerNotice } from "./messages.ts";
 import { parseTaskCommand, handleTaskCommand } from "./task-commands.ts";
-import { handleReminderMessage } from "./reminder-commands.ts";
+import {
+  REMINDER_TIME_CLARIFICATION,
+  formatReminderTime,
+  handleReminderMessage,
+  needsReminderInference,
+  parseReminderRequest,
+  scheduleReminderDraft,
+  type ReminderDraft,
+} from "./reminder-commands.ts";
+import { inferReminderRequest } from "./reminder-inference.ts";
 
 const log = logger.child("orchestrator");
 const RETRACTION_COMMANDS = new Set(["别记这条", "撤回这条", "删掉这条", "不要记这条"]);
+const REMINDER_CONFIRMATION_TTL_MS = 15 * 60_000;
+
+interface PendingReminderConfirmation {
+  draft: ReminderDraft;
+  sourceMessageId: string;
+  expiresAt: number;
+}
+
+function reminderControlText(text: string): string {
+  return text
+    .trim()
+    .replace(/^(?:@\S+\s*)+/u, "")
+    .replace(/[。.!！]+$/u, "")
+    .trim();
+}
 
 function isRetractionCommand(text: string): boolean {
   const normalized = text
@@ -73,6 +97,7 @@ export class Orchestrator {
   private serializer = new Serializer();
   private seen = new Set<string>();
   private seenOrder: string[] = [];
+  private pendingReminderConfirmations = new Map<string, PendingReminderConfirmation>();
   private dedupSize: number;
   private docFetcher?: (urlOrToken: string) => Promise<string | null>;
   private attachmentDownloader?: (messageId: string) => Promise<DownloadedAttachment[]>;
@@ -114,6 +139,52 @@ export class Orchestrator {
     return true;
   }
 
+  private pendingReminderKey(msg: InboundMessage, space: SpaceId): string {
+    return `${space}\u0000${msg.chatId}\u0000${msg.senderId}`;
+  }
+
+  private prunePendingReminderConfirmations(now: number): void {
+    for (const [key, pending] of this.pendingReminderConfirmations) {
+      if (pending.expiresAt <= now) this.pendingReminderConfirmations.delete(key);
+    }
+  }
+
+  private handlePendingReminderControl(
+    msg: InboundMessage,
+    space: SpaceId,
+    now: number,
+  ): string | null {
+    const control = reminderControlText(msg.text);
+    if (!["确认", "确认创建", "取消", "取消创建"].includes(control)) {
+      this.prunePendingReminderConfirmations(now);
+      return null;
+    }
+    const key = this.pendingReminderKey(msg, space);
+    const pending = this.pendingReminderConfirmations.get(key);
+    if (!pending) return null;
+    this.pendingReminderConfirmations.delete(key);
+    if (pending.expiresAt <= now) {
+      return "这次提醒确认已过期，没有创建提醒。请重新发送完整的提醒请求。";
+    }
+    if (control === "取消" || control === "取消创建") {
+      return `已取消创建提醒：${pending.draft.title}`;
+    }
+    if (pending.draft.triggerAt <= now) {
+      return "候选提醒时间已经过去，没有创建提醒。请重新发送完整的提醒请求。";
+    }
+    return scheduleReminderDraft(
+      this.engine,
+      {
+        chatId: msg.chatId,
+        senderId: msg.senderId,
+        messageId: pending.sourceMessageId,
+      },
+      space,
+      pending.draft,
+      now,
+    );
+  }
+
   private async handle(event: InboundEvent): Promise<void> {
     if (!this.markSeen(event.eventId)) {
       log.debug("dropping duplicate event", { eventId: event.eventId });
@@ -146,6 +217,14 @@ export class Orchestrator {
       });
     }
 
+    // A staged model interpretation is scoped to this chat and sender. Explicit
+    // confirmation/cancellation is a control message, so it bypasses group @ gating
+    // and is never captured as knowledge.
+    const pendingReminderReply = this.handlePendingReminderControl(msg, writeSpace, Date.now());
+    if (pendingReminderReply) {
+      return this.withThinking(msg, () => this.send(msg, pendingReminderReply));
+    }
+
     const decision = gate(msg, { mentionsOnly: meta?.mentionsOnly });
 
     // Retraction is a deterministic control command. Handle it before capture
@@ -160,9 +239,52 @@ export class Orchestrator {
     }
 
     if (decision.respond) {
-      const reminderReply = handleReminderMessage(this.engine, msg, writeSpace);
+      const reminderNow = Date.now();
+      const directDraft = parseReminderRequest(msg.text, reminderNow);
+      const reminderReply = handleReminderMessage(this.engine, msg, writeSpace, reminderNow);
       if (reminderReply) {
+        if (directDraft) {
+          this.pendingReminderConfirmations.delete(this.pendingReminderKey(msg, writeSpace));
+        }
         return this.withThinking(msg, () => this.send(msg, reminderReply));
+      }
+      if (needsReminderInference(msg.text)) {
+        const pendingKey = this.pendingReminderKey(msg, writeSpace);
+        // A new request always supersedes an older candidate, even if the new
+        // model interpretation fails or remains unresolved.
+        this.pendingReminderConfirmations.delete(pendingKey);
+        return this.withThinking(msg, async () => {
+          let draft: ReminderDraft | undefined;
+          try {
+            draft = await inferReminderRequest(
+              this.llm ?? this.engine.llmClientForSpace(writeSpace),
+              msg.text,
+              reminderNow,
+            );
+          } catch (err) {
+            log.warn("reminder inference provider unavailable", {
+              space: writeSpace,
+              err: String(err),
+            });
+            await this.send(msg, providerNotice(err));
+            return;
+          }
+          if (!draft) {
+            await this.send(msg, REMINDER_TIME_CLARIFICATION);
+            return;
+          }
+          this.pendingReminderConfirmations.set(pendingKey, {
+            draft,
+            sourceMessageId: msg.messageId,
+            expiresAt: Date.now() + REMINDER_CONFIRMATION_TTL_MS,
+          });
+          await this.send(msg, [
+            "请确认以下理解：",
+            `提醒内容：${draft.title}`,
+            `提醒时间：${formatReminderTime(draft.triggerAt)}`,
+            "请在 15 分钟内回复「确认」后创建，回复「取消」放弃。",
+          ].join("\n"));
+        });
       }
     }
 

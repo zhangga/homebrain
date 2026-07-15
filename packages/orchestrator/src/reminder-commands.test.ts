@@ -39,4 +39,13 @@ describe("parseReminderRequest", () => {
     const sundayNoon = new Date("2026-07-19T12:00:00+08:00").getTime();
     expect(parseReminderRequest("本周一上午提醒我开会", sundayNoon)).toBeUndefined();
   });
+
+  test("does not silently replace an unsupported explicit clock with a period default", () => {
+    expect(parseReminderRequest("7月22日上午七点半提醒我买票", NOW)).toBeUndefined();
+    expect(parseReminderRequest("7月22日上午25点提醒我买票", NOW)).toBeUndefined();
+  });
+
+  test("rejects an impossible calendar date instead of rolling it into another month", () => {
+    expect(parseReminderRequest("9月31日上午9点提醒我买票", NOW)).toBeUndefined();
+  });
 });

@@ -36,6 +36,18 @@ function makeFake(): FakeLlm {
       if (/记住|记下/.test(prompt)) return { intent: "remember" };
       return { intent: "chitchat" };
     }
+    if ("triggerAt" in props) {
+      const prompt = String(call.prompt ?? "");
+      if (/@agent 7\.22日上午七点半/u.test(prompt)) {
+        return {
+          resolved: true,
+          title: "购买8.5日北京去苏州的火车票",
+          triggerAt: "2026-07-22T07:30:00+08:00",
+          untilConfirmed: false,
+        };
+      }
+      return { resolved: false, title: "", triggerAt: "", untilConfirmed: false };
+    }
     if ("relevant" in props) {
       // route: pick the alice page when the question mentions 后端
       const prompt = String(call.prompt ?? "");
@@ -280,6 +292,69 @@ describe("orchestrator trunk (cli connector, no feishu)", () => {
     expect(engine.reminders.list()).toEqual([]);
     expect(connector.sent.at(-1)?.markdown).toContain("没有识别到具体时间");
     expect(connector.sent.at(-1)?.markdown).toContain("明天上午 9 点");
+  });
+
+  test("asks for confirmation before creating an LLM-inferred reminder", async () => {
+    await orch.start();
+    await connector.sendGroup(
+      "@agent 7.22日上午七点半提醒我购买8.5日北京去苏州的火车票",
+      true,
+    );
+
+    expect(engine.reminders.list()).toEqual([]);
+    expect(connector.sent.at(-1)?.markdown).toContain("请确认");
+    expect(connector.sent.at(-1)?.markdown).toContain("2026");
+    expect(connector.sent.at(-1)?.markdown).toContain("购买8.5日北京去苏州的火车票");
+
+    await connector.inject({
+      kind: "message",
+      eventId: "other-user-confirmation",
+      chatType: "group",
+      chatId: "oc_team",
+      senderId: "ou_other",
+      text: "确认",
+      messageId: "om_other-confirmation",
+      mentionsBot: false,
+      createdAt: Date.now(),
+    });
+    expect(engine.reminders.list()).toEqual([]);
+
+    await connector.sendGroup("确认", false);
+
+    expect(engine.reminders.list()).toEqual([
+      expect.objectContaining({
+        title: "购买8.5日北京去苏州的火车票",
+        triggerAt: new Date("2026-07-22T07:30:00+08:00").getTime(),
+        sourceMessageId: "om_cli-1",
+        status: "scheduled",
+      }),
+    ]);
+    expect(connector.sent.at(-1)?.markdown).toContain("已创建提醒");
+  });
+
+  test("cancels an inferred reminder candidate without creating it", async () => {
+    await orch.start();
+    await connector.sendGroup(
+      "@agent 7.22日上午七点半提醒我购买8.5日北京去苏州的火车票",
+      true,
+    );
+    await connector.sendGroup("取消", false);
+
+    expect(engine.reminders.list()).toEqual([]);
+    expect(connector.sent.at(-1)?.markdown).toContain("已取消创建提醒");
+  });
+
+  test("a new unresolved reminder request supersedes an older inferred candidate", async () => {
+    await orch.start();
+    await connector.sendGroup(
+      "@agent 7.22日上午七点半提醒我购买8.5日北京去苏州的火车票",
+      true,
+    );
+    await connector.sendGroup("@agent 提醒我喝水", true);
+    expect(connector.sent.at(-1)?.markdown).toContain("没有识别到具体时间");
+
+    await connector.sendGroup("确认", false);
+    expect(engine.reminders.list()).toEqual([]);
   });
 
   test("replying 别记这条 retracts the source and does not capture the command", async () => {

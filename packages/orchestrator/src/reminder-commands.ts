@@ -37,7 +37,7 @@ function reminderTitle(text: string): string {
   return "未命名提醒";
 }
 
-function localClock(text: string): { hour: number; minute: number } {
+function localClock(text: string): { hour: number; minute: number } | undefined {
   const exact = text.match(/(上午|中午|下午|傍晚|晚上|凌晨)?\s*(\d{1,2})\s*[点时](?:\s*(半|\d{1,2})\s*分?)?/u);
   if (exact) {
     const period = exact[1] ?? "";
@@ -46,7 +46,11 @@ function localClock(text: string): { hour: number; minute: number } {
     if (["下午", "傍晚", "晚上"].includes(period) && hour < 12) hour += 12;
     if (period === "凌晨" && hour === 12) hour = 0;
     if (hour >= 0 && hour <= 23 && minute >= 0 && minute <= 59) return { hour, minute };
+    return undefined;
   }
+  // An explicit but unsupported clock must not be replaced by a period default.
+  // Let the model fallback interpret it and ask the user to confirm instead.
+  if (/[零〇一二两三四五六七八九十百]+\s*[点时]/u.test(text)) return undefined;
   if (text.includes("中午")) return { hour: 12, minute: 0 };
   if (text.includes("下午")) return { hour: 15, minute: 0 };
   if (text.includes("傍晚")) return { hour: 18, minute: 0 };
@@ -62,7 +66,9 @@ function shanghaiCalendarInstant(text: string, now: number): number | undefined 
   const month = shifted.getUTCMonth();
   const day = shifted.getUTCDate();
   const currentWeekday = shifted.getUTCDay();
-  const { hour, minute } = localClock(text);
+  const clock = localClock(text);
+  if (!clock) return undefined;
+  const { hour, minute } = clock;
   let dayOffset: number | undefined;
 
   if (text.includes("后天")) dayOffset = 2;
@@ -92,6 +98,14 @@ function shanghaiCalendarInstant(text: string, now: number): number | undefined 
     const explicitYear = Number(explicitDate[1] ?? year);
     const explicitMonth = Number(explicitDate[2]) - 1;
     const explicitDay = Number(explicitDate[3]);
+    const calendarDate = new Date(Date.UTC(explicitYear, explicitMonth, explicitDay));
+    if (
+      calendarDate.getUTCFullYear() !== explicitYear
+      || calendarDate.getUTCMonth() !== explicitMonth
+      || calendarDate.getUTCDate() !== explicitDay
+    ) {
+      return undefined;
+    }
     return Date.UTC(explicitYear, explicitMonth, explicitDay, hour, minute) - SHANGHAI_OFFSET_MS;
   }
 
@@ -138,6 +152,7 @@ export function parseReminderRequest(text: string, now = Date.now()): ReminderDr
 export function formatReminderTime(at: number): string {
   return new Intl.DateTimeFormat("zh-CN", {
     timeZone: "Asia/Shanghai",
+    year: "numeric",
     month: "numeric",
     day: "numeric",
     weekday: "short",
@@ -145,6 +160,34 @@ export function formatReminderTime(at: number): string {
     minute: "2-digit",
     hour12: false,
   }).format(new Date(at));
+}
+
+export const REMINDER_TIME_CLARIFICATION =
+  "我尝试理解后仍没有识别到具体时间，所以还没有创建提醒。请换一种说法，例如：“明天上午 9 点提醒我喝水”。";
+
+/** True after deterministic reminder controls have declined to handle reminder-bearing text. */
+export function needsReminderInference(text: string): boolean {
+  return cleanMessage(text).includes("提醒");
+}
+
+/** Persist a previously parsed or explicitly confirmed reminder draft. */
+export function scheduleReminderDraft(
+  engine: KnowledgeEngine,
+  msg: Pick<InboundMessage, "chatId" | "senderId" | "messageId">,
+  space: SpaceId,
+  draft: ReminderDraft,
+  now = Date.now(),
+): string {
+  engine.ensureSpace(space, { chatId: msg.chatId });
+  const reminder = engine.reminders.create({
+    ...draft,
+    space,
+    chatId: msg.chatId,
+    creatorId: msg.senderId,
+    sourceMessageId: msg.messageId,
+  }, now);
+  if (!reminder) return "提醒创建失败，请稍后重试。";
+  return `✅ 已创建提醒：${reminder.title}\n时间：${formatReminderTime(reminder.triggerAt)}`;
 }
 
 function isReminderListQuery(text: string): boolean {
@@ -272,25 +315,13 @@ export function handleReminderMessage(
   }
   const draft = parseReminderRequest(msg.text, now);
   if (draft) {
-    engine.ensureSpace(space, { chatId: msg.chatId });
-    const reminder = engine.reminders.create({
-      ...draft,
-      space,
-      chatId: msg.chatId,
-      creatorId: msg.senderId,
-      sourceMessageId: msg.messageId,
-    }, now);
-    if (!reminder) return "提醒创建失败，请稍后重试。";
-    return `✅ 已创建提醒：${reminder.title}\n时间：${formatReminderTime(reminder.triggerAt)}`;
+    return scheduleReminderDraft(engine, msg, space, draft, now);
   }
   if (isReminderCompletion(msg.text)) {
     const reminder = matchingOwnedReminder(engine, space, msg.senderId, msg.text);
     if (!reminder) return "没有找到与你这句话匹配的待处理提醒。";
     engine.reminders.complete(reminder.id, msg.senderId, now);
     return `✅ 已完成提醒：${reminder.title}`;
-  }
-  if (cleanMessage(msg.text).includes("提醒")) {
-    return "我没有识别到具体时间，所以还没有创建提醒。请补充时间，例如：“明天上午 9 点提醒我喝水”。";
   }
   return null;
 }
