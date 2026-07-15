@@ -8,13 +8,23 @@
  * the lark-cli consumers — never kill -9).
  */
 import { assertSafeWebBinding, config, logger } from "@homebrain/shared";
+import { accessSync, constants, statSync } from "node:fs";
+import { join } from "node:path";
 import { KnowledgeEngine } from "@homebrain/core";
+import { CodexProviderSetup, CodexReleaseInstaller } from "@homebrain/llm";
 import { FeishuConnector, LarkCliSetup } from "@homebrain/connectors";
-import { Orchestrator } from "@homebrain/orchestrator";
+import {
+  Orchestrator,
+  createNativeExtractor,
+  extractAttachmentText,
+} from "@homebrain/orchestrator";
 import { createWebApp } from "@homebrain/web";
 import { Scheduler } from "./scheduler.ts";
 import { TaskScheduler } from "./task-scheduler.ts";
 import { createSystemHealthReporter } from "./health.ts";
+import { resolveRuntimePaths } from "./runtime-paths.ts";
+import { launchDesktop } from "./desktop.ts";
+import { createDefaultService, runServiceCli } from "./service-cli.ts";
 import {
   acquireProcessLock,
   runtimeServiceStatus,
@@ -24,7 +34,19 @@ import {
 
 const log = logger.child("app");
 
+export function isUsableManagedExecutable(path: string): boolean {
+  try {
+    const info = statSync(path);
+    if (!info.isFile() || info.size === 0) return false;
+    accessSync(path, constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function run(cfg: ReturnType<typeof config>, processLock: ProcessLock): Promise<void> {
+  const runtimePaths = resolveRuntimePaths();
   const stopLogMaintenance = startServiceLogMaintenance(cfg.dataDir);
   log.info("starting homebrain", {
     dataDir: cfg.dataDir,
@@ -36,11 +58,16 @@ async function run(cfg: ReturnType<typeof config>, processLock: ProcessLock): Pr
   const engine = new KnowledgeEngine();
 
   // 1. feishu connector + orchestrator
-  const connector = new FeishuConnector();
+  const connector = new FeishuConnector({ larkBin: runtimePaths.larkBin });
+  const nativeAttachmentExtractor = createNativeExtractor({
+    attachmentHelper: runtimePaths.attachmentHelper,
+  });
   const orchestrator = new Orchestrator({
     engine,
     connector,
     docFetcher: (link) => connector.fetchDoc(link),
+    attachmentExtractor: (attachment) =>
+      extractAttachmentText(attachment, nativeAttachmentExtractor),
   });
   await orchestrator.start();
   log.info("orchestrator live; listening for feishu events");
@@ -64,11 +91,31 @@ async function run(cfg: ReturnType<typeof config>, processLock: ProcessLock): Pr
   });
 
   // 2. management web backend
+  const larkSetup = new LarkCliSetup({ larkBin: runtimePaths.larkBin });
+  const managedCodexBin = join(runtimePaths.dataDir, "bin", "codex");
+  const codexProviderSetup = runtimePaths.bundled
+    ? new CodexProviderSetup({ codexBin: managedCodexBin })
+    : undefined;
+  const codexInstaller = runtimePaths.bundled
+    ? new CodexReleaseInstaller({ dataDir: runtimePaths.dataDir })
+    : undefined;
   const app = createWebApp({
     engine,
     adminToken: cfg.webAdminToken,
     health: reportHealth,
-    larkSetup: new LarkCliSetup(),
+    larkSetup,
+    codexSetup: codexProviderSetup && codexInstaller
+      ? {
+          canInstall: true,
+          isInstalled: () => isUsableManagedExecutable(managedCodexBin),
+          install: async (consented) => {
+            await codexInstaller.installAfterConsent(consented);
+          },
+          startDeviceLogin: () => codexProviderSetup.startDeviceLogin(),
+          deviceLoginStatus: () => codexProviderSetup.deviceLoginStatus(),
+          cancelDeviceLogin: () => codexProviderSetup.cancelDeviceLogin(),
+        }
+      : undefined,
     feishuRuntime: () => connector.health(),
     activeFeishuIdentity: cfg.feishuBotName && cfg.feishuBotOpenId
       ? { botName: cfg.feishuBotName, botOpenId: cfg.feishuBotOpenId }
@@ -139,7 +186,7 @@ async function run(cfg: ReturnType<typeof config>, processLock: ProcessLock): Pr
   await new Promise<void>(() => {});
 }
 
-async function main(): Promise<void> {
+export async function serve(): Promise<void> {
   const cfg = config();
   assertSafeWebBinding(cfg.webHost, cfg.webAdminToken);
   const processLock = acquireProcessLock({ dataDir: cfg.dataDir });
@@ -151,7 +198,56 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((err) => {
-  log.error("fatal", { err: String(err) });
-  process.exit(1);
-});
+export type AppCommand = "serve" | "desktop" | "service" | "doctor" | "unknown";
+
+export function selectAppCommand(args: string[], bundled: boolean): AppCommand {
+  const command = args[0];
+  if (!command) return bundled ? "desktop" : "serve";
+  if (["serve", "desktop", "service", "doctor"].includes(command)) return command as AppCommand;
+  return "unknown";
+}
+
+export async function runEntrypoint(args = process.argv.slice(2)): Promise<number> {
+  const paths = resolveRuntimePaths();
+  if (paths.bundled) {
+    process.env.HOMEBRAIN_DATA_DIR ??= paths.dataDir;
+    process.env.HOMEBRAIN_LOG_DIR ??= paths.logDir;
+    process.env.HOMEBRAIN_CODEX_BIN ??= join(paths.dataDir, "bin", "codex");
+  }
+  const command = selectAppCommand(args, paths.bundled);
+  if (command === "serve") {
+    await serve();
+    return 0;
+  }
+  if (command === "desktop") {
+    if (paths.bundled) {
+      const { prepareLegacyDataMigration } = await import("./data-migration.ts");
+      const migration = await prepareLegacyDataMigration({ destinationDir: paths.dataDir });
+      if (migration === "exit") return 0;
+    }
+    const result = await launchDesktop({
+      service: createDefaultService(),
+      port: config().webPort,
+    });
+    return result.action === "failed" ? 1 : 0;
+  }
+  if (command === "service") {
+    return runServiceCli(args.slice(1), { service: createDefaultService() });
+  }
+  if (command === "doctor") {
+    const { runDoctorCli } = await import("./doctor.ts");
+    return runDoctorCli(args.slice(1));
+  }
+  process.stderr.write("Usage: homebrain <serve|desktop|service|doctor>\n");
+  return 2;
+}
+
+if (import.meta.main) {
+  runEntrypoint().then(
+    (code) => { process.exitCode = code; },
+    (err) => {
+      log.error("fatal", { err: String(err) });
+      process.exitCode = 1;
+    },
+  );
+}

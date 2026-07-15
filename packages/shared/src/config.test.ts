@@ -92,6 +92,15 @@ describe("editable settings overlay", () => {
     expect(persisted.dreamHour).toBe(7);
   });
 
+  test("persists onboarding completion independently of editable setup choices", () => {
+    saveSettings({ onboardingStartedAt: 1_783_000_000_000, onboardingCompletedAt: 1_784_000_000_000 }, dir);
+    const cfg = loadConfig();
+    expect(cfg.onboardingStartedAt).toBe(1_783_000_000_000);
+    expect(cfg.onboardingCompletedAt).toBe(1_784_000_000_000);
+    expect(readSettings(dir).onboardingStartedAt).toBe(1_783_000_000_000);
+    expect(readSettings(dir).onboardingCompletedAt).toBe(1_784_000_000_000);
+  });
+
   test("feishu bot identity is exposed on config and editable", () => {
     saveSettings({ feishuBotName: "homebrain", feishuBotOpenId: "ou_x" }, dir);
     const cfg = loadConfig();

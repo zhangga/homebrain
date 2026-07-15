@@ -17,6 +17,7 @@
  * gateway.ts, not here; it is always available and is the default.
  */
 import { logger } from "@homebrain/shared";
+import { MANAGED_CODEX_AUTH_ARGS } from "./provider-setup.ts";
 
 const log = logger.child("providers");
 
@@ -36,6 +37,8 @@ interface CliSpec {
   name: string;
   /** binary looked up on PATH */
   bin: string;
+  /** managed-install override used by the standalone desktop application */
+  envBin: "HOMEBRAIN_CODEX_BIN" | "HOMEBRAIN_CLAUDE_BIN" | "HOMEBRAIN_TRAE_BIN";
   /** args that print a version quickly and exit */
   versionArgs: string[];
   /** curated model ids this provider commonly offers (mew shows these per-provider) */
@@ -74,6 +77,7 @@ const KNOWN: CliSpec[] = [
     id: "claude",
     name: "Claude Code",
     bin: "claude",
+    envBin: "HOMEBRAIN_CLAUDE_BIN",
     versionArgs: ["--version"],
     models: ["sonnet", "opus", "haiku", "claude-sonnet-4-6", "claude-opus-4-8"],
     buildRun: ({ prompt, system, model }) => {
@@ -90,6 +94,7 @@ const KNOWN: CliSpec[] = [
     id: "codex",
     name: "Codex",
     bin: "codex",
+    envBin: "HOMEBRAIN_CODEX_BIN",
     versionArgs: ["--version"],
     // Curated to match mew's Codex model menu (CLIs expose no list command).
     models: ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex-spark"],
@@ -104,6 +109,7 @@ const KNOWN: CliSpec[] = [
     id: "trae-cli",
     name: "TRAE CLI",
     bin: "trae-cli",
+    envBin: "HOMEBRAIN_TRAE_BIN",
     versionArgs: ["--version"],
     models: ["openrouter-3o", "openrouter-sonnet", "openrouter-gpt-5"],
     buildRun: ({ prompt, model }) => {
@@ -153,25 +159,34 @@ async function runCmd(
 export async function detectProviders(timeoutMs = 6000): Promise<DetectedProvider[]> {
   const out: DetectedProvider[] = [];
   for (const spec of KNOWN) {
+    const bin = providerBin(spec);
     try {
-      const { code, stdout, stderr, timedOut } = await runCmd(spec.bin, spec.versionArgs, timeoutMs);
+      const { code, stdout, stderr, timedOut } = await runCmd(bin, spec.versionArgs, timeoutMs);
       const version = (stdout || stderr).trim().split("\n")[0]?.slice(0, 80) ?? "";
       if (timedOut) {
-        out.push({ ...base(spec), available: false, detail: "探测超时" });
+        out.push({ ...base(spec, bin), available: false, detail: "探测超时" });
       } else if (code === 0 && version && !/not found|no such|cannot|error/i.test(version)) {
-        out.push({ ...base(spec), available: true, detail: version });
+        out.push({ ...base(spec, bin), available: true, detail: version });
       } else {
-        out.push({ ...base(spec), available: false, detail: version || `退出码 ${code}` });
+        out.push({ ...base(spec, bin), available: false, detail: version || `退出码 ${code}` });
       }
     } catch (err) {
-      out.push({ ...base(spec), available: false, detail: `未安装（${String(err).slice(0, 40)}）` });
+      out.push({
+        ...base(spec, bin),
+        available: false,
+        detail: `未安装（${String(err).slice(0, 40)}）`,
+      });
     }
   }
   return out;
 }
 
-function base(spec: CliSpec): Omit<DetectedProvider, "available" | "detail"> {
-  return { id: spec.id, name: spec.name, bin: spec.bin };
+function providerBin(spec: CliSpec): string {
+  return process.env[spec.envBin]?.trim() || spec.bin;
+}
+
+function base(spec: CliSpec, bin: string): Omit<DetectedProvider, "available" | "detail"> {
+  return { id: spec.id, name: spec.name, bin };
 }
 
 /** True for a provider id that maps to a known local CLI (not "gateway"). */
@@ -217,8 +232,12 @@ export async function runProvider(
   const spec = specById.get(id);
   if (!spec) throw new Error(`unknown provider: ${id}`);
   const args = spec.buildRun(input);
-  log.info("running local provider", { id, bin: spec.bin });
-  const { code, stdout, stderr, timedOut } = await runCmd(spec.bin, args, timeoutMs);
+  if (id === "codex" && process.env.HOMEBRAIN_CODEX_BIN?.trim()) {
+    args.unshift(...MANAGED_CODEX_AUTH_ARGS);
+  }
+  const bin = providerBin(spec);
+  log.info("running local provider", { id, bin });
+  const { code, stdout, stderr, timedOut } = await runCmd(bin, args, timeoutMs);
   if (timedOut) throw new Error(`provider ${id} timed out after ${timeoutMs}ms`);
   if (code !== 0) throw new Error(`provider ${id} exited ${code}: ${providerFailureDetail(stdout, stderr)}`);
   return stdout.trim();

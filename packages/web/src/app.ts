@@ -12,7 +12,7 @@
  * flash so a refresh doesn't re-POST.
  */
 import { Hono } from "hono";
-import { createHash, timingSafeEqual } from "node:crypto";
+import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { readdirSync, readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import {
@@ -21,15 +21,23 @@ import {
   isSpaceId,
   isLoopbackHost,
   type LarkBotIdentity,
+  type LarkProvisioningSession,
   type LarkSetupStatus,
   type SpaceId,
   type PersistedSettings,
   type SystemHealthSnapshot,
 } from "@homebrain/shared";
-import { detectProviders, providerModels, type DetectedProvider } from "@homebrain/llm";
+import {
+  detectProviders,
+  providerModels,
+  type CodexLoginSession,
+  type DetectedProvider,
+} from "@homebrain/llm";
 import type { KnowledgeEngine } from "@homebrain/core";
 import { layout } from "./layout.ts";
-import type { FeishuRuntimeStatus, LarkSetupPort } from "./integrations.ts";
+import type { CodexSetupPort, FeishuRuntimeStatus, LarkSetupPort } from "./integrations.ts";
+import { buildSetupSnapshot } from "./setup.ts";
+import { restartingView, setupLayout, setupView } from "./setup-view.ts";
 import {
   agentsView,
   askView,
@@ -59,6 +67,8 @@ export interface WebOptions {
   providerModels?: () => Promise<Record<string, string[]>>;
   /** Configure and verify the local lark-cli application without persisting its secret. */
   larkSetup?: LarkSetupPort;
+  /** App-managed Codex installation and ChatGPT authorization. */
+  codexSetup?: CodexSetupPort;
   /** Send the setup wizard's explicit test message to a Feishu chat. */
   onIntegrationTest?: (chatId: string, text: string) => Promise<void>;
   /** Current event-consumer readiness, used to verify event subscriptions. */
@@ -138,6 +148,7 @@ function requestHostname(request: Request): string {
 export function createWebApp(opts: WebOptions): Hono {
   const { engine } = opts;
   const app = new Hono();
+  const instanceId = randomUUID();
 
   if (opts.adminToken) {
     const token = opts.adminToken;
@@ -198,6 +209,8 @@ export function createWebApp(opts: WebOptions): Hono {
   };
   let providerCache: DetectedProvider[] | null = null;
   let modelCache: Record<string, string[]> | null = null;
+  let codexInstalling = false;
+  let codexInstallError: string | undefined;
   const getProviders = async (): Promise<DetectedProvider[]> => {
     if (!providerCache) providerCache = await detect();
     return providerCache;
@@ -207,6 +220,39 @@ export function createWebApp(opts: WebOptions): Hono {
   const getModels = async (): Promise<Record<string, string[]>> => {
     if (!modelCache) modelCache = await listModels();
     return modelCache;
+  };
+  const idleCodexLogin = (): CodexLoginSession => ({
+    state: "idle",
+    message: "尚未连接 ChatGPT",
+  });
+  const getCodexLogin = (): CodexLoginSession => {
+    try {
+      return opts.codexSetup?.deviceLoginStatus() ?? idleCodexLogin();
+    } catch {
+      return { state: "failed", message: "无法读取 ChatGPT 登录状态，请重试" };
+    }
+  };
+  const isCodexInstalled = (): boolean => {
+    try {
+      return opts.codexSetup?.isInstalled() ?? false;
+    } catch {
+      return false;
+    }
+  };
+  const persistReadyCodex = (session: CodexLoginSession): void => {
+    if (session.state !== "ready") return;
+    const current = config();
+    if (current.defaultProvider !== "codex" || current.defaultModel) {
+      saveSettings({ defaultProvider: "codex", defaultModel: "" });
+    }
+    providerCache = null;
+  };
+  const startCodexLogin = (): void => {
+    if (!opts.codexSetup) return;
+    codexInstallError = undefined;
+    void opts.codexSetup.startDeviceLogin().then(persistReadyCodex).catch(() => {
+      codexInstallError = "ChatGPT 登录未完成，请重试";
+    });
   };
   const getLarkStatus = async (): Promise<LarkSetupStatus> => {
     if (!opts.larkSetup) {
@@ -242,6 +288,91 @@ export function createWebApp(opts: WebOptions): Hono {
     });
     return true;
   };
+  const idleProvisioning = (): LarkProvisioningSession => ({
+    state: "idle",
+    brand: "feishu",
+    message: opts.larkSetup ? "尚未开始创建飞书应用" : "未检测到飞书配置组件",
+  });
+  const getProvisioning = (): LarkProvisioningSession => {
+    try {
+      return opts.larkSetup?.provisioningStatus?.() ?? idleProvisioning();
+    } catch {
+      return {
+        state: "failed",
+        brand: "feishu",
+        message: "无法读取飞书应用创建状态，请重试",
+      };
+    }
+  };
+  const integrationIdentityState = (status: LarkSetupStatus) => {
+    const setupIdentity = verifiedBotIdentity(status);
+    const activeIdentity = opts.activeFeishuIdentity;
+    const restartRequired = Boolean(setupIdentity) && (
+      !activeIdentity
+      || activeIdentity.botName !== setupIdentity!.botName
+      || activeIdentity.botOpenId !== setupIdentity!.botOpenId
+    );
+    return { setupIdentity, restartRequired };
+  };
+  const getSetupContext = async () => {
+    let lark = await getLarkStatus();
+    const provisioning = getProvisioning();
+    const codexLogin = getCodexLogin();
+    persistReadyCodex(codexLogin);
+    const before = config();
+    const identity = verifiedBotIdentity(lark);
+    if (
+      identity
+      && (before.feishuBotName !== identity.botName || before.feishuBotOpenId !== identity.botOpenId)
+    ) {
+      persistVerifiedBot(lark);
+      lark = await getLarkStatus();
+    }
+    let cfg = config();
+    if (!cfg.onboardingCompletedAt && !cfg.onboardingStartedAt) {
+      saveSettings({ onboardingStartedAt: Date.now() });
+      cfg = config();
+    }
+    const providers = await getProviders();
+    const runtime = getFeishuRuntime() ?? { ready: false, consumers: [] };
+    const groups = engine.registry.list().filter((meta) => meta.id.startsWith("team/"));
+    const setupStartedAt = cfg.onboardingStartedAt ?? Number.POSITIVE_INFINITY;
+    const groupsWithMessages = groups.filter((meta) =>
+      engine.registry.store(meta.id).index().listRaw({}).some(
+        (entry) => entry.source === "message" && entry.createdAt >= setupStartedAt,
+      )
+    ).length;
+    const { restartRequired } = integrationIdentityState(lark);
+    const health = await getHealth();
+    const restartable = health.components.service?.details?.managed === true
+      && opts.onServiceRestart !== undefined;
+    return {
+      snapshot: buildSetupSnapshot({
+        defaultProvider: cfg.defaultProvider,
+        providers,
+        lark,
+        runtime,
+        restartRequired,
+        groups: groupsWithMessages,
+        completedAt: cfg.onboardingCompletedAt,
+      }),
+      providers,
+      lark,
+      provisioning,
+      runtime,
+      groups,
+      restartRequired,
+      restartable,
+      codex: {
+        enabled: opts.codexSetup !== undefined,
+        canInstall: opts.codexSetup?.canInstall ?? false,
+        installed: isCodexInstalled(),
+        installing: codexInstalling,
+        ...(codexInstallError ? { installError: codexInstallError } : {}),
+        login: codexLogin,
+      },
+    };
+  };
 
   const parseSpace = (raw: string): SpaceId | null => {
     const decoded = decodeURIComponent(raw);
@@ -252,7 +383,7 @@ export function createWebApp(opts: WebOptions): Hono {
 
   app.get("/healthz", async (c) => {
     c.header("cache-control", "no-store");
-    return c.json({ status: "ok", checkedAt: Date.now() });
+    return c.json({ status: "ok", checkedAt: Date.now(), instanceId, pid: process.pid });
   });
 
   app.get("/readyz", async (c) => {
@@ -282,6 +413,134 @@ export function createWebApp(opts: WebOptions): Hono {
     if (!managed || !opts.onServiceRestart) return c.text("Service restart unavailable", 409);
     opts.onServiceRestart();
     return c.redirect(`/health?ok=${encodeURIComponent("已请求后台服务安全重启")}`);
+  });
+
+  // ---- guided first-run setup --------------------------------------------
+
+  app.get("/setup", async (c) => {
+    const setup = await getSetupContext();
+    return c.html(
+      await setupLayout(
+        await setupView({
+          ...setup,
+          models: await getModels(),
+          flashMsg: c.req.query("ok") ?? undefined,
+        }),
+      ),
+    );
+  });
+
+  app.post("/setup/providers/refresh", (c) => {
+    providerCache = null;
+    return c.redirect("/setup");
+  });
+
+  app.post("/setup/ai/codex/install", async (c) => {
+    if (!opts.codexSetup?.canInstall) {
+      return c.redirect(`/setup?ok=${encodeURIComponent("当前运行方式不支持自动安装 Codex")}`);
+    }
+    const body = await c.req.parseBody();
+    if (!checkbox(body, "consent")) {
+      return c.redirect(`/setup?ok=${encodeURIComponent("需要确认后才能安装 Codex")}`);
+    }
+    if (!codexInstalling) {
+      codexInstalling = true;
+      codexInstallError = undefined;
+      void opts.codexSetup.install(true).then(() => {
+        codexInstalling = false;
+        providerCache = null;
+        startCodexLogin();
+      }).catch(() => {
+        codexInstalling = false;
+        codexInstallError = "Codex 安装未完成，请重试";
+      });
+    }
+    return c.redirect(`/setup?ok=${encodeURIComponent("正在准备 Codex")}`);
+  });
+
+  app.post("/setup/ai/codex/login", (c) => {
+    if (!opts.codexSetup) {
+      return c.redirect(`/setup?ok=${encodeURIComponent("当前运行方式未接入 ChatGPT 登录")}`);
+    }
+    startCodexLogin();
+    return c.redirect(`/setup?ok=${encodeURIComponent("正在打开 ChatGPT 登录")}`);
+  });
+
+  app.get("/setup/ai/codex/session", (c) => {
+    c.header("cache-control", "no-store");
+    if (codexInstalling) {
+      return c.json({ state: "installing", message: "正在下载并校验 OpenAI 官方 Codex" });
+    }
+    if (codexInstallError) return c.json({ state: "failed", message: codexInstallError });
+    const session = getCodexLogin();
+    persistReadyCodex(session);
+    return c.json(session);
+  });
+
+  app.post("/setup/ai/codex/cancel", (c) => {
+    opts.codexSetup?.cancelDeviceLogin();
+    return c.redirect("/setup");
+  });
+
+  app.post("/setup/ai", async (c) => {
+    const body = await c.req.parseBody();
+    const provider = str(body, "provider");
+    const available = (await getProviders()).some(
+      (candidate) => candidate.id === provider && candidate.available,
+    );
+    if (!available) {
+      return c.redirect(`/setup?ok=${encodeURIComponent("所选 AI 尚未安装或无法运行")}`);
+    }
+    const model = str(body, "model");
+    const models = await getModels();
+    if (model && !(models[provider] ?? []).includes(model)) {
+      return c.redirect(`/setup?ok=${encodeURIComponent("所选模型不属于这个 AI，请重新选择")}`);
+    }
+    saveSettings({ defaultProvider: provider, defaultModel: model });
+    return c.redirect("/setup");
+  });
+
+  app.post("/setup/feishu/automatic", async (c) => {
+    if (!opts.larkSetup?.startAutomatic) {
+      return c.redirect(`/setup?ok=${encodeURIComponent("当前版本未检测到一键创建组件，请使用手动配置")}`);
+    }
+    const body = await c.req.parseBody();
+    const brand = str(body, "brand") === "lark" ? "lark" : "feishu";
+    try {
+      const session = await opts.larkSetup.startAutomatic(brand);
+      return c.redirect(`/setup?ok=${encodeURIComponent(session.message)}`);
+    } catch {
+      return c.redirect(`/setup?ok=${encodeURIComponent("无法启动飞书应用创建，请检查 lark-cli 和网络")}`);
+    }
+  });
+
+  app.get("/setup/feishu/session", async (c) => {
+    c.header("cache-control", "no-store");
+    const session = getProvisioning();
+    if (session.state === "ready") {
+      const status = await getLarkStatus();
+      persistVerifiedBot(status);
+    }
+    return c.json(session);
+  });
+
+  app.post("/setup/restart", async (c) => {
+    const snapshot = await getHealth();
+    const managed = snapshot.components.service?.details?.managed === true;
+    if (!managed || !opts.onServiceRestart) {
+      return c.redirect(`/setup?ok=${encodeURIComponent("当前为终端运行，请停止后重新执行 bun start")}`);
+    }
+    opts.onServiceRestart();
+    return c.html(await restartingView(instanceId));
+  });
+
+  app.post("/setup/finish", async (c) => {
+    const setup = await getSetupContext();
+    if (setup.snapshot.current !== "invite" && setup.snapshot.current !== "done") {
+      return c.redirect(`/setup?ok=${encodeURIComponent("请先完成 AI、飞书机器人和消息监听设置")}`);
+    }
+    saveSettings({ onboardingCompletedAt: Date.now() });
+    return c.redirect("/");
   });
 
   // ---- data governance ---------------------------------------------------
@@ -361,6 +620,13 @@ export function createWebApp(opts: WebOptions): Hono {
   // ---- spaces / knowledge --------------------------------------------------
 
   app.get("/", async (c) => {
+    if (!config().onboardingCompletedAt) {
+      const emptyInstall = engine.registry.list().length === 0 && engine.agents.list().length === 0;
+      const larkUnconfigured = opts.larkSetup
+        ? !verifiedBotIdentity(await getLarkStatus())
+        : false;
+      if (emptyInstall || larkUnconfigured) return c.redirect("/setup");
+    }
     const spaces = engine.registry.list().map((meta) => {
       const idx = engine.registry.store(meta.id).index();
       return { meta, pages: idx.countPages(), pending: idx.countRaw(true) };
@@ -595,13 +861,7 @@ export function createWebApp(opts: WebOptions): Hono {
     const agents = engine.agents.list();
     const ok = c.req.query("ok") ?? undefined;
     const setupStatus = await getLarkStatus();
-    const setupIdentity = verifiedBotIdentity(setupStatus);
-    const activeIdentity = opts.activeFeishuIdentity;
-    const restartRequired = Boolean(setupIdentity) && (
-      !activeIdentity
-      || activeIdentity.botName !== setupIdentity!.botName
-      || activeIdentity.botOpenId !== setupIdentity!.botOpenId
-    );
+    const { restartRequired } = integrationIdentityState(setupStatus);
     return c.html(
       await layout(
         "Integrations",
@@ -622,26 +882,27 @@ export function createWebApp(opts: WebOptions): Hono {
   });
 
   app.post("/integrations/bot/setup", async (c) => {
-    if (!opts.larkSetup) {
-      return c.redirect(`/integrations?ok=${encodeURIComponent("配置失败：当前运行方式未接入 lark-cli")}`);
-    }
     const body = await c.req.parseBody();
+    const returnTo = str(body, "returnTo") === "/setup" ? "/setup" : "/integrations";
+    if (!opts.larkSetup) {
+      return c.redirect(`${returnTo}?ok=${encodeURIComponent("配置失败：当前运行方式未接入 lark-cli")}`);
+    }
     const appId = str(body, "appId").trim();
     const appSecret = str(body, "appSecret");
     const brand = str(body, "brand") === "lark" ? "lark" : "feishu";
     if (!appId || !appSecret) {
-      return c.redirect(`/integrations?ok=${encodeURIComponent("配置失败：App ID 和 App Secret 均为必填")}`);
+      return c.redirect(`${returnTo}?ok=${encodeURIComponent("配置失败：App ID 和 App Secret 均为必填")}`);
     }
     try {
       const status = await opts.larkSetup.configure({ appId, appSecret, brand });
       if (!persistVerifiedBot(status)) {
-        return c.redirect(`/integrations?ok=${encodeURIComponent("配置失败：应用凭据未能验证 Bot 身份")}`);
+        return c.redirect(`${returnTo}?ok=${encodeURIComponent("配置失败：应用凭据未能验证 Bot 身份")}`);
       }
-      return c.redirect(`/integrations?ok=${encodeURIComponent("连接已验证，Bot 身份已自动保存；重启服务后消息监听使用新应用")}`);
+      return c.redirect(`${returnTo}?ok=${encodeURIComponent("连接已验证，Bot 身份已自动保存；重启服务后消息监听使用新应用")}`);
     } catch {
       // Deliberately avoid echoing the exception: CLI errors can include input
       // context, while App Secret must never be rendered back to the browser.
-      return c.redirect(`/integrations?ok=${encodeURIComponent("配置失败：请检查 App ID、App Secret 和网络后重试")}`);
+      return c.redirect(`${returnTo}?ok=${encodeURIComponent("配置失败：请检查 App ID、App Secret 和网络后重试")}`);
     }
   });
 

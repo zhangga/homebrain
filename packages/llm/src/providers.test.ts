@@ -8,6 +8,34 @@ import {
 } from "./providers.ts";
 
 describe("provider detection", () => {
+  test("honors managed binary overrides for detection and execution", async () => {
+    const keys = [
+      "HOMEBRAIN_CODEX_BIN",
+      "HOMEBRAIN_CLAUDE_BIN",
+      "HOMEBRAIN_TRAE_BIN",
+    ] as const;
+    const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+    try {
+      for (const key of keys) process.env[key] = "/bin/echo";
+
+      const detected = await detectProviders(500);
+      expect(detected.map(({ id, bin }) => ({ id, bin }))).toEqual([
+        { id: "claude", bin: "/bin/echo" },
+        { id: "codex", bin: "/bin/echo" },
+        { id: "trae-cli", bin: "/bin/echo" },
+      ]);
+      expect(await runProvider("codex", { prompt: "hello" }, 500)).toBe(
+        '-c cli_auth_credentials_store="keyring" exec --sandbox read-only hello',
+      );
+    } finally {
+      for (const key of keys) {
+        const value = previous[key];
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+  });
+
   test("detects the fixed known CLIs and reports availability", async () => {
     const list = await detectProviders(8000);
     const ids = list.map((p) => p.id).sort();

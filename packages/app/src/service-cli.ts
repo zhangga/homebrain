@@ -1,6 +1,6 @@
 import { homedir } from "node:os";
-import { resolve } from "node:path";
 import { LaunchAgentService, type ServiceStatus } from "./service.ts";
+import { resolveRuntimePaths, type RuntimePaths } from "./runtime-paths.ts";
 
 const USAGE = "Usage: bun run service <install|start|stop|restart|status|logs|uninstall> [--json] [--lines N] [--follow]";
 
@@ -19,6 +19,15 @@ export interface ServiceCliOptions {
   service: ServiceController;
   write?: (line: string) => void;
   writeError?: (line: string) => void;
+}
+
+export interface DefaultServiceOptions {
+  platform?: NodeJS.Platform;
+  uid?: number;
+  homeDir?: string;
+  execPath?: string;
+  environment?: NodeJS.ProcessEnv;
+  runtimePaths?: RuntimePaths;
 }
 
 function formatStatus(status: ServiceStatus): string {
@@ -75,19 +84,31 @@ export async function runServiceCli(args: string[], options: ServiceCliOptions):
   }
 }
 
-export function createDefaultService(): LaunchAgentService {
-  const homeDir = homedir();
-  const repoRoot = resolve(import.meta.dir, "../../..");
-  const uid = process.getuid?.();
+export function createDefaultService(options: DefaultServiceOptions = {}): LaunchAgentService {
+  const homeDir = options.homeDir ?? homedir();
+  const execPath = options.execPath ?? process.execPath;
+  const environment = options.environment ?? process.env;
+  const runtimePaths = options.runtimePaths ?? resolveRuntimePaths({
+    execPath,
+    homeDir,
+    env: environment,
+  });
+  const uid = options.uid ?? process.getuid?.();
   if (uid === undefined) throw new Error("cannot determine the current macOS user id");
   return new LaunchAgentService({
-    platform: process.platform,
+    platform: options.platform ?? process.platform,
     uid,
     homeDir,
-    repoRoot,
-    dataDir: resolve(process.env.HOMEBRAIN_DATA_DIR ?? resolve(repoRoot, "data")),
-    bunPath: Bun.which("bun") ?? process.execPath,
-    environment: process.env,
+    repoRoot: runtimePaths.appRoot,
+    dataDir: runtimePaths.dataDir,
+    logDir: runtimePaths.logDir,
+    bunPath: Bun.which("bun") ?? execPath,
+    bundled: runtimePaths.bundled,
+    executablePath: environment.HOMEBRAIN_LAUNCHER_PATH
+      ?? (runtimePaths.bundled
+        ? `${runtimePaths.appRoot}/Contents/MacOS/homebrain`
+        : execPath),
+    environment,
   });
 }
 

@@ -37,11 +37,28 @@ data/workspaces/<dir>/
   .index.db                   # SQLite，可从 wiki/*.md 重建
 ```
 
-## 环境要求
+## 普通用户安装（macOS 13+）
+
+正式发布后，普通用户只需下载与 Mac 架构对应的 DMG，把 `Homebrain.app` 拖入“应用程序”并双击：
+
+1. Homebrain 自动安装并启动当前用户的后台服务，然后在默认浏览器打开设置向导。
+2. 点击“安装并连接 ChatGPT”，明确同意后由 Homebrain 下载、校验并安装 OpenAI 官方 Codex；登录在
+   OpenAI 官方页面完成，不需要复制 API Key。
+3. 点击“一键创建飞书机器人”，在飞书页面确认。Homebrain 会自动验证机器人身份并引导完成消息监听。
+4. 把机器人加入群聊并发送第一条测试消息；向导确认真实消息到达后进入知识空间。
+
+应用包已自带 Bun 运行时、`lark-cli` 和 macOS 附件提取助手，用户不需要安装 Git、Bun、Node、npm、
+Homebrew 或全局 CLI。知识数据保存在 `~/Library/Application Support/Homebrain`，日志保存在
+`~/Library/Logs/Homebrain`；替换应用版本不会覆盖知识数据。
+
+> 当前仓库提供 beta 构建与发布流水线。面向外部分发的 DMG 仍须由维护者配置 Apple Developer ID
+> 签名/公证凭据，并完成 Bun 等二进制再分发审查；未经签名的本地构建仅供开发验证。
+
+## 从源码运行的环境要求
 
 - **Bun**（`curl -fsSL https://bun.sh/install | bash`），Node v22 仅作参考。
 - **Agent CLI**：至少安装并登录 `claude`、`codex`、`trae-cli` 之一。旧 LLM 网关仅用于兼容测试，生产主流程不依赖它。
-- **飞书 `lark-cli`**：需已安装并可执行。应用凭据可在管理后台 **Integrations** 中配置并验证；
+- **飞书 `lark-cli`**：需已安装并可执行。首次启动可在浏览器里一键创建并验证飞书应用；
   附件下载使用 bot 身份，应用需开通 `im:message:readonly` 权限。读取用户文档时的 user 授权仍由
   `lark-cli auth login` 管理。
 
@@ -156,8 +173,8 @@ bun run packages/app/src/repl.ts       # 启动横幅列出全部命令
     - `/task run <名称或序号>` — 立即运行
     - `/task help` — 帮助
   - **消息撤回**：回复原消息，@机器人说「别记这条」。原作者、群主或群管理员可执行；系统会删除该消息派生的全部原始记录，二次撤回会明确提示且事件重投不会重新入库。若内容已经进入知识页，会先移除受影响页面，再用仍有效的来源完成重新提炼后回复。撤回控制命令本身不会入库。
-- **Integrations / 飞书配置向导**：录入 App ID / App Secret 后调用 `lark-cli` 验证并自动识别 Bot
-  名称与 open_id；展示两条事件消费者状态和权限检查项；引导创建 Agent；每个群可指定 Agent、
+- **飞书连接**：首次连接使用引导式设置，一键创建飞书应用并自动识别 Bot 名称与 open_id；也保留
+  App ID / App Secret 手动接入作为高级选项。页面展示两条事件消费者状态和权限检查项；每个群可指定 Agent、
   `Topic reply`、`@ mentions only`，并直接发送测试消息验证发送通道。
 - **运行状态**：集中展示后台托管方式、PID、启动时间、飞书事件消费者、必需 CLI、知识存储、任务、Dream Cycle 与调度器；LaunchAgent 托管时可从页面安全重启。
 - **数据治理**：按空间导出 `homebrain.space v1` JSON 完整备份（知识页、原始记录、撤回标记、任务、空间元数据及关联 Agent），恢复备份，或永久删除整个空间；可按保留周期立即清理已提炼的过期消息。
@@ -171,22 +188,38 @@ bun run packages/app/src/repl.ts       # 启动横幅列出全部命令
 关掉 `@ mentions only` 则群内任意消息都会应答；`Topic reply` 控制是否在话题内回复。
 群没指定 Agent 时用「设置」里的默认 CLI；若没有可用 CLI，机器人会提示去后台配置（不静默）。
 
-### 飞书与 Agent 重新配置（P3.1）
+### 首次启动与飞书连接
 
-1. 启动 homebrain，打开 `http://127.0.0.1:3000/integrations`。
-2. 在第 1 步填写飞书开放平台的 App ID / App Secret，选择飞书或 Lark，点击“保存并验证连接”。
-   App Secret 只通过子进程 stdin 传给 `lark-cli config init --app-secret-stdin`；不会写入
-   `data/config/settings.json`、页面或日志。已有 `lark-cli` 配置可点击“只验证现有配置”，无需重填 Secret。
-3. 在飞书开放平台启用并发布机器人，订阅 `im.message.receive_v1` 与
-   `im.chat.member.bot.added_v1`；向导会显示当前运行进程的事件监听状态。凭据或 Bot 身份变更后需重启
-   homebrain，重启后再确认两条消费者均为 `ready`。
-4. 点击“管理 Agents”创建回答 Agent，选择本机可用 Provider、模型与 Instruction。
-5. 把机器人加入目标群。群出现在第 3 步后，为其选择 Agent 和回复方式，保存后点击“发送测试消息”。
+1. 普通用户双击 `Homebrain.app`；源码开发者运行 `bun start`。全新数据目录会自动进入 `/setup`。
+2. 应用包用户点击“安装并连接 ChatGPT”即可完成 Codex 下载、校验与 OpenAI 官方登录；源码运行会提供
+   已检测到的 Codex、Claude Code 或 TRAE CLI，并把手动安装命令留在高级路径。
+3. 点击“一键创建飞书机器人”，在打开的飞书页面确认。Homebrain 只接收受信任的飞书/Lark
+   验证链接，不向页面暴露 CLI 输出或凭据；刷新或关闭浏览器不会重复创建应用。
+4. LaunchAgent 托管时点击“激活消息监听”即可安全重启；终端运行时按页面提示重启 `bun start`。
+5. 把机器人加入目标群聊，按向导提示 @机器人发送第一条测试消息，返回向导重新检查，随后进入知识空间。
+
+已有应用可在“手动输入 App ID”中接入。App Secret 只通过子进程 stdin 交给
+`lark-cli config init --app-secret-stdin`，不会写入 `data/config/settings.json`、页面或日志。后续可从
+“飞书连接”重新进入引导、验证现有配置、调整群聊 Agent 与回复方式。
 
 向导能自动验证应用凭据、Bot 身份、事件消费者运行态和群消息发送能力；开放平台没有提供给当前应用
 自查全部权限/事件配置的统一接口，因此 `im:message:readonly`、`im:message.reactions:write_only`、
 非 @ 消息所需的 `im:message.group_msg`、应用可用范围与发布状态仍以向导中的检查项和实际消息测试为准。
 Provider 自身的登录授权仍由对应 CLI 管理。
+
+### 构建 macOS 应用
+
+本机开发构建（仅生成 ad-hoc 签名的当前架构应用）：
+
+```bash
+bun install --frozen-lockfile
+bun run build:macos --target arm64 --allow-dirty
+bun run smoke:macos --app dist/Homebrain.app
+```
+
+正式发布由 `v*` tag 触发 GitHub Actions，分别在 Apple Silicon 与 Intel runner 上构建，签名嵌套可执行文件，
+生成并公证两个架构的 DMG，最后发布带 SHA-256 的更新清单。流水线要求 Apple 签名/公证 secrets，且只有
+仓库变量 `BINARY_REDISTRIBUTION_APPROVED=true` 时才允许进入二进制发布阶段。
 
 ### 附件提炼（P2 首版）
 

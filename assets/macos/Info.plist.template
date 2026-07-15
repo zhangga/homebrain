@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleDisplayName</key>
+  <string>Homebrain</string>
+  <key>CFBundleExecutable</key>
+  <string>homebrain</string>
+  <key>CFBundleIdentifier</key>
+  <string>com.homebrain.desktop</string>
+  <key>CFBundleInfoDictionaryVersion</key>
+  <string>6.0</string>
+  <key>CFBundleName</key>
+  <string>Homebrain</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>CFBundleShortVersionString</key>
+  <string>{{VERSION}}</string>
+  <key>CFBundleVersion</key>
+  <string>{{BUILD_VERSION}}</string>
+  <key>LSMinimumSystemVersion</key>
+  <string>13.0</string>
+  <key>LSUIElement</key>
+  <true/>
+  <key>CFBundleURLTypes</key>
+  <array>
+    <dict>
+      <key>CFBundleURLName</key>
+      <string>Homebrain URL</string>
+      <key>CFBundleURLSchemes</key>
+      <array><string>homebrain</string></array>
+    </dict>
+  </array>
+</dict>
+</plist>

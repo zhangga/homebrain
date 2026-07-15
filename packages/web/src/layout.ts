@@ -113,7 +113,7 @@ const NAV: { key: string; label: string; href: string; ico: string }[] = [
   { key: "spaces", label: "空间 / 知识", href: "/", ico: "🗂" },
   { key: "agents", label: "Agents", href: "/agents", ico: "🤖" },
   { key: "tasks", label: "任务", href: "/tasks", ico: "⏰" },
-  { key: "integrations", label: "Integrations", href: "/integrations", ico: "🔌" },
+  { key: "integrations", label: "飞书连接", href: "/integrations", ico: "🔌" },
   { key: "governance", label: "数据治理", href: "/governance", ico: "🛡" },
   { key: "health", label: "运行状态", href: "/health", ico: "🩺" },
   { key: "logs", label: "调用日志", href: "/logs", ico: "📋" },

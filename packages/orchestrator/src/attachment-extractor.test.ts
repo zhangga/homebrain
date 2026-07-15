@@ -5,10 +5,12 @@ import { join } from "node:path";
 import { deflateSync } from "node:zlib";
 import type { DownloadedAttachment } from "@homebrain/connectors";
 import {
+  createNativeExtractor,
   extractAttachmentText,
   runBoundedProcess,
   type DeadlineFactory,
   type NativeExtractor,
+  type NativeProcessRunner,
 } from "./attachment-extractor.ts";
 
 test("runBoundedProcess cancels its deadline after a fast successful command", async () => {
@@ -39,29 +41,127 @@ test("runBoundedProcess escalates from SIGTERM and returns within a fixed bound"
   expect(Date.now() - startedAt).toBeLessThan(1_000);
 });
 
+test("bundled native extraction executes the precompiled Resources helper directly", async () => {
+  const calls: Array<{ command: string[]; timeoutMs: number }> = [];
+  const runProcess: NativeProcessRunner = async (command, timeoutMs) => {
+    calls.push({ command, timeoutMs });
+    return { code: 0, stdout: "bundled text", stderr: "" };
+  };
+  const extractor = createNativeExtractor({
+    platform: "darwin",
+    execPath: "/Applications/Homebrain.app/Contents/MacOS/homebrain",
+    runProcess,
+  });
+
+  expect(await extractor("image", "/tmp/scan.png")).toEqual({
+    code: 0,
+    stdout: "bundled text",
+    stderr: "",
+  });
+  expect(calls).toEqual([
+    {
+      command: [
+        "/Applications/Homebrain.app/Contents/Resources/bin/attachment-extract",
+        "image",
+        "/tmp/scan.png",
+      ],
+      timeoutMs: 60_000,
+    },
+  ]);
+});
+
+test("bundled native extraction recognizes the separately embedded Bun runtime", async () => {
+  const commands: string[][] = [];
+  const extractor = createNativeExtractor({
+    platform: "darwin",
+    execPath: "/Applications/Homebrain.app/Contents/Resources/bin/bun",
+    runProcess: async (command) => {
+      commands.push(command);
+      return { code: 0, stdout: "bundled text", stderr: "" };
+    },
+  });
+
+  await extractor("pdf", "/tmp/brief.pdf");
+  expect(commands[0]?.[0]).toBe(
+    "/Applications/Homebrain.app/Contents/Resources/bin/attachment-extract",
+  );
+  expect(commands.some((command) => command.includes("swiftc"))).toBeFalse();
+});
+
+test("bundled native extraction rejects a helper outside Resources/bin", async () => {
+  let invoked = false;
+  const extractor = createNativeExtractor({
+    platform: "darwin",
+    execPath: "/Applications/Homebrain.app/Contents/MacOS/homebrain",
+    attachmentHelper: "/Applications/Homebrain.app/Contents/Resources/bin-evil/attachment-extract",
+    runProcess: async () => {
+      invoked = true;
+      return { code: 0, stdout: "unsafe", stderr: "" };
+    },
+  });
+
+  await expect(extractor("pdf", "/tmp/brief.pdf")).rejects.toThrow(
+    "outside the application Resources/bin directory",
+  );
+  expect(invoked).toBeFalse();
+});
+
+test("source native extraction retains temporary Swift compilation", async () => {
+  const commands: string[][] = [];
+  const runProcess: NativeProcessRunner = async (command) => {
+    commands.push(command);
+    return {
+      code: 0,
+      stdout: command[0] === "/usr/bin/xcrun" ? "" : "source text",
+      stderr: "",
+    };
+  };
+  const extractor = createNativeExtractor({
+    platform: "darwin",
+    execPath: "/opt/homebrew/bin/bun",
+    runProcess,
+  });
+
+  expect(await extractor("pdf", "/tmp/brief.pdf")).toEqual({
+    code: 0,
+    stdout: "source text",
+    stderr: "",
+  });
+  expect(commands[0]?.slice(0, 3)).toEqual([
+    "/usr/bin/xcrun",
+    "swiftc",
+    join(import.meta.dir, "attachment-extract.swift"),
+  ]);
+  expect(commands[1]?.[0]?.endsWith("/attachment-extract")).toBeTrue();
+  expect(commands[1]?.slice(1)).toEqual(["pdf", "/tmp/brief.pdf"]);
+});
+
 const macOSOnly = process.platform === "darwin" ? describe : describe.skip;
 
 macOSOnly("Swift attachment helper limits", () => {
   let helperDirectory: string;
   let helperBinary: string;
 
-  beforeAll(async () => {
-    helperDirectory = mkdtempSync(join(tmpdir(), "hb-swift-helper-"));
-    helperBinary = join(helperDirectory, "attachment-extract");
-    const compilation = await runBoundedProcess(
-      [
-        "/usr/bin/xcrun",
-        "swiftc",
-        join(import.meta.dir, "attachment-extract.swift"),
-        "-o",
-        helperBinary,
-      ],
-      60_000,
-    );
-    if (compilation.code !== 0) {
-      throw new Error(`Swift helper failed to compile: ${compilation.stderr}`);
-    }
-  });
+  beforeAll(
+    async () => {
+      helperDirectory = mkdtempSync(join(tmpdir(), "hb-swift-helper-"));
+      helperBinary = join(helperDirectory, "attachment-extract");
+      const compilation = await runBoundedProcess(
+        [
+          "/usr/bin/xcrun",
+          "swiftc",
+          join(import.meta.dir, "attachment-extract.swift"),
+          "-o",
+          helperBinary,
+        ],
+        60_000,
+      );
+      if (compilation.code !== 0) {
+        throw new Error(`Swift helper failed to compile: ${compilation.stderr}`);
+      }
+    },
+    60_000,
+  );
 
   afterAll(() => {
     rmSync(helperDirectory, { recursive: true, force: true });

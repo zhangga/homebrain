@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { ServiceStatus } from "./service.ts";
-import { runServiceCli, type ServiceController } from "./service-cli.ts";
+import { createDefaultService, runServiceCli, type ServiceController } from "./service-cli.ts";
 
 const status: ServiceStatus = {
   installed: true,
@@ -29,6 +29,28 @@ function fakeService(calls: string[]): ServiceController {
 }
 
 describe("service CLI", () => {
+  test("creates a bundled service with resolved Application Support and Logs paths", () => {
+    const service = createDefaultService({
+      platform: "darwin",
+      uid: 501,
+      homeDir: "/Users/test",
+      execPath: "/Applications/Homebrain.app/Contents/MacOS/homebrain",
+      environment: { HOME: "/Users/test", PATH: "/usr/bin:/bin" },
+      runtimePaths: {
+        bundled: true,
+        appRoot: "/Applications/Homebrain.app",
+        resourceDir: "/Applications/Homebrain.app/Contents/Resources",
+        dataDir: "/Users/test/Library/Application Support/Homebrain",
+        logDir: "/Users/test/Library/Logs/Homebrain",
+        larkBin: "/Applications/Homebrain.app/Contents/Resources/bin/lark-cli",
+      },
+    });
+
+    expect(service.plistPath).toBe("/Users/test/Library/LaunchAgents/com.homebrain.agent.plist");
+    expect(service.stdoutPath).toBe("/Users/test/Library/Logs/Homebrain/service.stdout.log");
+    expect(service.stderrPath).toBe("/Users/test/Library/Logs/Homebrain/service.stderr.log");
+  });
+
   test("dispatches lifecycle commands and prints machine-readable status", async () => {
     const calls: string[] = [];
     const output: string[] = [];

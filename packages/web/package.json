@@ -13,6 +13,7 @@
   "dependencies": {
     "@homebrain/shared": "workspace:*",
     "@homebrain/core": "workspace:*",
+    "@homebrain/llm": "workspace:*",
     "hono": "^4.6.0"
   }
 }

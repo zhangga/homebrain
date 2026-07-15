@@ -21,3 +21,21 @@ export interface LarkSetupInput {
   appSecret: string;
   brand: "feishu" | "lark";
 }
+
+export type LarkProvisioningState =
+  | "idle"
+  | "starting"
+  | "waiting_for_user"
+  | "verifying"
+  | "ready"
+  | "failed"
+  | "expired";
+
+export interface LarkProvisioningSession {
+  state: LarkProvisioningState;
+  brand: "feishu" | "lark";
+  verificationUrl?: string;
+  startedAt?: number;
+  expiresAt?: number;
+  message: string;
+}

@@ -46,6 +46,10 @@ export interface Config {
   feishuBotName?: string;
   /** feishu bot open_id, for precise @-mention detection (optional) */
   feishuBotOpenId?: string;
+  /** timestamp recorded after the guided first-run setup is completed */
+  onboardingCompletedAt?: number;
+  /** timestamp used to require a real message received during this setup run */
+  onboardingStartedAt?: number;
 }
 
 /**
@@ -64,6 +68,8 @@ export interface PersistedSettings {
   defaultModel?: string;
   feishuBotName?: string;
   feishuBotOpenId?: string;
+  onboardingCompletedAt?: number;
+  onboardingStartedAt?: number;
 }
 
 export const EDITABLE_KEYS: (keyof PersistedSettings)[] = [
@@ -78,6 +84,8 @@ export const EDITABLE_KEYS: (keyof PersistedSettings)[] = [
   "defaultModel",
   "feishuBotName",
   "feishuBotOpenId",
+  "onboardingCompletedAt",
+  "onboardingStartedAt",
 ];
 
 function num(env: NodeJS.ProcessEnv, name: string, fallback: number): number {
@@ -132,6 +140,8 @@ export function loadConfig(env = process.env): Config {
     defaultModel: env.HOMEBRAIN_DEFAULT_MODEL || "",
     feishuBotName: env.HOMEBRAIN_FEISHU_BOT_NAME || undefined,
     feishuBotOpenId: env.HOMEBRAIN_FEISHU_BOT_OPEN_ID || undefined,
+    onboardingCompletedAt: undefined,
+    onboardingStartedAt: undefined,
   };
 
   // Overlay persisted editable settings (admin's explicit choices win).
@@ -148,6 +158,12 @@ export function loadConfig(env = process.env): Config {
   if (persisted.defaultModel !== undefined) base.defaultModel = persisted.defaultModel;
   if (persisted.feishuBotName !== undefined) base.feishuBotName = persisted.feishuBotName || undefined;
   if (persisted.feishuBotOpenId !== undefined) base.feishuBotOpenId = persisted.feishuBotOpenId || undefined;
+  if (typeof persisted.onboardingCompletedAt === "number" && Number.isFinite(persisted.onboardingCompletedAt)) {
+    base.onboardingCompletedAt = persisted.onboardingCompletedAt;
+  }
+  if (typeof persisted.onboardingStartedAt === "number" && Number.isFinite(persisted.onboardingStartedAt)) {
+    base.onboardingStartedAt = persisted.onboardingStartedAt;
+  }
 
   return base;
 }

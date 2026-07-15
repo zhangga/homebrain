@@ -6,6 +6,7 @@ import type { Hono } from "hono";
 import {
   readSettings,
   resetConfig,
+  saveSettings,
   type Page,
   type SpaceId,
   type SystemHealthSnapshot,
@@ -93,6 +94,284 @@ describe("web backend (read-only)", () => {
     const ready = await healthApp.request("/readyz");
     expect(ready.status).toBe(503);
     expect(await ready.json()).toEqual(snapshot);
+  });
+
+  test("fresh installs redirect the dashboard to guided setup", async () => {
+    await engine.deleteSpace(SPACE);
+    const fresh = createWebApp({
+      engine,
+      detectProviders: async () => [],
+      providerModels: async () => ({}),
+      larkSetup: {
+        status: async () => ({ state: "unconfigured", verified: false, message: "missing" }),
+        configure: async () => { throw new Error("unused"); },
+      },
+    });
+
+    const response = await fresh.request("/");
+    expect(response.status).toBe(302);
+    expect(response.headers.get("location")).toBe("/setup");
+    expect((await fresh.request("/setup")).status).toBe(200);
+  });
+
+  test("an imported space does not hide an unconfigured production connection", async () => {
+    const unconfigured = createWebApp({
+      engine,
+      larkSetup: {
+        status: async () => ({ state: "unconfigured", verified: false, message: "missing" }),
+        configure: async () => { throw new Error("unused"); },
+      },
+    });
+    const response = await unconfigured.request("/");
+    expect(response.status).toBe(302);
+    expect(response.headers.get("location")).toBe("/setup");
+  });
+
+  test("starts automatic Feishu setup and exposes a pollable safe session", async () => {
+    let starts = 0;
+    const session = {
+      state: "waiting_for_user" as const,
+      brand: "feishu" as const,
+      verificationUrl: "https://open.feishu.cn/page/cli?user_code=x",
+      message: "等待确认",
+    };
+    const setupApp = createWebApp({
+      engine,
+      detectProviders: async () => [],
+      providerModels: async () => ({}),
+      larkSetup: {
+        status: async () => ({ state: "unconfigured", verified: false, message: "missing" }),
+        configure: async () => { throw new Error("unused"); },
+        startAutomatic: async () => { starts += 1; return session; },
+        provisioningStatus: () => session,
+      },
+    });
+
+    const start = await setupApp.request("/setup/feishu/automatic", {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: "brand=feishu",
+    });
+    expect(start.status).toBe(302);
+    expect(starts).toBe(1);
+    const poll = await setupApp.request("/setup/feishu/session");
+    expect(await poll.json()).toEqual(session);
+  });
+
+  test("recovers the verified bot identity after an automatic session is lost on restart", async () => {
+    const idleSession = {
+      state: "idle" as const,
+      brand: "feishu" as const,
+      message: "尚未开始",
+    };
+    const setupApp = createWebApp({
+      engine,
+      detectProviders: async () => [],
+      providerModels: async () => ({}),
+      larkSetup: {
+        status: async () => ({
+          state: "ready",
+          verified: true,
+          brand: "feishu",
+          appId: "cli_ready",
+          botName: "Homebrain",
+          botOpenId: "ou_ready",
+          message: "ready",
+        }),
+        configure: async () => { throw new Error("unused"); },
+        provisioningStatus: () => idleSession,
+      },
+    });
+
+    const response = await setupApp.request("/setup");
+    expect(response.status).toBe(200);
+    expect(readSettings(dir)).toEqual(expect.objectContaining({
+      feishuBotName: "Homebrain",
+      feishuBotOpenId: "ou_ready",
+    }));
+  });
+
+  test("rejects a model that belongs to a different AI provider", async () => {
+    const response = await app.request("/setup/ai", {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: "provider=claude&model=gpt-5.4",
+    });
+    expect(response.status).toBe(302);
+    expect(response.headers.get("location")).toContain("%E6%89%80%E9%80%89%E6%A8%A1%E5%9E%8B");
+    expect(readSettings(dir).defaultModel).toBeUndefined();
+  });
+
+  test("connects managed Codex without exposing installer or login output", async () => {
+    let installed = false;
+    let installCalls = 0;
+    let loginStarts = 0;
+    let session: import("@homebrain/llm").CodexLoginSession = {
+      state: "idle",
+      message: "尚未连接",
+    };
+    const managed = createWebApp({
+      engine,
+      detectProviders: async () => [
+        {
+          id: "codex",
+          name: "Codex",
+          bin: "/managed/codex",
+          available: installed,
+          detail: installed ? "ready" : "missing",
+        },
+      ],
+      providerModels: async () => ({ codex: ["gpt-5.4"] }),
+      codexSetup: {
+        canInstall: true,
+        isInstalled: () => installed,
+        install: async (consented) => {
+          expect(consented).toBeTrue();
+          installCalls += 1;
+          installed = true;
+        },
+        startDeviceLogin: async () => {
+          loginStarts += 1;
+          session = {
+            state: "waiting_for_user",
+            verificationUrl: "https://auth.openai.com/device",
+            userCode: "SAFE-CODE",
+            message: "等待确认",
+          };
+          return session;
+        },
+        deviceLoginStatus: () => session,
+        cancelDeviceLogin: () => ({ state: "cancelled", message: "已取消" }),
+      },
+    });
+
+    const refused = await managed.request("/setup/ai/codex/install", {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: "",
+    });
+    expect(refused.headers.get("location")).toContain("%E9%9C%80%E8%A6%81%E7%A1%AE%E8%AE%A4");
+    expect(installCalls).toBe(0);
+
+    await managed.request("/setup/ai/codex/install", {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: "consent=on",
+    });
+    await Bun.sleep(0);
+    expect(installCalls).toBe(1);
+    expect(loginStarts).toBe(1);
+    expect(await (await managed.request("/setup/ai/codex/session")).json()).toEqual(session);
+
+    session = { state: "ready", message: "ChatGPT 已连接" };
+    expect((await managed.request("/setup/ai/codex/session")).status).toBe(200);
+    expect(readSettings(dir)).toEqual(expect.objectContaining({
+      defaultProvider: "codex",
+      defaultModel: "",
+    }));
+  });
+
+  test("sanitizes managed Codex installation failures", async () => {
+    const secret = "raw download URL and token";
+    const broken = createWebApp({
+      engine,
+      detectProviders: async () => [],
+      providerModels: async () => ({}),
+      codexSetup: {
+        canInstall: true,
+        isInstalled: () => false,
+        install: async () => { throw new Error(secret); },
+        startDeviceLogin: async () => ({ state: "failed", message: "失败" }),
+        deviceLoginStatus: () => ({ state: "idle", message: "尚未连接" }),
+        cancelDeviceLogin: () => ({ state: "cancelled", message: "已取消" }),
+      },
+    });
+    await broken.request("/setup/ai/codex/install", {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: "consent=on",
+    });
+    await Bun.sleep(0);
+    const result = JSON.stringify(await (await broken.request("/setup/ai/codex/session")).json());
+    expect(result).toContain("Codex 安装未完成");
+    expect(result).not.toContain(secret);
+  });
+
+  test("does not finish setup before AI, bot identity, and runtime are ready", async () => {
+    const response = await app.request("/setup/finish", { method: "POST" });
+    expect(response.status).toBe(302);
+    expect(response.headers.get("location")).toContain("/setup?ok=");
+    expect(readSettings(dir).onboardingCompletedAt).toBeUndefined();
+  });
+
+  test("allows an explicitly private-only finish after the connection is ready", async () => {
+    saveSettings({ defaultProvider: "claude", onboardingStartedAt: Date.now() + 1_000 });
+    const ready = createWebApp({
+      engine,
+      detectProviders: async () => [
+        { id: "claude", name: "Claude Code", bin: "claude", available: true, detail: "ready" },
+      ],
+      providerModels: async () => ({ claude: ["sonnet"] }),
+      larkSetup: {
+        status: async () => ({
+          state: "ready",
+          verified: true,
+          botName: "Homebrain",
+          botOpenId: "ou_ready",
+          message: "ready",
+        }),
+        configure: async () => { throw new Error("unused"); },
+      },
+      activeFeishuIdentity: { botName: "Homebrain", botOpenId: "ou_ready" },
+      feishuRuntime: () => ({ ready: true, consumers: [] }),
+    });
+    const response = await ready.request("/setup/finish", { method: "POST" });
+    expect(response.headers.get("location")).toBe("/");
+    expect(readSettings(dir).onboardingCompletedAt).toEqual(expect.any(Number));
+  });
+
+  test("finishes group verification only after a new real message", async () => {
+    const startedAt = Date.now() + 1_000;
+    saveSettings({
+      onboardingStartedAt: startedAt,
+      feishuBotName: "Homebrain",
+      feishuBotOpenId: "ou_ready",
+    });
+    const setupApp = createWebApp({
+      engine,
+      detectProviders: async () => [
+        { id: "claude", name: "Claude Code", bin: "claude", available: true, detail: "ready" },
+      ],
+      providerModels: async () => ({ claude: ["sonnet"] }),
+      larkSetup: {
+        status: async () => ({
+          state: "ready",
+          verified: true,
+          botName: "Homebrain",
+          botOpenId: "ou_ready",
+          message: "ready",
+        }),
+        configure: async () => { throw new Error("unused"); },
+      },
+      activeFeishuIdentity: { botName: "Homebrain", botOpenId: "ou_ready" },
+      feishuRuntime: () => ({ ready: true, consumers: [] }),
+    });
+
+    expect(await (await setupApp.request("/setup")).text()).toContain("发送第一条共同记忆");
+    await engine.remember({
+      space: SPACE,
+      source: "task",
+      content: "不是飞书消息",
+      createdAt: startedAt + 1,
+    });
+    expect(await (await setupApp.request("/setup")).text()).toContain("发送第一条共同记忆");
+    await engine.remember({
+      space: SPACE,
+      source: "message",
+      content: "来自本次设置的飞书消息",
+      createdAt: startedAt + 2,
+    });
+    expect(await (await setupApp.request("/setup")).text()).toContain("一切就绪");
   });
 
   test("admin token protects management routes but leaves probes public", async () => {
@@ -376,7 +655,7 @@ describe("management backend (read-write)", () => {
   test("nav rail exposes the mew-style sections", async () => {
     const body = await (await app.request("/")).text();
     expect(body).toContain("Agents");
-    expect(body).toContain("Integrations");
+    expect(body).toContain("飞书连接");
     expect(body).toContain("设置");
   });
 
@@ -476,7 +755,8 @@ describe("management backend (read-write)", () => {
   test("integrations lists team groups and binds per-group settings", async () => {
     const agent = engine.agents.create({ name: "群助手", model: "" });
     const listing = await (await app.request("/integrations")).text();
-    expect(listing).toContain("飞书配置向导");
+    expect(listing).toContain("飞书连接");
+    expect(listing).toContain('href="/setup"');
     expect(listing).toContain("绑定群聊并测试");
     expect(listing).toContain(SPACE); // the seeded team space
 

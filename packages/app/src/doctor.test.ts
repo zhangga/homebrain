@@ -1,0 +1,104 @@
+import { describe, expect, test } from "bun:test";
+import {
+  runDoctor,
+  runDoctorCli,
+  type DoctorProbeSet,
+} from "./doctor.ts";
+import type { RuntimePaths } from "./runtime-paths.ts";
+
+const paths: RuntimePaths = {
+  bundled: true,
+  appRoot: "/Applications/Homebrain.app",
+  resourceDir: "/Applications/Homebrain.app/Contents/Resources",
+  dataDir: "/Users/example/Library/Application Support/Homebrain",
+  logDir: "/Users/example/Library/Logs/Homebrain",
+  larkBin: "/Applications/Homebrain.app/Contents/Resources/bin/lark-cli",
+  attachmentHelper:
+    "/Applications/Homebrain.app/Contents/Resources/bin/attachment-extract",
+};
+
+function probes(status: "pass" | "action" | "fail" = "pass"): DoctorProbeSet {
+  return {
+    dataDirectory: async () => status,
+    larkCli: async () => status,
+    aiProvider: async () => status,
+    port: async () => status,
+    launchAgent: async () => status,
+    feishuRuntime: async () => status,
+  };
+}
+
+describe("runDoctor", () => {
+  test("returns the stable installation check order with human-safe results", async () => {
+    const report = await runDoctor({
+      platform: "darwin",
+      paths,
+      port: 3000,
+      now: () => 1_784_000_000_000,
+      probes: probes(),
+    });
+
+    expect(report.checks.map((check) => check.id)).toEqual([
+      "macos",
+      "data-directory",
+      "lark-cli",
+      "ai-provider",
+      "port",
+      "launch-agent",
+      "feishu-runtime",
+    ]);
+    expect(report.status).toBe("pass");
+    expect(report.checkedAt).toBe(1_784_000_000_000);
+    expect(report.setupUrl).toBe("http://127.0.0.1:3000/setup");
+    expect(report.checks.every((check) => check.status === "pass")).toBeTrue();
+    expect(report.checks.every((check) => /[\u3400-\u9fff]/.test(check.message))).toBeTrue();
+  });
+
+  test("bounds stalled probes and exposes only fixed messages", async () => {
+    const secret = "raw-token-and-stderr-must-stay-private";
+    const mixed = probes("action");
+    mixed.larkCli = async () => {
+      void secret;
+      return await new Promise<never>(() => {});
+    };
+    mixed.port = () => "fail";
+
+    const startedAt = Date.now();
+    const report = await runDoctor({
+      platform: "linux",
+      paths,
+      port: 3311,
+      timeoutMs: 5,
+      probes: mixed,
+    });
+
+    expect(Date.now() - startedAt).toBeLessThan(200);
+    expect(report.status).toBe("fail");
+    expect(report.checks.find((check) => check.id === "lark-cli")?.status).toBe("fail");
+    expect(report.checks.find((check) => check.id === "data-directory")?.setupUrl).toBe(
+      "http://127.0.0.1:3311/setup",
+    );
+    expect(JSON.stringify(report)).not.toContain(secret);
+    expect(JSON.stringify(report)).not.toContain(paths.larkBin);
+  });
+
+  test("doctor --json writes directly parseable, sanitized JSON", async () => {
+    let output = "";
+    const exitCode = await runDoctorCli({
+      argv: ["doctor", "--json"],
+      write: (text) => {
+        output += text;
+      },
+      doctor: {
+        platform: "darwin",
+        paths,
+        port: 3000,
+        probes: probes(),
+      },
+    });
+
+    expect(exitCode).toBe(0);
+    expect(JSON.parse(output).checks).toHaveLength(7);
+    expect(output).not.toContain(paths.dataDir);
+  });
+});

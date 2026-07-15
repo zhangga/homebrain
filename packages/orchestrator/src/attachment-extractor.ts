@@ -1,6 +1,6 @@
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { extname, join } from "node:path";
+import { extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { DownloadedAttachment } from "@homebrain/connectors";
 
 const TEXT_EXTENSIONS = new Set([
@@ -32,6 +32,18 @@ export type NativeExtractor = (
   path: string,
 ) => Promise<NativeResult>;
 
+export type NativeProcessRunner = (
+  command: string[],
+  timeoutMs: number,
+) => Promise<NativeResult>;
+
+export interface NativeExtractorRuntime {
+  platform?: typeof process.platform;
+  execPath?: string;
+  attachmentHelper?: string;
+  runProcess?: NativeProcessRunner;
+}
+
 export async function extractAttachmentText(
   input: DownloadedAttachment,
   runNative: NativeExtractor = defaultNativeExtractor,
@@ -60,32 +72,64 @@ export async function extractAttachmentText(
   }
 }
 
-async function defaultNativeExtractor(
-  mode: "image" | "pdf",
-  path: string,
-): Promise<NativeResult> {
-  if (process.platform !== "darwin") {
-    return { code: null, stdout: "", stderr: "native extraction requires macOS" };
-  }
-  const script = join(import.meta.dir, "attachment-extract.swift");
-  const directory = mkdtempSync(join(tmpdir(), "homebrain-native-extract-"));
-  const binary = join(directory, "attachment-extract");
-  const startedAt = Date.now();
-  try {
-    const compilation = await runBoundedProcess(
-      ["/usr/bin/xcrun", "swiftc", script, "-o", binary],
-      NATIVE_TIMEOUT_MS,
-    );
-    if (compilation.code !== 0) return compilation;
+export function createNativeExtractor(runtime: NativeExtractorRuntime = {}): NativeExtractor {
+  const platform = runtime.platform ?? process.platform;
+  const execPath = runtime.execPath ?? process.execPath;
+  const runProcess = runtime.runProcess ?? runBoundedProcess;
 
-    const remainingMs = NATIVE_TIMEOUT_MS - (Date.now() - startedAt);
-    if (remainingMs <= 0) {
-      return { code: null, stdout: "", stderr: "native extraction timed out" };
+  return async (mode, path) => {
+    if (platform !== "darwin") {
+      return { code: null, stdout: "", stderr: "native extraction requires macOS" };
     }
-    return await runBoundedProcess([binary, mode, path], remainingMs);
-  } finally {
-    rmSync(directory, { recursive: true, force: true });
+
+    const bundledHelper = resolveBundledHelper(execPath, runtime.attachmentHelper);
+    if (bundledHelper) {
+      return await runProcess([bundledHelper, mode, path], NATIVE_TIMEOUT_MS);
+    }
+
+    const script = join(import.meta.dir, "attachment-extract.swift");
+    const directory = mkdtempSync(join(tmpdir(), "homebrain-native-extract-"));
+    const binary = join(directory, "attachment-extract");
+    const startedAt = Date.now();
+    try {
+      const compilation = await runProcess(
+        ["/usr/bin/xcrun", "swiftc", script, "-o", binary],
+        NATIVE_TIMEOUT_MS,
+      );
+      if (compilation.code !== 0) return compilation;
+
+      const remainingMs = NATIVE_TIMEOUT_MS - (Date.now() - startedAt);
+      if (remainingMs <= 0) {
+        return { code: null, stdout: "", stderr: "native extraction timed out" };
+      }
+      return await runProcess([binary, mode, path], remainingMs);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  };
+}
+
+const defaultNativeExtractor = createNativeExtractor();
+
+function resolveBundledHelper(execPath: string, configuredHelper?: string): string | undefined {
+  const markers = [".app/Contents/MacOS/", ".app/Contents/Resources/bin/"];
+  const match = markers
+    .map((marker) => ({ marker, at: execPath.indexOf(marker) }))
+    .find((candidate) => candidate.at >= 0);
+  if (!match) return undefined;
+
+  const appRoot = execPath.slice(0, match.at + 4);
+  const resourcesBin = resolve(appRoot, "Contents", "Resources", "bin");
+  const helper = resolve(configuredHelper ?? join(resourcesBin, "attachment-extract"));
+  const withinResources = relative(resourcesBin, helper);
+  if (
+    withinResources === ".." ||
+    withinResources.startsWith(`..${sep}`) ||
+    isAbsolute(withinResources)
+  ) {
+    throw new Error("attachment helper is outside the application Resources/bin directory");
   }
+  return helper;
 }
 
 export async function runBoundedProcess(

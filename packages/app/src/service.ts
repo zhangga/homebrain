@@ -48,8 +48,9 @@ export function rotateActiveServiceLogs(
   dataDir: string,
   maxBytes = 10 * 1024 * 1024,
   preserveBytes = 1024 * 1024,
+  configuredLogDir?: string,
 ): void {
-  const logDir = join(dataDir, "logs");
+  const logDir = configuredLogDir ?? join(dataDir, "logs");
   mkdirSync(logDir, { recursive: true });
   for (const name of SERVICE_LOG_NAMES) {
     const path = join(logDir, name);
@@ -69,13 +70,18 @@ export function rotateActiveServiceLogs(
 
 export function startServiceLogMaintenance(
   dataDir: string,
-  options: { managed?: boolean; maxBytes?: number; intervalMs?: number } = {},
+  options: { managed?: boolean; maxBytes?: number; intervalMs?: number; logDir?: string } = {},
 ): () => void {
   const managed = options.managed ?? process.env.HOMEBRAIN_SERVICE_MANAGED === "1";
   if (!managed) return () => {};
   const maintain = () => {
     try {
-      rotateActiveServiceLogs(dataDir, options.maxBytes);
+      rotateActiveServiceLogs(
+        dataDir,
+        options.maxBytes,
+        undefined,
+        options.logDir ?? process.env.HOMEBRAIN_LOG_DIR,
+      );
     } catch (err) {
       process.stderr.write(`homebrain log rotation failed: ${String(err)}\n`);
     }
@@ -100,7 +106,10 @@ export interface LaunchAgentServiceOptions {
   homeDir: string;
   repoRoot: string;
   dataDir: string;
+  logDir?: string;
   bunPath: string;
+  bundled?: boolean;
+  executablePath?: string;
   environment: NodeJS.ProcessEnv;
   runner?: ServiceCommandRunner;
   startupTimeoutMs?: number;
@@ -295,11 +304,13 @@ export class LaunchAgentService {
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly logMaxBytes: number;
   private readonly logPreserveBytes: number;
+  private readonly logDir: string;
 
   constructor(private readonly options: LaunchAgentServiceOptions) {
     this.plistPath = join(options.homeDir, "Library", "LaunchAgents", `${SERVICE_LABEL}.plist`);
-    this.stdoutPath = join(options.dataDir, "logs", "service.stdout.log");
-    this.stderrPath = join(options.dataDir, "logs", "service.stderr.log");
+    this.logDir = options.logDir ?? join(options.dataDir, "logs");
+    this.stdoutPath = join(this.logDir, "service.stdout.log");
+    this.stderrPath = join(this.logDir, "service.stderr.log");
     this.runner = options.runner ?? defaultRunner;
     this.startupTimeoutMs = options.startupTimeoutMs ?? 15_000;
     this.pollIntervalMs = Math.max(1, options.pollIntervalMs ?? 100);
@@ -326,6 +337,12 @@ export class LaunchAgentService {
     const path = this.options.environment.PATH
       || `${join(this.options.homeDir, ".local", "bin")}:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin`;
     const main = join(this.options.repoRoot, "packages", "app", "src", "main.ts");
+    const programArguments = this.options.bundled
+      ? `    <string>${xml(this.options.executablePath ?? process.execPath)}</string>\n    <string>serve</string>`
+      : `    <string>${xml(this.options.bunPath)}</string>\n    <string>run</string>\n    <string>${xml(main)}</string>`;
+    const workingDirectory = this.options.bundled
+      ? ""
+      : `\n${plistString("WorkingDirectory", this.options.repoRoot)}`;
     return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -333,16 +350,15 @@ export class LaunchAgentService {
 ${plistString("Label", SERVICE_LABEL)}
   <key>ProgramArguments</key>
   <array>
-    <string>${xml(this.options.bunPath)}</string>
-    <string>run</string>
-    <string>${xml(main)}</string>
+${programArguments}
   </array>
-${plistString("WorkingDirectory", this.options.repoRoot)}
+${workingDirectory}
   <key>EnvironmentVariables</key>
   <dict>
 ${plistString("HOME", this.options.homeDir)}
 ${plistString("PATH", path)}
 ${plistString("HOMEBRAIN_DATA_DIR", this.options.dataDir)}
+${plistString("HOMEBRAIN_LOG_DIR", this.logDir)}
 ${plistString("HOMEBRAIN_SERVICE_MANAGED", "1")}
   </dict>
   <key>RunAtLoad</key>
@@ -362,7 +378,7 @@ ${plistString("StandardErrorPath", this.stderrPath)}
   }
 
   private prepareLogs(): void {
-    rotateActiveServiceLogs(this.options.dataDir, this.logMaxBytes, this.logPreserveBytes);
+    rotateActiveServiceLogs(this.options.dataDir, this.logMaxBytes, this.logPreserveBytes, this.logDir);
   }
 
   private async waitForRunning(previousPid?: number, requireReplacement = false): Promise<ServiceStatus> {
@@ -499,7 +515,7 @@ ${plistString("StandardErrorPath", this.stderrPath)}
   }
 
   async followLogs(lines = 100): Promise<void> {
-    mkdirSync(join(this.options.dataDir, "logs"), { recursive: true });
+    mkdirSync(this.logDir, { recursive: true });
     for (const path of [this.stdoutPath, this.stderrPath]) {
       writeFileSync(path, "", { encoding: "utf8", flag: "a", mode: 0o600 });
       chmodSync(path, 0o600);

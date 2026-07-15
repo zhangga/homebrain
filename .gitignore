@@ -15,4 +15,3 @@ reference/
 *.db
 *.db-shm
 *.db-wal
-bun.lock

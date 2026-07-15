@@ -5,3 +5,4 @@ export * from "./format.ts";
 export * from "./messages.ts";
 export * from "./task-commands.ts";
 export * from "./runtime.ts";
+export * from "./attachment-extractor.ts";

@@ -1,9 +1,16 @@
 /** Public setup boundary used by the management backend. */
-import type { LarkSetupInput, LarkSetupStatus } from "@homebrain/shared";
+import type {
+  LarkProvisioningSession,
+  LarkSetupInput,
+  LarkSetupStatus,
+} from "@homebrain/shared";
+import type { CodexLoginSession } from "@homebrain/llm";
 
 export interface LarkSetupPort {
   status(): Promise<LarkSetupStatus>;
   configure(input: LarkSetupInput): Promise<LarkSetupStatus>;
+  startAutomatic?(brand: "feishu" | "lark"): Promise<LarkProvisioningSession>;
+  provisioningStatus?(): LarkProvisioningSession;
 }
 
 export interface FeishuRuntimeStatus {
@@ -13,4 +20,18 @@ export interface FeishuRuntimeStatus {
     state: string;
     lastError?: string;
   }>;
+}
+
+/** App-owned Codex installation/login boundary used by the first-run wizard. */
+export interface CodexSetupPort {
+  /** True only when Homebrain can install the official Codex release itself. */
+  canInstall: boolean;
+  /** Whether the app-managed executable is already present. */
+  isInstalled(): boolean;
+  /** Download and verify Codex after explicit user consent. */
+  install(consented: boolean): Promise<void>;
+  /** Start the browser/device authorization flow. */
+  startDeviceLogin(): Promise<CodexLoginSession>;
+  deviceLoginStatus(): CodexLoginSession;
+  cancelDeviceLogin(): CodexLoginSession;
 }

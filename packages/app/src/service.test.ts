@@ -88,6 +88,48 @@ describe("macOS LaunchAgent service", () => {
     ]);
   });
 
+  test("bundled install runs the app executable and uses macOS Library data and logs", async () => {
+    const homeDir = mkdtempSync(join(tmpdir(), "hb-service-bundle-home-"));
+    dirs.push(homeDir);
+    const dataDir = join(homeDir, "Library", "Application Support", "Homebrain");
+    const logDir = join(homeDir, "Library", "Logs", "Homebrain");
+    let loaded = false;
+    const service = new LaunchAgentService({
+      platform: "darwin",
+      uid: 501,
+      homeDir,
+      repoRoot: "/Applications/Homebrain.app",
+      dataDir,
+      logDir,
+      bunPath: "/should/not/be/used/bun",
+      bundled: true,
+      executablePath: "/Applications/Homebrain.app/Contents/MacOS/homebrain",
+      environment: { HOME: homeDir, PATH: "/usr/bin:/bin" },
+      runner: async (argv) => {
+        if (argv[1] === "print") {
+          return loaded
+            ? { code: 0, stdout: "state = running\npid = 9081\n", stderr: "" }
+            : { code: 113, stdout: "", stderr: "not found" };
+        }
+        if (argv[1] === "bootstrap") loaded = true;
+        return { code: 0, stdout: "", stderr: "" };
+      },
+    });
+
+    await service.install();
+    const plist = readFileSync(service.plistPath, "utf8");
+
+    expect(plist).toContain("<string>/Applications/Homebrain.app/Contents/MacOS/homebrain</string>");
+    expect(plist).toContain("<string>serve</string>");
+    expect(plist).not.toContain("/should/not/be/used/bun");
+    expect(plist).not.toContain("packages/app/src/main.ts");
+    expect(plist).not.toContain("<key>WorkingDirectory</key>");
+    expect(plist).toContain("Library/Application Support/Homebrain");
+    expect(service.stdoutPath).toBe(join(logDir, "service.stdout.log"));
+    expect(service.stderrPath).toBe(join(logDir, "service.stderr.log"));
+    expect(statSync(service.stdoutPath).mode & 0o777).toBe(0o600);
+  });
+
   test("start, stop, restart, status, and uninstall use the correct launchctl lifecycle", async () => {
     const homeDir = mkdtempSync(join(tmpdir(), "hb-service-life-home-"));
     const dataDir = mkdtempSync(join(tmpdir(), "hb-service-life-data-"));

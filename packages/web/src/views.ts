@@ -663,9 +663,19 @@ export function integrationsView(
       })
     : [html`<div class="empty">还没有群空间。把机器人加入飞书群即可出现在这里。</div>`];
 
-  return html`<h1>飞书配置向导</h1>
-    <p class="subtitle">按顺序完成应用连接、Agent 创建、群聊绑定和回复测试。</p>
+  return html`<h1>飞书连接</h1>
+    <p class="subtitle">查看机器人、事件监听和群聊状态。首次连接建议使用引导模式。</p>
     ${flash(flashMsg)}
+
+    <div class="card">
+      <div class="row">
+        <div>
+          <div style="font-weight:600">引导式设置</div>
+          <div class="muted">自动检测 AI、创建飞书机器人，并逐步验证消息监听。</div>
+        </div>
+        <a class="btn" href="/setup">继续设置</a>
+      </div>
+    </div>
 
     <div class="card">
       <div class="row">
