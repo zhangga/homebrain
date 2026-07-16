@@ -56,7 +56,7 @@ describe("provider detection", () => {
           500,
         ),
       ).toBe(
-        '-c cli_auth_credentials_store="keyring" exec --sandbox read-only --image /tmp/dinner.png 分析这顿晚餐',
+        '-c cli_auth_credentials_store="keyring" exec --sandbox read-only --image /tmp/dinner.png -- 分析这顿晚餐',
       );
     } finally {
       if (previous === undefined) delete process.env.HOMEAGENT_CODEX_BIN;
@@ -113,7 +113,7 @@ describe("provider detection", () => {
         { id: "trae-cli", bin: "/bin/echo" },
       ]);
       expect(await runProvider("codex", { prompt: "hello" }, 500)).toBe(
-        '-c cli_auth_credentials_store="keyring" exec --sandbox read-only hello',
+        '-c cli_auth_credentials_store="keyring" exec --sandbox read-only -- hello',
       );
       expect(
         await runProvider(
@@ -122,7 +122,7 @@ describe("provider detection", () => {
           500,
         ),
       ).toBe(
-        '-c cli_auth_credentials_store="keyring" -c model_reasoning_effort="high" exec --sandbox read-only hello -m gpt-5.6-sol',
+        '-c cli_auth_credentials_store="keyring" -c model_reasoning_effort="high" exec --sandbox read-only -m gpt-5.6-sol -- hello',
       );
     } finally {
       for (const key of keys) {
@@ -201,7 +201,7 @@ describe("provider detection", () => {
           execution: { permission: "write", skills: [] },
         }, 500),
       ).toBe(
-        '-c cli_auth_credentials_store="keyring" -c approval_policy="never" exec --sandbox workspace-write --skip-git-repo-check edit',
+        '-c cli_auth_credentials_store="keyring" -c approval_policy="never" exec --sandbox workspace-write --skip-git-repo-check -- edit',
       );
       expect(
         await runProvider("codex", {
@@ -209,7 +209,7 @@ describe("provider detection", () => {
           execution: { permission: "read-only", skills: [], webSearch: true },
         }, 500),
       ).toBe(
-        '-c cli_auth_credentials_store="keyring" -c approval_policy="never" --search exec --sandbox read-only --skip-git-repo-check research',
+        '-c cli_auth_credentials_store="keyring" -c approval_policy="never" --search exec --sandbox read-only --skip-git-repo-check -- research',
       );
       expect(
         await runProvider("trae-cli", {

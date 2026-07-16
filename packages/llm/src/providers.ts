@@ -231,9 +231,12 @@ const KNOWN: CliSpec[] = [
       const sandbox = sandboxForPermission(execution?.permission);
       args.push("exec", "--sandbox", sandbox);
       if (execution) args.push("--skip-git-repo-check");
-      for (const image of images ?? []) args.push("--image", image.path);
-      args.push(prompt);
       if (model) args.push("-m", model);
+      for (const image of images ?? []) args.push("--image", image.path);
+      // Codex's --image accepts multiple values. Terminate option parsing
+      // explicitly so the user prompt cannot be consumed as another image path
+      // (or interpreted as the reserved `review` / `resume` subcommand).
+      args.push("--", prompt);
       return args;
     },
   },
