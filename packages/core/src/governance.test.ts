@@ -774,4 +774,66 @@ describe("space data governance", () => {
     expect(engine.registry.has(SPACE)).toBe(false);
     engine.close();
   });
+
+  test("restore rejects an embedded Agent whose Visibility mismatches the space", async () => {
+    const engine = new KnowledgeEngine({ dataDir: tempDir("hb-agent-visibility-") });
+    const agent = engine.agents.create({
+      name: "personal-only",
+      provider: "codex",
+      visibility: "Personal",
+    });
+    engine.agents.remove(agent.id);
+    const now = Date.now();
+
+    await expect(engine.restoreSpace({
+      format: "homeagent.space",
+      version: 1,
+      exportedAt: now,
+      space: { id: SPACE, createdAt: now, agentId: agent.id },
+      agent,
+      purpose: "purpose",
+      schema: "schema",
+      pages: [],
+      raw: [],
+      retractions: [],
+      tasks: [],
+    })).rejects.toThrow("agent.visibility does not match archive space");
+    expect(engine.agents.has(agent.id)).toBe(false);
+    expect(engine.registry.has(SPACE)).toBe(false);
+    engine.close();
+  });
+
+  test("legacy personal archives infer a missing Agent Visibility from the space", () => {
+    const now = Date.now();
+    const archive = parseSpaceArchive({
+      format: "homeagent.space",
+      version: 1,
+      exportedAt: now,
+      space: {
+        id: "personal/ou_legacy",
+        createdAt: now,
+        agentId: "agent_legacy_personal",
+      },
+      agent: {
+        id: "agent_legacy_personal",
+        name: "旧个人助手",
+        instruction: "",
+        model: "",
+        reasoningEffort: "",
+        provider: "codex",
+        permission: "read-only",
+        skills: [],
+        createdAt: now,
+        updatedAt: now,
+      },
+      purpose: "purpose",
+      schema: "schema",
+      pages: [],
+      raw: [],
+      retractions: [],
+      tasks: [],
+    });
+
+    expect(archive.agent?.visibility).toBe("Personal");
+  });
 });

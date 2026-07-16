@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, existsSync, readFileSync } from "node:fs";
+import { mkdtempSync, rmSync, existsSync, readFileSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { AgentStore } from "./agents.ts";
+import { AgentStore, agentVisibleInSpace, resolveAgentExecution } from "./agents.ts";
 
 let dir: string;
 
@@ -36,6 +36,19 @@ describe("AgentStore", () => {
     expect(a.model).toBe("");
   });
 
+  test("visibility limits an Agent to matching space types", () => {
+    const store = new AgentStore(dir);
+    const team = store.create({ name: "team", visibility: "Team" });
+    const personal = store.create({ name: "personal", visibility: "Personal" });
+    const invalid = store.create({ name: "invalid", visibility: "Public" });
+
+    expect(agentVisibleInSpace(team, "team/oc_group")).toBe(true);
+    expect(agentVisibleInSpace(team, "personal/ou_user")).toBe(false);
+    expect(agentVisibleInSpace(personal, "personal/ou_user")).toBe(true);
+    expect(agentVisibleInSpace(personal, "team/oc_group")).toBe(false);
+    expect(invalid.visibility).toBe("Team");
+  });
+
   test("Codex reasoning effort is normalized and survives a reload", () => {
     const store = new AgentStore(dir);
     const agent = store.create({
@@ -58,14 +71,17 @@ describe("AgentStore", () => {
     expect(changed?.reasoningEffort).toBe("");
   });
 
-  test("reserved task-execution fields: defaults, parsing, and update", () => {
+  test("task-execution fields: defaults, safe parsing, and update", () => {
     const store = new AgentStore(dir);
-    const a = store.create({ name: "runner", skills: "code-review, web-search\nsummarize" });
+    const a = store.create({
+      name: "runner",
+      skills: ["code-review", "web-search", "code-review", "../escape", "github:yeet"],
+    });
     // permission defaults to the safest tier
     expect(a.permission).toBe("read-only");
     expect(a.workdir).toBeUndefined();
-    // skills parse from comma/newline-separated text
-    expect(a.skills).toEqual(["code-review", "web-search", "summarize"]);
+    // Skills are identifier-only, stable-deduplicated, and safe to inject.
+    expect(a.skills).toEqual(["code-review", "web-search", "github:yeet"]);
 
     const up = store.update(a.id, { permission: "write", workdir: " ~/proj ", skills: ["x"] });
     expect(up?.permission).toBe("write");
@@ -74,6 +90,32 @@ describe("AgentStore", () => {
 
     // unknown permission normalizes back to read-only
     expect(store.create({ name: "z", permission: "root" }).permission).toBe("read-only");
+  });
+
+  test("task execution config validates the workdir before enabling writes", () => {
+    const store = new AgentStore(dir);
+    const writable = store.create({
+      name: "writer",
+      permission: "write",
+      workdir: dir,
+      skills: "code-review, github:yeet",
+    });
+
+    expect(resolveAgentExecution(writable)).toEqual({
+      permission: "write",
+      workdir: realpathSync(dir),
+      skills: ["code-review", "github:yeet"],
+    });
+
+    const unsafe = store.create({ name: "unsafe", permission: "full" });
+    expect(() => resolveAgentExecution(unsafe)).toThrow("Workdir");
+
+    const missing = store.create({
+      name: "missing",
+      permission: "read-only",
+      workdir: join(dir, "does-not-exist"),
+    });
+    expect(() => resolveAgentExecution(missing)).toThrow("不存在");
   });
 
   test("provider defaults to the default CLI; unknown normalizes to it; known CLI is kept", () => {
@@ -162,6 +204,40 @@ describe("AgentStore", () => {
     const store = new AgentStore(dir);
     expect(store.get("agent_sol")?.model).toBe("gpt-5.6-sol");
     expect(JSON.parse(readFileSync(path, "utf8")).agents.agent_sol.model).toBe("gpt-5.6-sol");
+  });
+
+  test("persisted skill arrays are sanitized again during migration", () => {
+    const path = join(dir, "config", "agents.json");
+    require("node:fs").mkdirSync(join(dir, "config"), { recursive: true });
+    require("node:fs").writeFileSync(
+      path,
+      JSON.stringify({
+        agents: {
+          agent_skills: {
+            id: "agent_skills",
+            name: "旧技能配置",
+            instruction: "",
+            model: "",
+            provider: "codex",
+            visibility: "Team",
+            permission: "root",
+            skills: ["code-review", "../escape", "code-review", "github:yeet"],
+            createdAt: 1,
+            updatedAt: 1,
+          },
+        },
+      }),
+      "utf8",
+    );
+
+    const store = new AgentStore(dir);
+    expect(store.get("agent_skills")?.skills).toEqual(["code-review", "github:yeet"]);
+    expect(store.get("agent_skills")?.permission).toBe("read-only");
+    expect(JSON.parse(readFileSync(path, "utf8")).agents.agent_skills.skills).toEqual([
+      "code-review",
+      "github:yeet",
+    ]);
+    expect(JSON.parse(readFileSync(path, "utf8")).agents.agent_skills.permission).toBe("read-only");
   });
 
   test("remove deletes and persists", () => {

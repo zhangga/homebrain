@@ -93,7 +93,10 @@ function makeCliOnlyRuntime(
 ) {
   cliEngine.ensureSpace(space);
   if (agentInput) {
-    const agent = cliEngine.agents.create(agentInput);
+    const agent = cliEngine.agents.create({
+      ...agentInput,
+      visibility: agentInput.visibility ?? (space.startsWith("personal/") ? "Personal" : "Team"),
+    });
     cliEngine.registry.updateMeta(space, { agentId: agent.id });
   }
   const cliConnector = new CliConnector({

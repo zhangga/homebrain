@@ -4,6 +4,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -718,6 +719,33 @@ describe("Knowledge seam contract", () => {
     expect(existsSync(join(store.root, "schema.md"))).toBe(true);
   });
 
+  test("space Agent assignment enforces visibility and agentForSpace remains fail-safe", () => {
+    const personalSpace: SpaceId = "personal/ou_contract";
+    engine.ensureSpace(SPACE);
+    engine.ensureSpace(personalSpace);
+    const teamAgent = engine.agents.create({ name: "群助手", visibility: "Team" });
+    const personalAgent = engine.agents.create({ name: "个人助手", visibility: "Personal" });
+
+    expect(() => engine.updateSpaceMeta(SPACE, { agentId: personalAgent.id }))
+      .toThrow("Agent Visibility");
+    expect(() => engine.updateSpaceMeta(personalSpace, { agentId: teamAgent.id }))
+      .toThrow("Agent Visibility");
+    expect(() => engine.updateSpaceMeta(SPACE, { agentId: "agent_missing" }))
+      .toThrow("Agent Visibility");
+
+    engine.updateSpaceMeta(SPACE, { agentId: teamAgent.id });
+    engine.updateSpaceMeta(personalSpace, { agentId: personalAgent.id });
+    expect(engine.agentForSpace(SPACE)?.id).toBe(teamAgent.id);
+    expect(engine.agentForSpace(personalSpace)?.id).toBe(personalAgent.id);
+
+    // Archive recovery and other low-level compatibility paths can still
+    // restore stale metadata; runtime lookup must never expose it.
+    engine.registry.updateMeta(SPACE, { agentId: personalAgent.id });
+    engine.registry.updateMeta(personalSpace, { agentId: teamAgent.id });
+    expect(engine.agentForSpace(SPACE)).toBeUndefined();
+    expect(engine.agentForSpace(personalSpace)).toBeUndefined();
+  });
+
   test("runTask: research output is captured as a raw 'task' entry + lastRun recorded", async () => {
     // A dedicated engine whose CLI runner returns research text for the task.
     const taskEngine = new KnowledgeEngine({
@@ -738,6 +766,73 @@ describe("Knowledge seam contract", () => {
     expect(raws.some((r) => r.source === "task" && r.content.includes("要点一"))).toBe(true);
     // lastRun recorded on the task
     expect(taskEngine.tasks.get(task.id)?.lastStatus).toBe("ok");
+    taskEngine.close();
+  });
+
+  test("runTask passes the assigned Agent execution contract to the provider", async () => {
+    const workdir = join(dir, "task-workspace");
+    mkdirSync(workdir);
+    let execution: unknown;
+    const taskEngine = new KnowledgeEngine({
+      dataDir: dir,
+      runProvider: async (_id, input) => {
+        execution = input.execution;
+        return "已按 Agent 配置执行";
+      },
+    });
+    taskEngine.ensureSpace(SPACE);
+    const agent = taskEngine.agents.create({
+      name: "执行助手",
+      permission: "write",
+      workdir,
+      skills: "code-review, github:yeet",
+    });
+    taskEngine.registry.updateMeta(SPACE, { agentId: agent.id });
+    const task = taskEngine.tasks.create({
+      name: "按配置运行",
+      space: SPACE,
+      topic: "检查项目",
+      distillOnRun: false,
+    })!;
+
+    const report = await taskEngine.runTask(task.id);
+
+    expect(report.status).toBe("succeeded");
+    expect(execution).toEqual({
+      permission: "write",
+      workdir: realpathSync(workdir),
+      skills: ["code-review", "github:yeet"],
+    });
+    taskEngine.close();
+  });
+
+  test("runTask does not start a writable provider without a valid Workdir", async () => {
+    let providerCalls = 0;
+    const taskEngine = new KnowledgeEngine({
+      dataDir: dir,
+      runProvider: async () => {
+        providerCalls += 1;
+        return "不应执行";
+      },
+    });
+    taskEngine.ensureSpace(SPACE);
+    const agent = taskEngine.agents.create({
+      name: "危险配置",
+      permission: "full",
+    });
+    taskEngine.registry.updateMeta(SPACE, { agentId: agent.id });
+    const task = taskEngine.tasks.create({
+      name: "拒绝运行",
+      space: SPACE,
+      topic: "没有工作目录",
+      distillOnRun: false,
+    })!;
+
+    const report = await taskEngine.runTask(task.id);
+
+    expect(report.status).toBe("failed");
+    expect(report.error).toContain("必须配置 Workdir");
+    expect(providerCalls).toBe(0);
     taskEngine.close();
   });
 

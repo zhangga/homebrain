@@ -93,6 +93,7 @@ export function spaceDetailView(
   rawCount: number,
   quarantineCount: number,
   meta?: SpaceMeta,
+  agents: Agent[] = [],
   flashMsg?: string,
 ): HtmlEscapedString | Promise<HtmlEscapedString> {
   const content = pages.filter((p) => !SINGLETON.has(p.slug));
@@ -111,6 +112,21 @@ export function spaceDetailView(
   const groupSettingsLink = isTeam
     ? html` · <a href="/integrations">群设置</a>`
     : "";
+  const personalAgentSettings = !isTeam
+    ? html`<div class="card">
+        <h2 style="margin-top:0">个人空间 Agent</h2>
+        <p class="muted">这里只显示 Visibility 为 Personal 的 Agent；留空时使用全局默认 Provider。</p>
+        <form method="post" action="/spaces/${enc}/agent" class="row">
+          <select name="agentId">
+            <option value="" ${!meta?.agentId ? "selected" : ""}>默认（全局）</option>
+            ${agents
+              .filter((agent) => agent.visibility === "Personal")
+              .map((agent) => html`<option value="${agent.id}" ${agent.id === meta?.agentId ? "selected" : ""}>${agent.name}</option>`)}
+          </select>
+          <button type="submit">保存 Agent</button>
+        </form>
+      </div>`
+    : "";
 
   return html`<h1>${meta ? spaceLabel(meta) : space}</h1>
     <p class="subtitle">${space}</p>
@@ -127,6 +143,7 @@ export function spaceDetailView(
         </form>
       </div>
     </div>
+    ${personalAgentSettings}
     <h2>知识页（${content.length}）</h2>
     <table>
       <tr><th>标题</th><th>类型</th><th>摘要</th></tr>
@@ -535,7 +552,6 @@ export function agentsView(
   const reasoningEffortVal = editing?.reasoningEffort ?? "";
   const providerVal = editing?.provider ?? providers.find((p) => p.available)?.id ?? "claude";
   const visVal = editing?.visibility ?? "Team";
-  // Reserved task-execution fields (not consumed by ask/dream yet).
   const workdirVal = editing?.workdir ?? "";
   const permVal = editing?.permission ?? "read-only";
   const skillsVal = (editing?.skills ?? []).join(", ");
@@ -641,7 +657,7 @@ export function agentsView(
     : "";
 
   return html`<h1>Agents</h1>
-    <p class="subtitle">配置回答用的智能体：Provider（执行后端）、人格（Instruction）与模型。可在 Integrations 里给每个群指定 Agent。</p>
+    <p class="subtitle">配置回答与任务执行使用的智能体。Visibility 限制可绑定的空间类型；任务权限不会影响普通问答、提炼或学习。</p>
     <div class="split">
       <div class="listcol">
         <a class="item ${newActive}" href="/agents"><div class="name">＋ 新建 Agent</div>
@@ -682,7 +698,7 @@ export function agentsView(
               </select>
             </div>
             <div class="field">
-              <label>Visibility</label>
+              <label>Visibility <span class="hint">限制 Agent 可绑定的空间类型</span></label>
               <select name="visibility">
                 ${["Team", "Personal"].map(
                   (v) => html`<option value="${v}" ${v === visVal ? "selected" : ""}>${v}</option>`,
@@ -690,7 +706,7 @@ export function agentsView(
               </select>
             </div>
             <div class="field">
-              <label>Permission <span class="hint">任务执行权限 · 尚未生效</span></label>
+              <label>Permission <span class="hint">仅影响任务运行</span></label>
               <select name="permission">
                 ${AGENT_PERMISSIONS.map(
                   (p) => html`<option value="${p}" ${p === permVal ? "selected" : ""}>${permLabels[p] ?? p}</option>`,
@@ -698,14 +714,15 @@ export function agentsView(
               </select>
             </div>
           </div>
-          <h2 style="font-size:14px;margin:18px 0 4px">任务执行 <span class="hint" style="font-weight:400">（为学习任务 / 待办等预留，暂未接入 —— 目前问答与提炼不使用以下字段）</span></h2>
+          <h2 style="font-size:14px;margin:18px 0 4px">任务执行 <span class="hint" style="font-weight:400">（仅影响任务运行；普通问答、提炼与学习始终使用无工具模式）</span></h2>
+          <p class="muted">只读模式禁止写入；可写模式以 Workdir 为工作根目录并启用 Provider 的工作区写入沙箱；完全访问会绕过 Provider 沙箱，必须谨慎使用。可写和完全访问都要求配置有效 Workdir。</p>
           <div class="grid2">
             <div class="field">
               <label>Workdir <span class="hint">CLI 执行任务的工作目录</span></label>
               <input type="text" name="workdir" value="${workdirVal}" placeholder="~/work/项目目录" />
             </div>
             <div class="field">
-              <label>Skills <span class="hint">逗号分隔，预留</span></label>
+              <label>Skills <span class="hint">逗号分隔；任务开始前强制加载</span></label>
               <input type="text" name="skills" value="${skillsVal}" placeholder="例如：code-review, web-search" />
             </div>
           </div>
@@ -1227,9 +1244,10 @@ export function integrationsView(
     agents,
     flashMsg,
   } = input;
+  const teamAgents = agents.filter((agent) => agent.visibility === "Team");
   const shownBotName = setup.botName ?? botName;
   const shownBotOpenId = setup.botOpenId ?? botOpenId;
-  const agentName = (id?: string) => agents.find((a) => a.id === id)?.name;
+  const agentName = (id?: string) => teamAgents.find((a) => a.id === id)?.name;
   const runtimeFailed = runtime?.consumers.some((consumer) => consumer.state === "failed") ?? false;
   const runtimeBadge = restartRequired
     ? html`<span class="badge degraded">需要重启</span>`
@@ -1252,7 +1270,7 @@ export function integrationsView(
         const mentionMode = (g.mentionsOnly ?? true) ? "@ mentions only" : "响应全部消息";
         const agentOpts = [
           html`<option value="" ${!g.agentId ? "selected" : ""}>默认（全局）</option>`,
-          ...agents.map(
+          ...teamAgents.map(
             (a) => html`<option value="${a.id}" ${a.id === g.agentId ? "selected" : ""}>${a.name}</option>`,
           ),
         ];

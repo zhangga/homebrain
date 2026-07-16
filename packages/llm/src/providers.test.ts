@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -95,6 +95,103 @@ describe("provider detection", () => {
       else process.env.HOMEAGENT_CODEX_BIN = canonical;
       if (legacy === undefined) delete process.env.HOMEBRAIN_CODEX_BIN;
       else process.env.HOMEBRAIN_CODEX_BIN = legacy;
+    }
+  });
+
+  test("task execution maps permission tiers to provider sandboxes", async () => {
+    const keys = [
+      "HOMEAGENT_CODEX_BIN",
+      "HOMEAGENT_CLAUDE_BIN",
+      "HOMEAGENT_TRAE_BIN",
+    ] as const;
+    const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+    try {
+      for (const key of keys) process.env[key] = "/bin/echo";
+
+      expect(
+        await runProvider("claude", {
+          prompt: "inspect",
+          execution: { permission: "read-only", skills: [] },
+        }, 500),
+      ).toBe(
+        "-p inspect --bare --tools Read,Glob,Grep --permission-mode dontAsk",
+      );
+      expect(
+        await runProvider("claude", {
+          prompt: "edit",
+          execution: { permission: "write", skills: [] },
+        }, 500),
+      ).toBe(
+        "-p edit --bare --tools Read,Glob,Grep,Edit,Write,NotebookEdit --permission-mode acceptEdits",
+      );
+      expect(
+        await runProvider("claude", {
+          prompt: "admin",
+          execution: { permission: "full", skills: [] },
+        }, 500),
+      ).toBe(
+        "-p admin --bare --tools default --dangerously-skip-permissions",
+      );
+      expect(
+        await runProvider("codex", {
+          prompt: "edit",
+          execution: { permission: "write", skills: [] },
+        }, 500),
+      ).toBe(
+        '-c cli_auth_credentials_store="keyring" -c approval_policy="never" exec --sandbox workspace-write --skip-git-repo-check edit',
+      );
+      expect(
+        await runProvider("trae-cli", {
+          prompt: "admin",
+          execution: { permission: "full", skills: [] },
+        }, 500),
+      ).toBe(
+        "exec --sandbox danger-full-access admin",
+      );
+      expect(
+        await runProvider("claude", {
+          prompt: "invalid",
+          execution: { permission: "root" as never, skills: [] },
+        }, 500),
+      ).toBe(
+        "-p invalid --bare --tools Read,Glob,Grep --permission-mode dontAsk",
+      );
+    } finally {
+      for (const key of keys) {
+        const value = previous[key];
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+  });
+
+  test("task execution starts in the configured workdir and injects required skills", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ha-provider-workdir-"));
+    const bin = join(dir, "provider");
+    const previous = process.env.HOMEAGENT_CODEX_BIN;
+    try {
+      writeFileSync(bin, '#!/bin/sh\nprintf "%s\\n" "$PWD"\nprintf "%s\\n" "$*"\n', "utf8");
+      chmodSync(bin, 0o755);
+      process.env.HOMEAGENT_CODEX_BIN = bin;
+
+      const output = await runProvider("codex", {
+        prompt: "review this project",
+        execution: {
+          permission: "read-only",
+          workdir: dir,
+          skills: ["code-review", "../escape", "code-review", "github:yeet"],
+        },
+      }, 500);
+
+      expect(output.split("\n")[0]).toBe(realpathSync(dir));
+      expect(output).toContain("$code-review");
+      expect(output).toContain("$github:yeet");
+      expect(output).not.toContain("../escape");
+      expect(output).toContain("--sandbox read-only");
+    } finally {
+      if (previous === undefined) delete process.env.HOMEAGENT_CODEX_BIN;
+      else process.env.HOMEAGENT_CODEX_BIN = previous;
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 

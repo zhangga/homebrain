@@ -94,6 +94,45 @@ export interface RunInput {
   system?: string;
   model?: string;
   reasoningEffort?: CodexReasoningEffort;
+  /** Present only for an explicit task execution, never ordinary Q&A/distillation. */
+  execution?: ProviderExecution;
+}
+
+export type ProviderExecutionPermission = "read-only" | "write" | "full";
+
+export interface ProviderExecution {
+  permission: ProviderExecutionPermission;
+  /** Validated, canonical working directory for the provider process. */
+  workdir?: string;
+  /** Safe skill identifiers that the provider must load before acting. */
+  skills: string[];
+}
+
+/** Keep skill references identifier-only before interpolating them into prompts. */
+export function normalizeProviderSkills(skills: readonly unknown[]): string[] {
+  const seen = new Set<string>();
+  return skills
+    .filter((skill): skill is string => typeof skill === "string")
+    .map((skill) => skill.trim())
+    .filter((skill) => /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,79}$/.test(skill))
+    .filter((skill) => {
+      if (seen.has(skill)) return false;
+      seen.add(skill);
+      return true;
+    });
+}
+
+function normalizeProviderPermission(permission: unknown): ProviderExecutionPermission {
+  if (permission === "write" || permission === "full") return permission;
+  return "read-only";
+}
+
+function sandboxForPermission(
+  permission: ProviderExecutionPermission | undefined,
+): "read-only" | "workspace-write" | "danger-full-access" {
+  if (permission === "write") return "workspace-write";
+  if (permission === "full") return "danger-full-access";
+  return "read-only";
 }
 
 export interface DetectedProvider {
@@ -120,11 +159,25 @@ const KNOWN: CliSpec[] = [
     envBin: "CLAUDE_BIN",
     versionArgs: ["--version"],
     models: ["sonnet", "opus", "haiku", "claude-sonnet-4-6", "claude-opus-4-8"],
-    buildRun: ({ prompt, system, model }) => {
+    buildRun: ({ prompt, system, model, execution }) => {
       // Lean/read-only mode: --bare skips hooks/CLAUDE.md/memory/keychain and
       // --allowedTools "" disables all tools. Measured ~2.6x faster and avoids
       // permission prompts — right for Q&A/distillation (no side effects).
-      const args = ["-p", prompt, "--bare", "--allowedTools", ""];
+      const args = ["-p", prompt, "--bare"];
+      if (!execution) {
+        args.push("--allowedTools", "");
+      } else if (execution.permission === "read-only") {
+        args.push("--tools", "Read,Glob,Grep", "--permission-mode", "dontAsk");
+      } else if (execution.permission === "write") {
+        args.push(
+          "--tools",
+          "Read,Glob,Grep,Edit,Write,NotebookEdit",
+          "--permission-mode",
+          "acceptEdits",
+        );
+      } else {
+        args.push("--tools", "default", "--dangerously-skip-permissions");
+      }
       if (model) args.push("--model", model);
       if (system) args.push("--append-system-prompt", system);
       return args;
@@ -146,11 +199,16 @@ const KNOWN: CliSpec[] = [
       "gpt-5.4-mini",
       "gpt-5.3-codex-spark",
     ],
-    buildRun: ({ prompt, model, reasoningEffort }) => {
-      // Read-only sandbox + never ask for approval: pure Q&A, no side effects.
+    buildRun: ({ prompt, model, reasoningEffort, execution }) => {
+      // Ordinary LLM work stays read-only; task execution maps the Agent's
+      // permission tier to Codex's sandbox without interactive approvals.
       const args: string[] = [];
       if (reasoningEffort) args.push("-c", `model_reasoning_effort="${reasoningEffort}"`);
-      args.push("exec", "--sandbox", "read-only", prompt);
+      if (execution) args.push("-c", 'approval_policy="never"');
+      const sandbox = sandboxForPermission(execution?.permission);
+      args.push("exec", "--sandbox", sandbox);
+      if (execution) args.push("--skip-git-repo-check");
+      args.push(prompt);
       if (model) args.push("-m", model);
       return args;
     },
@@ -162,10 +220,11 @@ const KNOWN: CliSpec[] = [
     envBin: "TRAE_BIN",
     versionArgs: ["--version"],
     models: ["openrouter-3o", "openrouter-sonnet", "openrouter-gpt-5"],
-    buildRun: ({ prompt, model }) => {
-      // Read-only sandbox + never prompt for approval (see `trae-cli exec --help`):
-      // pure Q&A, no file/command side effects.
-      const args = ["exec", "--sandbox", "read-only", prompt];
+    buildRun: ({ prompt, model, execution }) => {
+      // Ordinary LLM work stays read-only; task execution maps the Agent's
+      // permission tier to TRAE's sandbox.
+      const sandbox = sandboxForPermission(execution?.permission);
+      const args = ["exec", "--sandbox", sandbox, prompt];
       if (model) args.push("-m", model);
       return args;
     },
@@ -183,6 +242,7 @@ async function runCmd(
   args: string[],
   timeoutMs: number,
   signal?: AbortSignal,
+  cwd?: string,
 ): Promise<{
   code: number | null;
   stdout: string;
@@ -191,7 +251,12 @@ async function runCmd(
   aborted: boolean;
 }> {
   if (signal?.aborted) throw signal.reason ?? new Error("provider run cancelled");
-  const proc = Bun.spawn([bin, ...args], { stdout: "pipe", stderr: "pipe", stdin: "ignore" });
+  const proc = Bun.spawn([bin, ...args], {
+    cwd,
+    stdout: "pipe",
+    stderr: "pipe",
+    stdin: "ignore",
+  });
   let timedOut = false;
   let aborted = false;
   let terminating = false;
@@ -293,6 +358,38 @@ export function curatedProviderModels(): Record<string, string[]> {
   return map;
 }
 
+function injectExecutionSkills(id: ProviderId, input: RunInput): RunInput {
+  if (!input.execution) return input;
+  const skills = normalizeProviderSkills(
+    Array.isArray(input.execution.skills) ? input.execution.skills : [],
+  );
+  const prepared = {
+    ...input,
+    execution: {
+      permission: normalizeProviderPermission(input.execution.permission),
+      workdir: typeof input.execution.workdir === "string"
+        ? input.execution.workdir
+        : undefined,
+      skills,
+    },
+  };
+  if (skills.length === 0) return prepared;
+  const references = skills.map((skill) => {
+    if (id === "claude") return `/${skill}`;
+    if (id === "codex") return `$${skill}`;
+    return skill;
+  });
+  return {
+    ...prepared,
+    prompt: [
+      `必须先加载并遵循以下已配置技能：${references.join("、")}。`,
+      "如果任一技能不可用，停止执行并明确报告，不要假装已经使用。",
+      "",
+      prepared.prompt,
+    ].join("\n"),
+  };
+}
+
 /**
  * Run a one-shot completion via a local CLI provider. Returns trimmed stdout.
  * Throws on non-zero exit / timeout so callers can surface a bounded failure.
@@ -308,7 +405,8 @@ export async function runProvider(
 ): Promise<string> {
   const spec = specById.get(id);
   if (!spec) throw new Error(`unknown provider: ${id}`);
-  const args = spec.buildRun(input);
+  const prepared = injectExecutionSkills(id, input);
+  const args = spec.buildRun(prepared);
   if (id === "codex" && brandedEnv(process.env, "CODEX_BIN")?.trim()) {
     args.unshift(...MANAGED_CODEX_AUTH_ARGS);
   }
@@ -319,6 +417,7 @@ export async function runProvider(
     args,
     timeoutMs,
     signal,
+    prepared.execution?.workdir,
   );
   if (aborted) throw signal?.reason ?? new Error(`provider ${id} cancelled`);
   if (timedOut) throw new Error(`provider ${id} timed out after ${timeoutMs}ms`);

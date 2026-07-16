@@ -19,6 +19,7 @@ import type {
   CompleteOptions,
   CompleteResult,
   JSONOptions,
+  ProviderExecution,
   ProviderId,
 } from "@homeagent/llm";
 import { runProvider as realRunProvider } from "@homeagent/llm";
@@ -34,6 +35,7 @@ export type RunProviderFn = (
     system?: string;
     model?: string;
     reasoningEffort?: CodexReasoningEffort;
+    execution?: ProviderExecution;
   },
   timeoutMs?: number,
   signal?: AbortSignal,
@@ -91,6 +93,7 @@ export function makeCliClient(
   timeoutMs?: number,
   reasoningEffort?: CodexReasoningEffort,
   signal?: AbortSignal,
+  execution?: ProviderExecution,
 ): LlmClient {
   // The model is fixed at construction (the engine already resolved it from the
   // space's agent / global default). We deliberately IGNORE per-call opts.model:
@@ -110,7 +113,7 @@ export function makeCliClient(
       const prompt = withSystem(opts.system, base);
       const out = await run(
         provider,
-        { prompt, system: opts.system, model: cliModel, reasoningEffort },
+        { prompt, system: opts.system, model: cliModel, reasoningEffort, execution },
         timeoutMs,
         signal,
       );
@@ -122,7 +125,7 @@ export function makeCliClient(
       const prompt = withSystem(opts.system, base) + jsonInstruction(opts.schema);
       const out = await run(
         provider,
-        { prompt, system: opts.system, model: cliModel, reasoningEffort },
+        { prompt, system: opts.system, model: cliModel, reasoningEffort, execution },
         timeoutMs,
         signal,
       );

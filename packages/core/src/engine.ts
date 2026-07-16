@@ -43,6 +43,7 @@ import type {
   RetractionRequest,
   RetractionResult,
   SearchOptions,
+  SpaceMeta,
 } from "./types.ts";
 import {
   getQuarantineRecord,
@@ -50,7 +51,12 @@ import {
   removeQuarantineRecord,
 } from "./quarantine.ts";
 import { SpaceRegistry } from "./registry.ts";
-import { AgentStore, type Agent } from "./agents.ts";
+import {
+  AgentStore,
+  agentVisibleInSpace,
+  resolveAgentExecution,
+  type Agent,
+} from "./agents.ts";
 import { TaskStore, type Task } from "./tasks.ts";
 import {
   MAX_TASK_RUN_ERROR_CHARACTERS,
@@ -938,11 +944,29 @@ export class KnowledgeEngine implements Knowledge {
     });
   }
 
+  /**
+   * Update management metadata through the domain boundary. Agent assignments
+   * are validated here so every UI or integration path shares one rule.
+   */
+  updateSpaceMeta(
+    space: SpaceId,
+    patch: Partial<Pick<SpaceMeta, "name" | "agentId" | "replyInThread" | "mentionsOnly" | "chatId">>,
+  ): SpaceMeta | undefined {
+    if (patch.agentId) {
+      const agent = this.agents.get(patch.agentId);
+      if (!agent || !agentVisibleInSpace(agent, space)) {
+        throw new Error("Agent Visibility 与空间类型不匹配");
+      }
+    }
+    return this.registry.updateMeta(space, patch);
+  }
+
   /** The Agent assigned to a space, if any (management backend). */
   agentForSpace(space: SpaceId): Agent | undefined {
     const meta = this.registry.get(space);
     if (!meta?.agentId) return undefined;
-    return this.agents.get(meta.agentId);
+    const agent = this.agents.get(meta.agentId);
+    return agent && agentVisibleInSpace(agent, space) ? agent : undefined;
   }
 
   /**
@@ -955,6 +979,7 @@ export class KnowledgeEngine implements Knowledge {
     space: SpaceId,
     timeoutMs?: number,
     signal?: AbortSignal,
+    taskExecution = false,
   ): LlmClient {
     if (this.llm) return this.llm;
     const agent = this.agentForSpace(space);
@@ -981,6 +1006,7 @@ export class KnowledgeEngine implements Knowledge {
       timeoutMs,
       reasoningEffort,
       signal,
+      taskExecution ? resolveAgentExecution(agent) : undefined,
     );
   }
 
@@ -1898,6 +1924,7 @@ export class KnowledgeEngine implements Knowledge {
         task.space,
         run.timeoutMs ?? TASK_TIMEOUT_MS,
         controller.signal,
+        true,
       );
       const res = await awaitTaskRunStep(
         client.complete({

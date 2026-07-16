@@ -1,33 +1,50 @@
 /**
  * Agent store (management backend, mew-style Agents page). An "agent" is a
- * named persona + provider CLI + model the bot uses to answer (and, in future,
- * to execute tasks) in a space.
+ * named persona + provider CLI + model the bot uses to answer and execute
+ * research tasks in a space.
  *
- * Active fields (used today): name, instruction (persona), provider (local CLI),
- * model, Codex reasoning effort, visibility. Reserved fields for the upcoming task-execution platform
- * (learning tasks / todos / more) are stored and editable but NOT yet consumed
- * by ask/dream: workdir, permission, skills. They are surfaced in the UI marked
- * "尚未生效" so the data model is ready when the execution engine lands.
+ * Active fields: name, instruction (persona), provider (local CLI), model,
+ * Codex reasoning effort, visibility, and task-only execution controls.
+ * Workdir/permission/skills are consumed only by research tasks; ordinary
+ * ask/dream/learning calls deliberately remain in no-tool read-only mode.
  *
  * Agents are persisted to data/config/agents.json using the same whole-file
  * JSON pattern as the space registry (registry.ts). The markdown/DB knowledge is
  * unaffected; this is lightweight operational config.
  */
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
-import type { CodexReasoningEffort, ProviderId } from "@homeagent/llm";
+import type {
+  CodexReasoningEffort,
+  ProviderExecution,
+  ProviderExecutionPermission,
+  ProviderId,
+} from "@homeagent/llm";
 import {
   CODEX_REASONING_EFFORTS,
   DEFAULT_CLI_PROVIDER,
   isCliProvider,
   isCodexReasoningEffortSupported,
+  normalizeProviderSkills,
 } from "@homeagent/llm";
-import { canonicalModelId } from "@homeagent/shared";
+import { canonicalModelId, type SpaceId } from "@homeagent/shared";
 
-/** Task-execution permission tier (reserved; not enforced yet). */
-export type AgentPermission = "read-only" | "write" | "full";
+/** Task-execution permission tier enforced by each local CLI provider. */
+export type AgentPermission = ProviderExecutionPermission;
 export const AGENT_PERMISSIONS: AgentPermission[] = ["read-only", "write", "full"];
+export type AgentVisibility = "Team" | "Personal";
+export const AGENT_VISIBILITIES: AgentVisibility[] = ["Team", "Personal"];
+
+export type AgentExecution = ProviderExecution;
 
 /** A configurable answering persona. `model` empty => fall back to global default. */
 export interface Agent {
@@ -41,13 +58,13 @@ export interface Agent {
   reasoningEffort: CodexReasoningEffort | "";
   /** local agent CLI to run (claude / codex / trae-cli) */
   provider: ProviderId;
-  /** display-only: "Personal" | "Team" etc. */
-  visibility?: string;
-  /** RESERVED (task execution): working directory the CLI runs in. Unused today. */
+  /** Space type this Agent may be assigned to. */
+  visibility: AgentVisibility;
+  /** Task execution directory. Write/full permissions require it. */
   workdir?: string;
-  /** RESERVED (task execution): permission tier. Stored/displayed; not enforced yet. */
+  /** Task execution permission tier. */
   permission: AgentPermission;
-  /** RESERVED (task execution): skill/plugin names to attach. Unused today. */
+  /** Skill/plugin names the provider must load before a task begins. */
   skills: string[];
   createdAt: number;
   updatedAt: number;
@@ -79,9 +96,18 @@ function normalizeProvider(raw?: string): ProviderId {
 }
 
 /** Normalize a permission value; unknown/empty => read-only (safest default). */
-function normalizePermission(raw?: string): AgentPermission {
-  const v = raw?.trim() as AgentPermission | undefined;
+function normalizePermission(raw?: unknown): AgentPermission {
+  const v = typeof raw === "string"
+    ? raw.trim() as AgentPermission
+    : undefined;
   return v && AGENT_PERMISSIONS.includes(v) ? v : "read-only";
+}
+
+function normalizeVisibility(raw?: unknown): AgentVisibility {
+  const value = typeof raw === "string"
+    ? raw.trim() as AgentVisibility
+    : undefined;
+  return value && AGENT_VISIBILITIES.includes(value) ? value : "Team";
 }
 
 /** Normalize a Codex reasoning level; unknown/empty => inherit the CLI default. */
@@ -100,7 +126,32 @@ function normalizeModel(raw?: string): string {
 /** Parse skills from a string (comma/newline) or array into a clean string[]. */
 function normalizeSkills(raw?: string | string[]): string[] {
   const parts = Array.isArray(raw) ? raw : (raw ?? "").split(/[,\n]/);
-  return parts.map((s) => s.trim()).filter((s) => s.length > 0);
+  return normalizeProviderSkills(parts);
+}
+
+function resolveWorkdir(raw: string): string {
+  let expanded = raw;
+  if (raw === "~") expanded = homedir();
+  else if (raw.startsWith("~/")) expanded = join(homedir(), raw.slice(2));
+  else if (raw.startsWith("~")) throw new Error("Workdir 只支持当前用户的 ~/ 路径");
+  if (!existsSync(expanded)) throw new Error(`Workdir 不存在：${raw}`);
+  const resolved = realpathSync(expanded);
+  if (!statSync(resolved).isDirectory()) throw new Error(`Workdir 不是目录：${raw}`);
+  return resolved;
+}
+
+/** Resolve the task-only execution contract before a provider process starts. */
+export function resolveAgentExecution(agent?: Agent): AgentExecution {
+  const permission = agent?.permission ?? "read-only";
+  const workdir = agent?.workdir ? resolveWorkdir(agent.workdir) : undefined;
+  if (permission !== "read-only" && !workdir) {
+    throw new Error(`Agent 的 ${permission} 权限必须配置 Workdir`);
+  }
+  return {
+    permission,
+    workdir,
+    skills: [...(agent?.skills ?? [])],
+  };
 }
 
 export class AgentStore {
@@ -128,9 +179,16 @@ export class AgentStore {
             const model = normalizeModel(a.model);
             if (model !== a.model) migrated = true;
             a.model = model;
-            // Backfill reserved task-execution fields for older records.
-            if (a.permission === undefined) { a.permission = "read-only"; migrated = true; }
-            if (!Array.isArray(a.skills)) { a.skills = normalizeSkills(a.skills as unknown as string); migrated = true; }
+            const visibility = normalizeVisibility(a.visibility);
+            if (visibility !== a.visibility) migrated = true;
+            a.visibility = visibility;
+            // Backfill and constrain task-execution fields for older records.
+            const permission = normalizePermission(a.permission);
+            if (permission !== a.permission) migrated = true;
+            a.permission = permission;
+            const skills = normalizeSkills(a.skills as unknown as string | string[] | undefined);
+            if (JSON.stringify(skills) !== JSON.stringify(a.skills)) migrated = true;
+            a.skills = skills;
             const reasoningEffort = normalizeReasoningEffort(a.reasoningEffort, a.model);
             if (reasoningEffort !== a.reasoningEffort) migrated = true;
             a.reasoningEffort = reasoningEffort;
@@ -175,7 +233,7 @@ export class AgentStore {
       model,
       reasoningEffort: normalizeReasoningEffort(input.reasoningEffort, model),
       provider: normalizeProvider(input.provider),
-      visibility: input.visibility?.trim() || "Team",
+      visibility: normalizeVisibility(input.visibility),
       workdir: input.workdir?.trim() || undefined,
       permission: normalizePermission(input.permission),
       skills: normalizeSkills(input.skills),
@@ -200,7 +258,7 @@ export class AgentStore {
       agent.reasoningEffort = normalizeReasoningEffort(agent.reasoningEffort, agent.model);
     }
     if (input.provider !== undefined) agent.provider = normalizeProvider(input.provider);
-    if (input.visibility !== undefined) agent.visibility = input.visibility.trim() || agent.visibility;
+    if (input.visibility !== undefined) agent.visibility = normalizeVisibility(input.visibility);
     if (input.workdir !== undefined) agent.workdir = input.workdir.trim() || undefined;
     if (input.permission !== undefined) agent.permission = normalizePermission(input.permission);
     if (input.skills !== undefined) agent.skills = normalizeSkills(input.skills);
@@ -224,4 +282,8 @@ export class AgentStore {
     this.persist();
     return restored;
   }
+}
+
+export function agentVisibleInSpace(agent: Agent, space: SpaceId): boolean {
+  return agent.visibility === (space.startsWith("personal/") ? "Personal" : "Team");
 }

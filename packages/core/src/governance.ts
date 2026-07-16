@@ -11,9 +11,14 @@ import {
   CODEX_REASONING_EFFORTS,
   isCliProvider,
   isCodexReasoningEffortSupported,
+  normalizeProviderSkills,
 } from "@homeagent/llm";
 import type { Agent } from "./agents.ts";
-import { AGENT_PERMISSIONS } from "./agents.ts";
+import {
+  AGENT_PERMISSIONS,
+  AGENT_VISIBILITIES,
+  agentVisibleInSpace,
+} from "./agents.ts";
 import {
   DEFAULT_TASK_TIMEOUT_MINUTES,
   MAX_TASK_TIMEOUT_MINUTES,
@@ -258,12 +263,17 @@ function parseRaw(value: unknown, index: number, space: SpaceId): RawRecord {
   };
 }
 
-function parseAgent(value: unknown): Agent {
+function parseAgent(
+  value: unknown,
+  defaultVisibility: Agent["visibility"],
+): Agent {
   const item = record(value, "agent");
   const provider = text(item.provider, "agent.provider");
   if (!isCliProvider(provider)) throw new Error("agent.provider is invalid");
   const permission = text(item.permission, "agent.permission") as Agent["permission"];
   if (!AGENT_PERMISSIONS.includes(permission)) throw new Error("agent.permission is invalid");
+  const visibility = (optionalText(item.visibility, "agent.visibility") ?? defaultVisibility) as Agent["visibility"];
+  if (!AGENT_VISIBILITIES.includes(visibility)) throw new Error("agent.visibility is invalid");
   const model = text(item.model, "agent.model");
   return {
     id: nonemptyText(item.id, "agent.id"),
@@ -272,10 +282,10 @@ function parseAgent(value: unknown): Agent {
     model,
     reasoningEffort: reasoningEffort(item.reasoningEffort, model),
     provider,
-    visibility: optionalText(item.visibility, "agent.visibility"),
+    visibility,
     workdir: optionalText(item.workdir, "agent.workdir"),
     permission,
-    skills: strings(item.skills, "agent.skills"),
+    skills: normalizeProviderSkills(strings(item.skills, "agent.skills")),
     createdAt: finiteNumber(item.createdAt, "agent.createdAt"),
     updatedAt: finiteNumber(item.updatedAt, "agent.updatedAt"),
   };
@@ -859,9 +869,15 @@ export function parseSpaceArchive(value: unknown): SpaceArchive {
   ) {
     throw new Error("archive collections must be arrays");
   }
-  const agent = root.agent === undefined ? undefined : parseAgent(root.agent);
+  const defaultVisibility = space.id.startsWith("personal/") ? "Personal" : "Team";
+  const agent = root.agent === undefined
+    ? undefined
+    : parseAgent(root.agent, defaultVisibility);
   if (agent && agent.id !== space.agentId) {
     throw new Error("agent.id does not match space.agentId");
+  }
+  if (agent && !agentVisibleInSpace(agent, space.id)) {
+    throw new Error("agent.visibility does not match archive space");
   }
   const pages = root.pages.map(parsePage);
   const raw = root.raw.map((item, index) => parseRaw(item, index, id));

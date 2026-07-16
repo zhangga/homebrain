@@ -1219,16 +1219,18 @@ describe("management backend (read-write)", () => {
     expect(body).toContain("agent-model");
   });
 
-  test("agent editor shows reserved task-execution fields (marked not-yet-active)", async () => {
+  test("agent editor explains the active task-execution boundaries", async () => {
     const body = await (await app.request("/agents")).text();
     expect(body).toContain("Workdir");
     expect(body).toContain("Permission");
     expect(body).toContain("Skills");
-    expect(body).toContain("任务执行"); // the reserved-section heading
-    expect(body).toContain("暂未接入"); // honesty marker
+    expect(body).toContain("任务执行");
+    expect(body).toContain("仅影响任务运行");
+    expect(body).toContain("完全访问会绕过 Provider 沙箱");
+    expect(body).not.toContain("暂未接入");
   });
 
-  test("creating an agent persists reserved fields (workdir/permission/skills)", async () => {
+  test("creating an agent persists task execution fields (workdir/permission/skills)", async () => {
     const form = new URLSearchParams({
       name: "任务助手",
       provider: "claude",
@@ -1278,12 +1280,15 @@ describe("management backend (read-write)", () => {
 
   test("integrations lists team groups and binds per-group settings", async () => {
     const agent = engine.agents.create({ name: "群助手", model: "" });
+    engine.agents.create({ name: "仅个人可见助手", model: "", visibility: "Personal" });
     const listing = await (await app.request("/integrations")).text();
     expect(listing).toContain("飞书连接");
     expect(listing).toContain('action="/setup/feishu/automatic"');
     expect(listing).toContain("已连接群聊");
     expect(listing).toContain(SPACE); // the seeded team space
     expect(listing).toContain('action="/integrations/groups/team%2Foc_web"');
+    expect(listing).toContain("群助手");
+    expect(listing).not.toContain("仅个人可见助手");
     expect(listing).toContain("敏感权限已在创建时申请");
     expect(listing).toContain("若企业尚未批准");
 
@@ -1304,6 +1309,55 @@ describe("management backend (read-write)", () => {
     expect(meta?.agentId).toBe(agent.id);
     expect(meta?.replyInThread).toBe(true);
     expect(meta?.mentionsOnly).toBe(false);
+  });
+
+  test("a Personal Agent cannot be bound to a team integration", async () => {
+    const personal = engine.agents.create({
+      name: "个人助手",
+      visibility: "Personal",
+    });
+
+    const response = await app.request(`/integrations/groups/${encodeURIComponent(SPACE)}`, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        name: "研发群",
+        agentId: personal.id,
+      }).toString(),
+    });
+
+    expect([302, 303]).toContain(response.status);
+    expect(response.headers.get("location")).toContain("Agent%20Visibility");
+    expect(engine.registry.get(SPACE)?.agentId).toBeUndefined();
+  });
+
+  test("a personal space can bind only a Personal Agent from its detail page", async () => {
+    const personalSpace = "personal/ou_web" as const;
+    engine.ensureSpace(personalSpace);
+    const team = engine.agents.create({ name: "仅群可见助手", visibility: "Team" });
+    const personal = engine.agents.create({ name: "仅个人可见助手", visibility: "Personal" });
+
+    const detail = await (await app.request(`/spaces/${encodeURIComponent(personalSpace)}`)).text();
+    expect(detail).toContain("个人空间 Agent");
+    expect(detail).toContain(personal.name);
+    expect(detail).not.toContain(team.name);
+
+    const bound = await app.request(`/spaces/${encodeURIComponent(personalSpace)}/agent`, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ agentId: personal.id }).toString(),
+    });
+    expect([302, 303]).toContain(bound.status);
+    expect(engine.agentForSpace(personalSpace)?.id).toBe(personal.id);
+
+    const rejected = await app.request(`/spaces/${encodeURIComponent(personalSpace)}/agent`, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ agentId: team.id }).toString(),
+    });
+    expect([302, 303]).toContain(rejected.status);
+    expect(rejected.headers.get("location")).toContain("Visibility");
+    expect(engine.agentForSpace(personalSpace)?.id).toBe(personal.id);
   });
 
   test("integration page makes official one-click creation the primary bot action", async () => {

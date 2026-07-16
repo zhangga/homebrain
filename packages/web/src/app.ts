@@ -772,11 +772,25 @@ export function createWebApp(opts: WebOptions): Hono {
           rawCount,
           quarantineCount,
           meta,
+          engine.agents.list(),
           c.req.query("ok") ?? undefined,
         ),
         "spaces",
       ),
     );
+  });
+
+  app.post("/spaces/:space/agent", async (c) => {
+    const space = parseSpace(c.req.param("space"));
+    if (!space || !engine.registry.has(space)) return c.notFound();
+    const body = await c.req.parseBody();
+    const agentId = str(body, "agentId");
+    try {
+      engine.updateSpaceMeta(space, { agentId });
+    } catch {
+      return c.redirect(`/spaces/${encodeURIComponent(space)}?ok=${encodeURIComponent("保存失败：Agent Visibility 与空间类型不匹配")}`);
+    }
+    return c.redirect(`/spaces/${encodeURIComponent(space)}?ok=${encodeURIComponent("已保存空间 Agent")}`);
   });
 
   app.get("/spaces/:space/governance", async (c) => {
@@ -1555,12 +1569,17 @@ export function createWebApp(opts: WebOptions): Hono {
     const space = parseSpace(c.req.param("space"));
     if (!space || !engine.registry.has(space)) return c.notFound();
     const body = await c.req.parseBody();
-    engine.registry.updateMeta(space, {
-      name: str(body, "name"),
-      agentId: str(body, "agentId"),
-      replyInThread: checkbox(body, "replyInThread"),
-      mentionsOnly: checkbox(body, "mentionsOnly"),
-    });
+    const agentId = str(body, "agentId");
+    try {
+      engine.updateSpaceMeta(space, {
+        name: str(body, "name"),
+        agentId,
+        replyInThread: checkbox(body, "replyInThread"),
+        mentionsOnly: checkbox(body, "mentionsOnly"),
+      });
+    } catch {
+      return c.redirect(`/integrations?ok=${encodeURIComponent("保存失败：Agent Visibility 与空间类型不匹配")}`);
+    }
     return c.redirect(`/integrations?ok=${encodeURIComponent("已保存群设置")}`);
   });
 
