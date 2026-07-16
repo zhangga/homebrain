@@ -94,8 +94,17 @@ export interface SpaceMeta {
    */
   replyInThread?: boolean;
   /**
-   * Whether the bot only responds when @-mentioned in a group ("@ mentions
-   * only" in mew). Defaults to true when unset. No effect on p2p.
+   * Legacy group reply switch. `false` without a participationLevel keeps the
+   * former respond-to-every-message behavior for backward compatibility.
    */
   mentionsOnly?: boolean;
+  /** How readily the bot proactively joins unmentioned group conversation. */
+  participationLevel?: GroupParticipationLevel;
 }
+
+export type GroupParticipationLevel = "reserved" | "balanced" | "active";
+
+export type SpaceMetaPatch = Partial<Pick<
+  SpaceMeta,
+  "name" | "agentId" | "replyInThread" | "mentionsOnly" | "participationLevel" | "chatId"
+>>;

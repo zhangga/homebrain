@@ -1,4 +1,5 @@
 export * from "./types.ts";
+export * from "./group-participation.ts";
 export * from "./knowledge.ts";
 export * from "./engine.ts";
 export * from "./registry.ts";

@@ -10,7 +10,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, rmSync
 import { join } from "node:path";
 import type { SpaceId } from "@homeagent/shared";
 import { isSpaceId, spaceToDir } from "@homeagent/shared";
-import type { SpaceMeta } from "./types.ts";
+import type { SpaceMeta, SpaceMetaPatch } from "./types.ts";
 import { SpaceStore } from "./space.ts";
 
 interface RegistryFile {
@@ -134,7 +134,7 @@ export class SpaceRegistry {
    */
   updateMeta(
     space: SpaceId,
-    patch: Partial<Pick<SpaceMeta, "name" | "agentId" | "replyInThread" | "mentionsOnly" | "chatId">>,
+    patch: SpaceMetaPatch,
   ): SpaceMeta | undefined {
     const m = this.meta.get(space);
     if (!m) return undefined;
@@ -142,6 +142,7 @@ export class SpaceRegistry {
     if (patch.agentId !== undefined) m.agentId = patch.agentId || undefined;
     if (patch.replyInThread !== undefined) m.replyInThread = patch.replyInThread;
     if (patch.mentionsOnly !== undefined) m.mentionsOnly = patch.mentionsOnly;
+    if (patch.participationLevel !== undefined) m.participationLevel = patch.participationLevel;
     if (patch.chatId !== undefined) m.chatId = patch.chatId;
     this.persist();
     return m;

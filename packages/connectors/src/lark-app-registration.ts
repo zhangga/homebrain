@@ -8,7 +8,8 @@ import {
  *
  * Keep this list aligned with FeishuConnector commands. The sensitive
  * im:message.group_msg scope is required for resolving quoted group messages
- * and downloading group-message attachments, not only for mentionsOnly=false.
+ * and downloading group-message attachments, as well as activity-level
+ * participation in messages that do not mention the bot.
  */
 export const HOMEAGENT_FEISHU_ADDONS: AppAddons = {
   preset: true,

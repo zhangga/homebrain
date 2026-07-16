@@ -1,4 +1,4 @@
-import type { LlmClient } from "@homeagent/core";
+import type { GroupParticipationLevel, LlmClient } from "@homeagent/core";
 import { config, logger } from "@homeagent/shared";
 import { prefilterQuestion } from "./intent.ts";
 
@@ -8,32 +8,57 @@ export interface GroupParticipationDecision {
   respond: boolean;
   reason: string;
   source: "model" | "guard" | "fallback";
+  participationScore: number;
+  disruptionRisk: number;
 }
 
 export type GroupParticipationClientResolver = () => LlmClient;
 
+const PARTICIPATION_POLICIES = {
+  reserved: { minimumScore: 85, maximumRisk: 25 },
+  balanced: { minimumScore: 60, maximumRisk: 50 },
+  active: { minimumScore: 35, maximumRisk: 70 },
+} as const satisfies Record<
+  GroupParticipationLevel,
+  { minimumScore: number; maximumRisk: number }
+>;
+
 const PARTICIPATION_SCHEMA = {
   type: "object",
   properties: {
-    respond: {
-      type: "boolean",
-      description: "whether the assistant should proactively answer this unmentioned group message",
+    participationScore: {
+      type: "integer",
+      minimum: 0,
+      maximum: 100,
+      description: "how valuable it would be for the assistant to participate now",
     },
-    reason: {
-      type: "string",
-      description: "a brief reason for the decision",
+    disruptionRisk: {
+      type: "integer",
+      minimum: 0,
+      maximum: 100,
+      description: "how likely an unsolicited assistant reply is to interrupt or annoy the group",
     },
+    reason: { type: "string", description: "a brief reason for the scores" },
   },
-  required: ["respond", "reason"],
+  required: ["participationScore", "disruptionRisk", "reason"],
 } as const;
 
-function validate(raw: unknown): { respond: boolean; reason: string } {
-  const value = raw as Record<string, unknown>;
-  if (typeof value?.respond !== "boolean") {
-    throw new Error("group participation decision missing respond");
+function score(value: unknown, field: string): number {
+  if (!Number.isInteger(value) || Number(value) < 0 || Number(value) > 100) {
+    throw new Error(`group participation decision has invalid ${field}`);
   }
+  return Number(value);
+}
+
+function validate(raw: unknown): {
+  participationScore: number;
+  disruptionRisk: number;
+  reason: string;
+} {
+  const value = raw as Record<string, unknown>;
   return {
-    respond: value.respond,
+    participationScore: score(value?.participationScore, "participationScore"),
+    disruptionRisk: score(value?.disruptionRisk, "disruptionRisk"),
     reason: typeof value.reason === "string" ? value.reason.trim() : "",
   };
 }
@@ -45,14 +70,19 @@ function addressedToAnotherMember(text: string): boolean {
 export async function decideGroupParticipation(
   resolveClient: GroupParticipationClientResolver,
   text: string,
+  level: GroupParticipationLevel,
 ): Promise<GroupParticipationDecision> {
   if (addressedToAnotherMember(text)) {
     return {
       respond: false,
       reason: "消息明确 @ 了其他群成员",
       source: "guard",
+      participationScore: 0,
+      disruptionRisk: 100,
     };
   }
+
+  const policy = PARTICIPATION_POLICIES[level];
 
   try {
     const client = resolveClient();
@@ -60,9 +90,11 @@ export async function decideGroupParticipation(
       model: config().modelFast,
       system: [
         "你负责判断一个没有 @ 机器人的群聊消息，机器人是否应该主动参与。",
-        "只有当消息是在向整个群提出真实的信息、解释、建议或解决问题的请求，而且机器人直接回答会有帮助时，respond 才为 true。",
-        "以下情况必须为 false：普通陈述、闲聊、感叹、抱怨、自言自语、反问、引用别人的问题、明显是在问某个被 @ 或点名的人、以及需要明确叫机器人执行的管理命令。",
-        "拿不准时返回 false，避免打扰群聊。",
+        "分别给出参与价值 participationScore 和打扰风险 disruptionRisk，范围都是 0 到 100。",
+        "参与价值参考：明确的群体提问或求助通常为 90-100；有价值的建议请求、问题讨论或重要补充为 60-89；可选观点、风险提示或澄清为 35-59；普通聊天为 0-34。",
+        "明确提问、求建议、需要解释或解决问题通常参与价值高；有帮助的风险提示、事实补充或澄清也可以有中等价值。",
+        "普通闲聊、感叹、抱怨、自言自语、反问、引用问题、私人对话及需要明确叫机器人执行的管理命令，参与价值应低或打扰风险应高。",
+        "评分应独立于机器人当前活跃度，拿不准时提高打扰风险。",
       ].join("\n"),
       prompt: `判断下面这条群消息是否值得机器人主动回答：\n"""\n${text.trim()}\n"""`,
       schema: PARTICIPATION_SCHEMA as unknown as Record<string, unknown>,
@@ -70,10 +102,15 @@ export async function decideGroupParticipation(
       maxTokens: 128,
       purpose: "classify",
     });
+    const respond =
+      value.participationScore >= policy.minimumScore
+      && value.disruptionRisk <= policy.maximumRisk;
     return {
-      respond: value.respond,
+      respond,
       reason: value.reason,
       source: "model",
+      participationScore: value.participationScore,
+      disruptionRisk: value.disruptionRisk,
     };
   } catch (err) {
     const respond = prefilterQuestion(text);
@@ -85,6 +122,8 @@ export async function decideGroupParticipation(
       respond,
       reason: respond ? "明显疑问句的本地回退" : "无法可靠判断为群体提问",
       source: "fallback",
+      participationScore: respond ? 100 : 0,
+      disruptionRisk: respond ? 0 : 100,
     };
   }
 }

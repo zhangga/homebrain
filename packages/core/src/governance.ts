@@ -42,6 +42,7 @@ import type {
 } from "./learning.ts";
 import { MAX_LEARNING_SOURCE_CHARACTERS } from "./learning.ts";
 import type { SpaceMeta } from "./types.ts";
+import { isGroupParticipationLevel } from "./group-participation.ts";
 import {
   parseKnowledgeGovernanceAuditRecord,
   type KnowledgeGovernanceAuditRecord,
@@ -842,6 +843,13 @@ export function parseSpaceArchive(value: unknown): SpaceArchive {
   const meta = record(root.space, "space");
   const id = text(meta.id, "space.id");
   if (!isSpaceId(id)) throw new Error("space.id is invalid");
+  const participationLevel = optionalText(
+    meta.participationLevel,
+    "space.participationLevel",
+  );
+  if (participationLevel !== undefined && !isGroupParticipationLevel(participationLevel)) {
+    throw new Error("space.participationLevel is invalid");
+  }
   const space: SpaceMeta = {
     id,
     createdAt: finiteNumber(meta.createdAt, "space.createdAt"),
@@ -851,6 +859,7 @@ export function parseSpaceArchive(value: unknown): SpaceArchive {
     agentId: optionalText(meta.agentId, "space.agentId"),
     replyInThread: meta.replyInThread === undefined ? undefined : boolean(meta.replyInThread, "space.replyInThread"),
     mentionsOnly: meta.mentionsOnly === undefined ? undefined : boolean(meta.mentionsOnly, "space.mentionsOnly"),
+    participationLevel,
   };
   if (
     !Array.isArray(root.pages)

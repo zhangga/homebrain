@@ -31,6 +31,7 @@ import type {
 } from "@homeagent/core";
 import {
   AGENT_PERMISSIONS,
+  resolveGroupParticipationLevel,
   MAX_TASK_NOTIFICATION_ATTEMPTS,
   TASK_CADENCES,
   learningProgress,
@@ -46,6 +47,11 @@ import {
 import { safeLarkVerificationUrl } from "./verification-url.ts";
 
 const SINGLETON = new Set(["index", "overview", "log", "glossary"]);
+const GROUP_PARTICIPATION_LABELS = {
+  reserved: "稳重",
+  balanced: "均衡",
+  active: "积极",
+} as const;
 
 function fmtTime(ms?: number): string {
   if (!ms) return "—";
@@ -1267,7 +1273,13 @@ export function integrationsView(
         const enc = encodeURIComponent(g.id);
         const assigned = agentName(g.agentId) ?? "默认";
         const replyMode = (g.replyInThread ?? true) ? "Topic reply" : "普通回复";
-        const mentionMode = (g.mentionsOnly ?? true) ? "智能应答" : "响应全部消息";
+        const legacyRespondAll = g.participationLevel === undefined && g.mentionsOnly === false;
+        const participationLevel = legacyRespondAll
+          ? "active"
+          : resolveGroupParticipationLevel(g);
+        const participationMode = legacyRespondAll
+          ? "响应全部（旧配置）"
+          : `活跃度：${GROUP_PARTICIPATION_LABELS[participationLevel]}`;
         const agentOpts = [
           html`<option value="" ${!g.agentId ? "selected" : ""}>默认（全局）</option>`,
           ...teamAgents.map(
@@ -1278,7 +1290,7 @@ export function integrationsView(
           <div class="row">
             <div>
               <div style="font-weight:600">${spaceLabel(g)}</div>
-              <div class="muted">${assigned} · ${replyMode} · ${mentionMode}</div>
+              <div class="muted">${assigned} · ${replyMode} · ${participationMode}</div>
               <div class="muted">Bot ${g.chatId ?? g.id}</div>
             </div>
           </div>
@@ -1297,9 +1309,14 @@ export function integrationsView(
               <div><strong>Topic reply</strong><div class="hint">在话题/分组内回复（飞书 thread）</div></div>
               <label class="switch"><input type="checkbox" name="replyInThread" ${(g.replyInThread ?? true) ? "checked" : ""} /><span class="slider"></span></label>
             </div>
-            <div class="toggle-row">
-              <div><strong>智能应答未 @ 提问</strong><div class="hint">开启时，被 @ 或模型判断为向群提问才回答；关闭后每条群消息都回答。敏感权限已在创建时申请，若企业尚未批准，则只能收到 @ 消息。</div></div>
-              <label class="switch"><input type="checkbox" name="mentionsOnly" ${(g.mentionsOnly ?? true) ? "checked" : ""} /><span class="slider"></span></label>
+            <div class="field">
+              <label>机器人活跃度</label>
+              <select name="participationLevel">
+                <option value="reserved" ${participationLevel === "reserved" ? "selected" : ""}>稳重 — 只参与明确提问和高价值请求</option>
+                <option value="balanced" ${participationLevel === "balanced" ? "selected" : ""}>均衡 — 也参与求建议、问题讨论和重要补充</option>
+                <option value="active" ${participationLevel === "active" ? "selected" : ""}>积极 — 更愿意补充观点、提示风险和追问</option>
+              </select>
+              <div class="hint">活跃度越高，机器人越可能回答未 @ 的群消息；明确 @ 其他成员时仍不插话。敏感权限已在创建时申请，若企业尚未批准，则只能收到 @ 消息。</div>
             </div>
             <div class="actions">
               <button type="submit">保存群设置</button>

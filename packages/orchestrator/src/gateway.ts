@@ -11,9 +11,9 @@
  * as knowledge. The model-backed participation decision keeps ordinary chatter
  * quiet while allowing useful answers to open group questions.
  *
- * The legacy `mentionsOnly` setting remains persisted for compatibility:
- * `true` now means smart participation, while `false` responds to every group
- * message. Defaults to smart participation.
+ * The legacy `mentionsOnly` setting remains persisted for compatibility.
+ * A stored `false` without a newer participation-level setting still responds
+ * to every group message; newly saved groups use model-backed activity levels.
  */
 import type { InboundMessage } from "@homeagent/connectors";
 
@@ -26,7 +26,7 @@ export interface GatewayDecision {
 }
 
 export interface GateOptions {
-  /** group: smart participation when true; respond to every message when false. */
+  /** Static compatibility gate: false responds to every group message. */
   mentionsOnly?: boolean;
 }
 

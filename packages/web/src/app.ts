@@ -35,7 +35,9 @@ import {
   type DetectedProvider,
 } from "@homeagent/llm";
 import {
+  isGroupParticipationLevel,
   TaskAlreadyRunningError,
+  type GroupParticipationLevel,
   type KnowledgeEngine,
   type TaskRun,
 } from "@homeagent/core";
@@ -111,6 +113,11 @@ function checkbox(body: Record<string, unknown>, name: string): boolean {
 function str(body: Record<string, unknown>, name: string): string {
   const v = body[name];
   return typeof v === "string" ? v : "";
+}
+
+function parseGroupParticipationLevel(body: Record<string, unknown>): GroupParticipationLevel {
+  const value = str(body, "participationLevel");
+  return isGroupParticipationLevel(value) ? value : "balanced";
 }
 
 function equalSecret(candidate: string, expected: string): boolean {
@@ -1575,7 +1582,9 @@ export function createWebApp(opts: WebOptions): Hono {
         name: str(body, "name"),
         agentId,
         replyInThread: checkbox(body, "replyInThread"),
-        mentionsOnly: checkbox(body, "mentionsOnly"),
+        participationLevel: parseGroupParticipationLevel(body),
+        // A saved three-level policy supersedes the legacy respond-all switch.
+        mentionsOnly: true,
       });
     } catch {
       return c.redirect(`/integrations?ok=${encodeURIComponent("保存失败：Agent Visibility 与空间类型不匹配")}`);

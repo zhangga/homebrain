@@ -21,7 +21,12 @@
  */
 import type { SpaceId } from "@homeagent/shared";
 import { Serializer, logger } from "@homeagent/shared";
-import type { KnowledgeEngine, LlmClient } from "@homeagent/core";
+import {
+  resolveGroupParticipationLevel,
+  usesLegacyRespondAll,
+  type KnowledgeEngine,
+  type LlmClient,
+} from "@homeagent/core";
 import type {
   Connector,
   DownloadedAttachment,
@@ -263,8 +268,11 @@ export class Orchestrator {
       return this.withThinking(msg, () => this.send(msg, pendingReminderReply));
     }
 
-    let decision = gate(msg, { mentionsOnly: meta?.mentionsOnly });
-    let proactiveQuestion = false;
+    const participationLevel = resolveGroupParticipationLevel(meta);
+    let decision = gate(msg, {
+      mentionsOnly: usesLegacyRespondAll(meta) ? false : true,
+    });
+    let proactiveParticipation = false;
 
     // Retraction is a deterministic control command. Handle it before capture
     // so the command itself never becomes knowledge.
@@ -319,13 +327,19 @@ export class Orchestrator {
           GROUP_PARTICIPATION_TIMEOUT_MS,
         ),
         msg.text,
+        participationLevel,
       );
       if (participation.respond) {
-        proactiveQuestion = true;
+        proactiveParticipation = true;
         decision = {
           ...decision,
           respond: true,
-          reason: `proactive group answer (${participation.source}): ${participation.reason}`,
+          reason: [
+            `proactive group participation (${participation.source}, ${participationLevel})`,
+            `score=${participation.participationScore}`,
+            `risk=${participation.disruptionRisk}`,
+            participation.reason,
+          ].join(": "),
         };
       }
     }
@@ -413,7 +427,9 @@ export class Orchestrator {
     return this.withThinking(msg, async () => {
       await captureInputs();
       let intent: Intent;
-      if (proactiveQuestion) {
+      if (proactiveParticipation) {
+        // Proactive supplements and clarifications use the same grounded answer
+        // path as direct questions.
         intent = "question";
       } else {
         try {

@@ -36,10 +36,11 @@ function makeFake(): FakeLlm {
       if (/记住|记下/.test(prompt)) return { intent: "remember" };
       return { intent: "chitchat" };
     }
-    if ("respond" in props) {
+    if ("participationScore" in props) {
       const prompt = String(call.prompt ?? "");
       return {
-        respond: /谁负责后端服务/.test(prompt) && !/@Alice/.test(prompt),
+        participationScore: /谁负责后端服务/.test(prompt) && !/@Alice/.test(prompt) ? 95 : 10,
+        disruptionRisk: /谁负责后端服务/.test(prompt) && !/@Alice/.test(prompt) ? 10 : 80,
         reason: "测试中的群聊参与判断",
       };
     }
@@ -177,7 +178,11 @@ describe("orchestrator trunk (cli connector, no feishu)", () => {
       async completeJSON(opts: JSONOptions<unknown>) {
         markClassificationStarted();
         await classificationGate;
-        const raw = { respond: false, reason: "普通陈述" };
+        const raw = {
+          participationScore: 10,
+          disruptionRisk: 80,
+          reason: "普通陈述",
+        };
         return {
           value: opts.validate ? opts.validate(raw) : raw,
           result: {
@@ -228,6 +233,54 @@ describe("orchestrator trunk (cli connector, no feishu)", () => {
     expect(engine.registry.store("team/oc_team").index().countRaw(true)).toBe(1);
   });
 
+  test("group participation level progressively answers more optional discussion", async () => {
+    engine.ask = async (_spaces, text) => ({
+      answer: `参与：${text}`,
+      source: "general",
+      citations: [],
+    });
+    const scoredParticipation = new FakeLlm().onJSON((opts) => {
+      const prompt = String(opts.prompt);
+      if (prompt.includes("失败重试策略")) {
+        return {
+          participationScore: 70,
+          disruptionRisk: 30,
+          reason: "对讨论有明确补充价值",
+        };
+      }
+      if (prompt.includes("加一点监控")) {
+        return {
+          participationScore: 45,
+          disruptionRisk: 40,
+          reason: "属于可选的轻量补充",
+        };
+      }
+      return {
+        participationScore: 10,
+        disruptionRisk: 80,
+        reason: "普通闲聊",
+      };
+    });
+    orch = new Orchestrator({ engine, connector, llm: scoredParticipation });
+    engine.ensureSpace("team/oc_team");
+
+    await orch.start();
+    await connector.sendGroup("这个方案值得补充失败重试策略", false);
+    expect(connector.sent).toHaveLength(1); // defaults to balanced
+
+    engine.registry.updateMeta("team/oc_team", { participationLevel: "reserved" });
+    await connector.sendGroup("这个方案值得补充失败重试策略", false);
+    expect(connector.sent).toHaveLength(1);
+
+    engine.registry.updateMeta("team/oc_team", { participationLevel: "balanced" });
+    await connector.sendGroup("这个方案值得补充失败重试策略", false);
+    expect(connector.sent).toHaveLength(2);
+
+    engine.registry.updateMeta("team/oc_team", { participationLevel: "active" });
+    await connector.sendGroup("这个改动看起来还可以加一点监控", false);
+    expect(connector.sent).toHaveLength(3);
+  });
+
   test("a question addressed to another group member stays silent even if the model says respond", async () => {
     let asked = 0;
     engine.ask = async () => {
@@ -235,10 +288,13 @@ describe("orchestrator trunk (cli connector, no feishu)", () => {
       return { answer: "不应发送", source: "general", citations: [] };
     };
     const overEager = new FakeLlm().onJSON(() => ({
-      respond: true,
+      participationScore: 100,
+      disruptionRisk: 0,
       reason: "错误地认为应该参与",
     }));
     orch = new Orchestrator({ engine, connector, llm: overEager });
+    engine.ensureSpace("team/oc_team");
+    engine.registry.updateMeta("team/oc_team", { participationLevel: "active" });
 
     await orch.start();
     await connector.sendGroup("@Alice 谁负责后端服务？", false);
@@ -1163,7 +1219,11 @@ describe("orchestrator trunk (cli connector, no feishu)", () => {
       runProvider: async (_id, input, timeoutMs) => {
         if (/群消息是否值得机器人主动回答/.test(input.prompt)) {
           participationTimeout = timeoutMs;
-          return JSON.stringify({ respond: false, reason: "普通陈述" });
+          return JSON.stringify({
+            participationScore: 10,
+            disruptionRisk: 80,
+            reason: "普通陈述",
+          });
         }
         throw new Error("unexpected provider call");
       },

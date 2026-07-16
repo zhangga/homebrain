@@ -1289,15 +1289,18 @@ describe("management backend (read-write)", () => {
     expect(listing).toContain('action="/integrations/groups/team%2Foc_web"');
     expect(listing).toContain("群助手");
     expect(listing).not.toContain("仅个人可见助手");
-    expect(listing).toContain("智能应答未 @ 提问");
-    expect(listing).toContain("模型判断为向群提问");
+    expect(listing).toContain('name="participationLevel"');
+    expect(listing).toContain("稳重");
+    expect(listing).toContain("均衡");
+    expect(listing).toContain("积极");
+    expect(listing).toContain("活跃度越高");
     expect(listing).toContain("敏感权限已在创建时申请");
     expect(listing).toContain("若企业尚未批准");
 
     const form = new URLSearchParams({
       name: "研发群",
       agentId: agent.id,
-      // mentionsOnly checkbox omitted => unchecked => respond to all
+      participationLevel: "active",
     });
     form.append("replyInThread", "on");
     const res = await app.request(`/integrations/groups/${encodeURIComponent(SPACE)}`, {
@@ -1310,7 +1313,8 @@ describe("management backend (read-write)", () => {
     expect(meta?.name).toBe("研发群");
     expect(meta?.agentId).toBe(agent.id);
     expect(meta?.replyInThread).toBe(true);
-    expect(meta?.mentionsOnly).toBe(false);
+    expect(meta?.participationLevel).toBe("active");
+    expect(meta?.mentionsOnly).toBe(true);
   });
 
   test("a Personal Agent cannot be bound to a team integration", async () => {

@@ -31,7 +31,11 @@ describe("space data governance", () => {
       instruction: "只依据空间知识回答",
       provider: "codex",
     });
-    source.registry.updateMeta(SPACE, { name: "治理群", agentId: agent.id });
+    source.registry.updateMeta(SPACE, {
+      name: "治理群",
+      agentId: agent.id,
+      participationLevel: "active",
+    });
     await source.updateSpaceRules(
       SPACE,
       { purpose: "# 治理目标\n\n保留可验证的团队事实。" },
@@ -114,7 +118,12 @@ describe("space data governance", () => {
       expect.objectContaining({
         format: "homeagent.space",
         version: 6,
-        space: expect.objectContaining({ id: SPACE, name: "治理群", agentId: agent.id }),
+        space: expect.objectContaining({
+          id: SPACE,
+          name: "治理群",
+          agentId: agent.id,
+          participationLevel: "active",
+        }),
         agent: expect.objectContaining({ id: agent.id, name: "治理助手" }),
         pages: [expect.objectContaining({ slug: page.slug, title: page.title })],
         raw: expect.arrayContaining([

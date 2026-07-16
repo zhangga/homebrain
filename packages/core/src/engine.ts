@@ -44,6 +44,7 @@ import type {
   RetractionResult,
   SearchOptions,
   SpaceMeta,
+  SpaceMetaPatch,
 } from "./types.ts";
 import {
   getQuarantineRecord,
@@ -950,7 +951,7 @@ export class KnowledgeEngine implements Knowledge {
    */
   updateSpaceMeta(
     space: SpaceId,
-    patch: Partial<Pick<SpaceMeta, "name" | "agentId" | "replyInThread" | "mentionsOnly" | "chatId">>,
+    patch: SpaceMetaPatch,
   ): SpaceMeta | undefined {
     if (patch.agentId) {
       const agent = this.agents.get(patch.agentId);
