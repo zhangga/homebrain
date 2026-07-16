@@ -670,7 +670,7 @@ describe("FeishuConnector outbound", () => {
     });
 
     expect((await connector.resolveReplyTarget("om_reply"))?.text).toBe(
-      "今晚的晚餐\n做了三菜一汤\n【图片：当前只获取到图片引用，尚无可分析的视觉内容】",
+      "今晚的晚餐\n做了三菜一汤\n【图片】",
     );
   });
 

@@ -18,6 +18,7 @@
  */
 import { brandedEnv, logger } from "@homeagent/shared";
 import { MANAGED_CODEX_AUTH_ARGS } from "./provider-setup.ts";
+import type { ImageInput } from "./gateway.ts";
 
 const log = logger.child("providers");
 
@@ -94,8 +95,17 @@ export interface RunInput {
   system?: string;
   model?: string;
   reasoningEffort?: CodexReasoningEffort;
+  /** local images attached to the current user turn */
+  images?: ImageInput[];
   /** Present only for an explicit task execution, never ordinary Q&A/distillation. */
   execution?: ProviderExecution;
+}
+
+export class UnsupportedImageInputError extends Error {
+  constructor(readonly provider: ProviderId) {
+    super(`provider ${provider} does not support image inputs`);
+    this.name = "UnsupportedImageInputError";
+  }
 }
 
 export type ProviderExecutionPermission = "read-only" | "write" | "full";
@@ -211,7 +221,7 @@ const KNOWN: CliSpec[] = [
       "gpt-5.4-mini",
       "gpt-5.3-codex-spark",
     ],
-    buildRun: ({ prompt, model, reasoningEffort, execution }) => {
+    buildRun: ({ prompt, model, reasoningEffort, images, execution }) => {
       // Ordinary LLM work stays read-only; task execution maps the Agent's
       // permission tier to Codex's sandbox without interactive approvals.
       const args: string[] = [];
@@ -221,6 +231,7 @@ const KNOWN: CliSpec[] = [
       const sandbox = sandboxForPermission(execution?.permission);
       args.push("exec", "--sandbox", sandbox);
       if (execution) args.push("--skip-git-repo-check");
+      for (const image of images ?? []) args.push("--image", image.path);
       args.push(prompt);
       if (model) args.push("-m", model);
       return args;
@@ -419,6 +430,12 @@ export async function runProvider(
 ): Promise<string> {
   const spec = specById.get(id);
   if (!spec) throw new Error(`unknown provider: ${id}`);
+  if ((input.images?.length ?? 0) > 4) {
+    throw new Error("provider calls accept at most 4 images");
+  }
+  if (input.images?.length && id !== "codex") {
+    throw new UnsupportedImageInputError(id);
+  }
   const prepared = injectExecutionSkills(id, input);
   if (prepared.execution?.webSearch && prepared.execution.permission !== "read-only") {
     throw new Error("web search requires read-only provider execution");

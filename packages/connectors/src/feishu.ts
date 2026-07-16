@@ -111,7 +111,7 @@ function renderFetchedMessage(message: FetchedMessage | undefined): string | und
   if (!message) return undefined;
   const type = message.msg_type;
   const content = message.body?.content;
-  if (type === "image") return "【图片：当前只获取到图片引用，尚无可分析的视觉内容】";
+  if (type === "image") return "【图片】";
   if (type === "audio") return "【音频：当前只获取到音频引用】";
   if (type === "media") return "【视频：当前只获取到视频引用】";
   if (!content) return type === "file" ? "【文件：当前只获取到文件引用】" : undefined;
@@ -170,7 +170,7 @@ function collectRichText(value: unknown, parts: string[], depth = 0): void {
     return;
   }
   if (tag === "img") {
-    parts.push("【图片：当前只获取到图片引用，尚无可分析的视觉内容】");
+    parts.push("【图片】");
     return;
   }
 

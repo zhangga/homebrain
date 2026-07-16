@@ -174,6 +174,26 @@ describe("ask pipeline", () => {
     expect(fake.calls.filter((c) => c.kind === "json").length).toBe(0);
   });
 
+  test("general fallback preserves visual inputs from the user turn", async () => {
+    const fake = scriptedLlm({
+      routeSlugs: [],
+      relevant: false,
+      answer: "",
+      grounded: false,
+      generalText: "这顿晚餐的摆盘很用心。",
+    });
+
+    await ask(
+      [store],
+      "分析下这顿晚餐",
+      { images: [{ path: "/tmp/dinner.png" }] },
+      { client: fake },
+    );
+
+    const call = fake.calls.find((candidate) => candidate.kind === "complete");
+    expect(call?.opts.images).toEqual([{ path: "/tmp/dinner.png" }]);
+  });
+
   test("general conversation asks one natural clarification when the user's goal is unclear", async () => {
     const fake = scriptedLlm({
       routeSlugs: [],

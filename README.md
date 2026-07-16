@@ -2,6 +2,7 @@
 
 深度绑定飞书的团队/家庭 AI 知识库 Agent。定位是「最了解我们的 agent」：它常驻飞书群与私聊，
 默默收录大家分享的知识，夜间提炼成 wiki 知识页，并在被 @ 或私聊时基于知识库作答（带引用）；也能按天带读一本书，提问、反馈并记录进度。
+回复飞书图片或含图片的富文本消息后，可以直接让 Codex Agent 分析视觉内容。
 
 知识引擎借鉴 [`nashsu/llm_wiki`](https://github.com/nashsu/llm_wiki) 的设计（无 embedding 原生可用、
 中文 CJK bigram、整页范式、成熟的 ingest/检索思路）与 `gbrain` 的 dream cycle 思路，
@@ -166,6 +167,7 @@ bun run packages/app/src/repl.ts       # 启动横幅列出全部命令
 - **空间 / 知识**：空间列表、知识页、原始条目、问答测试、手动触发提炼，以及提炼失败记录的单条/批量恢复。支持编辑 `purpose.md` / `schema.md`、查看完整原始记录及其关联知识页、单条重新提炼、固定目标重新生成、删除知识页和提交可追溯的人工纠错；所有人工治理操作都会写入审计记录。
 - **Agents**（中列列表 + 右侧编辑器）：新建 / 编辑 / 删除智能体，配置 **名称、Provider、Instruction（人格，会注入到回答）、Model、推理强度、Visibility、Permission、Workdir、Skills**。
   - **Provider = 本机已安装的 agent CLI**（`claude` / `codex` / `trae-cli`）。**所有 LLM 工作（自然对话/问答 ask + 提炼 dream + 任务）都通过当前空间配置的本机 CLI 子进程执行，homeagent 不直连任何网络 API**。普通消息不再先调用一次通用意图分类：明确的副作用操作由窄规则处理，其他表达默认交给 Agent 自然回应，指代不清时只追问一个关键问题。后台**探测本机** CLI，只让可用的可选（装了但跑不了的灰显并标注原因，如 WSL 下无 Linux node 的 codex）。
+  - **图片分析使用 Codex 的原生视觉输入**：在飞书中回复图片或含图片的富文本消息，再说“分析一下”“看看这张图”等即可。每次最多传入 4 张、总计 20 MiB，回答完成后立即清理临时文件；下载失败或当前 Agent 不是 Codex 时会明确提示，不会假装已经看过图片。
   - **Model 随 Provider 变化**：切 Provider 时 Model 下拉自动换成该 provider 的维护清单（CLI 无“列模型”接口）；Codex 当前提供 `gpt-5.6-sol / gpt-5.6-terra / gpt-5.6-luna / gpt-5.5 / gpt-5.4 / gpt-5.4-mini / gpt-5.3-codex-spark`。其中 `gpt-5.6-sol` 是 GPT-5.6 Sol 的完整模型 ID；HomeAgent 日常问答优先选择较快、成本更低的 `gpt-5.6-luna`，复杂研究可选择 `gpt-5.6-terra` 或 `gpt-5.6-sol`。
   - **推理强度按 Agent 配置**：Codex Agent 可选择继承默认值，或从当前模型支持的档位中选择；GPT-5.6 系列支持 `none / low / medium / high / xhigh / max`，旧模型不会显示不支持的档位。普通问答建议从 `medium` 开始，级别越高通常耗时和 token 越多。其他 Provider 暂不传递此配置。
   - **Visibility 会限制空间绑定**：Team Agent 只能绑定群空间；Personal Agent 只能绑定个人空间。群设置只展示 Team Agent，个人空间详情页只展示 Personal Agent，后端也会拒绝类型不匹配的绑定。

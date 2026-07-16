@@ -2,6 +2,7 @@
  * Core-internal types layered on the shared domain vocabulary. Options bags for
  * the Knowledge seam live here so the interface file stays declarative.
  */
+import type { ImageInput } from "@homeagent/llm";
 import type { DreamReport, SpaceId } from "@homeagent/shared";
 
 export interface DreamOptions {
@@ -22,6 +23,8 @@ export interface AskOptions {
   model?: string;
   /** agent persona / extra system instruction injected into synthesis + fallback */
   instruction?: string;
+  /** local images supplied with the current user turn */
+  images?: ImageInput[];
   /** max wiki pages loaded whole into the synthesis context */
   maxPages?: number;
   /** when true, never fall back to general knowledge (knowledge-only) */

@@ -49,7 +49,11 @@ export function parseMessageResources(
   messageType: string | undefined,
   content: string | undefined,
 ): FeishuMessageResource[] {
-  if (!messageType || !content || !["image", "file", "audio", "media"].includes(messageType)) {
+  if (
+    !messageType
+    || !content
+    || !["image", "file", "audio", "media", "post"].includes(messageType)
+  ) {
     return [];
   }
 
@@ -61,6 +65,16 @@ export function parseMessageResources(
   }
   if (typeof value !== "object" || value === null || Array.isArray(value)) return [];
   const parsed = value as Record<string, unknown>;
+
+  if (messageType === "post") {
+    const imageKeys: string[] = [];
+    collectPostImageKeys(parsed, imageKeys);
+    return [...new Set(imageKeys)].map((fileKey) => ({
+      kind: "image",
+      fileKey,
+      resourceType: "image",
+    }));
+  }
 
   const imageKey = asString(parsed.image_key);
   const fileKey = asString(parsed.file_key);
@@ -77,6 +91,25 @@ export function parseMessageResources(
         ? "pdf"
         : "file";
   return [{ kind, fileKey, resourceType: "file", name }];
+}
+
+function collectPostImageKeys(value: unknown, out: string[], depth = 0): void {
+  if (depth > 20 || out.length >= 20) return;
+  if (Array.isArray(value)) {
+    for (const item of value) collectPostImageKeys(item, out, depth + 1);
+    return;
+  }
+  if (typeof value !== "object" || value === null) return;
+
+  const node = value as Record<string, unknown>;
+  if (node.tag === "img") {
+    const imageKey = asString(node.image_key);
+    if (imageKey) out.push(imageKey);
+    return;
+  }
+  for (const child of Object.values(node)) {
+    collectPostImageKeys(child, out, depth + 1);
+  }
 }
 
 function extractMentions(obj: Record<string, unknown>): MentionEntry[] {

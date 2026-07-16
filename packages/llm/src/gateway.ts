@@ -27,12 +27,19 @@ export interface Message {
   content: string;
 }
 
+/** A local image attached to the current user turn. */
+export interface ImageInput {
+  path: string;
+}
+
 export interface CompleteOptions {
   model?: string;
   system?: string;
   messages?: Message[];
   /** shorthand for a single user message */
   prompt?: string;
+  /** local images attached to the current user turn */
+  images?: ImageInput[];
   maxTokens?: number;
   temperature?: number;
   purpose?: CallPurpose;
@@ -138,6 +145,9 @@ function usageOf(json: AnthropicResponse): { input: number; output: number } {
 
 /** Free-form text completion. */
 export async function complete(opts: CompleteOptions): Promise<CompleteResult> {
+  if (opts.images?.length) {
+    throw new Error("legacy gateway does not support image inputs");
+  }
   const cfg = config();
   const model = opts.model ?? cfg.model;
   const purpose = opts.purpose ?? "other";
@@ -202,6 +212,9 @@ export async function completeJSON<T = unknown>(opts: JSONOptions<T>): Promise<{
   value: T;
   result: CompleteResult;
 }> {
+  if (opts.images?.length) {
+    throw new Error("legacy gateway does not support image inputs");
+  }
   const cfg = config();
   const model = opts.model ?? cfg.model;
   const purpose = opts.purpose ?? "other";

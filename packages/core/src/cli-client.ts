@@ -35,6 +35,7 @@ export type RunProviderFn = (
     system?: string;
     model?: string;
     reasoningEffort?: CodexReasoningEffort;
+    images?: CompleteOptions["images"];
     execution?: ProviderExecution;
   },
   timeoutMs?: number,
@@ -113,7 +114,14 @@ export function makeCliClient(
       const prompt = withSystem(opts.system, base);
       const out = await run(
         provider,
-        { prompt, system: opts.system, model: cliModel, reasoningEffort, execution },
+        {
+          prompt,
+          system: opts.system,
+          model: cliModel,
+          reasoningEffort,
+          images: opts.images,
+          execution,
+        },
         timeoutMs,
         signal,
       );
@@ -125,7 +133,14 @@ export function makeCliClient(
       const prompt = withSystem(opts.system, base) + jsonInstruction(opts.schema);
       const out = await run(
         provider,
-        { prompt, system: opts.system, model: cliModel, reasoningEffort, execution },
+        {
+          prompt,
+          system: opts.system,
+          model: cliModel,
+          reasoningEffort,
+          images: opts.images,
+          execution,
+        },
         timeoutMs,
         signal,
       );

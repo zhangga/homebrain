@@ -41,6 +41,61 @@ describe("Codex model capabilities", () => {
 });
 
 describe("provider detection", () => {
+  test("passes visual inputs to Codex as native image attachments", async () => {
+    const previous = process.env.HOMEAGENT_CODEX_BIN;
+    try {
+      process.env.HOMEAGENT_CODEX_BIN = "/bin/echo";
+
+      expect(
+        await runProvider(
+          "codex",
+          {
+            prompt: "分析这顿晚餐",
+            images: [{ path: "/tmp/dinner.png" }],
+          },
+          500,
+        ),
+      ).toBe(
+        '-c cli_auth_credentials_store="keyring" exec --sandbox read-only --image /tmp/dinner.png 分析这顿晚餐',
+      );
+    } finally {
+      if (previous === undefined) delete process.env.HOMEAGENT_CODEX_BIN;
+      else process.env.HOMEAGENT_CODEX_BIN = previous;
+    }
+  });
+
+  test("never silently drops images for providers without a verified visual input path", async () => {
+    await expect(
+      runProvider(
+        "claude",
+        { prompt: "分析图片", images: [{ path: "/tmp/dinner.png" }] },
+        500,
+      ),
+    ).rejects.toThrow("does not support image inputs");
+    await expect(
+      runProvider(
+        "trae-cli",
+        { prompt: "分析图片", images: [{ path: "/tmp/dinner.png" }] },
+        500,
+      ),
+    ).rejects.toThrow("does not support image inputs");
+  });
+
+  test("bounds the number of images accepted by a provider call", async () => {
+    await expect(
+      runProvider(
+        "codex",
+        {
+          prompt: "分析图片",
+          images: Array.from({ length: 5 }, (_, index) => ({
+            path: `/tmp/image-${index}.png`,
+          })),
+        },
+        500,
+      ),
+    ).rejects.toThrow("at most 4 images");
+  });
+
   test("honors managed binary overrides for detection and execution", async () => {
     const keys = [
       "HOMEAGENT_CODEX_BIN",

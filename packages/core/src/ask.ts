@@ -279,10 +279,12 @@ async function synthesize(
   space: SpaceId | undefined,
   model: string | undefined,
   instruction: string | undefined,
+  images: AskOptions["images"],
 ): Promise<SynthResult> {
   const { value } = await client.completeJSON<SynthResult>({
     system: withInstruction("你是严谨的知识库问答助手，只依据给定材料作答并标注引用。", instruction),
     prompt: synthPrompt(pages, question),
+    images,
     schema: SYNTH_SCHEMA as unknown as Record<string, unknown>,
     validate: validateSynth,
     maxTokens: 2048,
@@ -301,6 +303,7 @@ async function generalFallback(
   gaps: string[],
   model: string | undefined,
   instruction: string | undefined,
+  images: AskOptions["images"],
 ): Promise<AskResult> {
   const r = await client.complete({
     system: withInstruction(
@@ -314,6 +317,7 @@ async function generalFallback(
       instruction,
     ),
     prompt: question,
+    images,
     maxTokens: 1024,
     purpose: "ask",
     model: model ?? config().model,
@@ -358,6 +362,7 @@ export async function ask(
   const maxPages = opts.maxPages ?? DEFAULT_MAX_PAGES;
   const model = opts.model ?? config().model;
   const instruction = opts.instruction;
+  const images = opts.images;
   const primarySpace = stores[0]?.space;
 
   // Empty knowledge base across all spaces -> general fallback (Q1/Q3).
@@ -366,7 +371,14 @@ export async function ask(
     if (opts.knowledgeOnly) {
       return { answer: "", source: "general", citations: [], gaps: ["知识库为空"] };
     }
-    return generalFallback(client, question, ["知识库中暂无相关记录"], model, instruction);
+    return generalFallback(
+      client,
+      question,
+      ["知识库中暂无相关记录"],
+      model,
+      instruction,
+      images,
+    );
   }
 
   // Route: which pages are relevant?
@@ -390,7 +402,14 @@ export async function ask(
     if (opts.knowledgeOnly) {
       return { answer: "", source: "general", citations: [], gaps: ["知识库中未找到相关内容"] };
     }
-    return generalFallback(client, question, ["知识库中未找到直接相关的记录"], model, instruction);
+    return generalFallback(
+      client,
+      question,
+      ["知识库中未找到直接相关的记录"],
+      model,
+      instruction,
+      images,
+    );
   }
 
   // Expand + load whole pages per store.
@@ -416,11 +435,26 @@ export async function ask(
     if (opts.knowledgeOnly) {
       return { answer: "", source: "general", citations: [], gaps: ["未能加载相关页面"] };
     }
-    return generalFallback(client, question, ["知识库中未找到相关内容"], model, instruction);
+    return generalFallback(
+      client,
+      question,
+      ["知识库中未找到相关内容"],
+      model,
+      instruction,
+      images,
+    );
   }
 
   // Synthesize a grounded answer.
-  const synth = await synthesize(client, loaded, question, primarySpace, model, instruction);
+  const synth = await synthesize(
+    client,
+    loaded,
+    question,
+    primarySpace,
+    model,
+    instruction,
+    images,
+  );
   if (!synth.grounded || synth.answer.trim() === "") {
     if (opts.knowledgeOnly) {
       return {
@@ -430,7 +464,7 @@ export async function ask(
         gaps: synth.gaps.length ? synth.gaps : ["知识库内容不足以回答"],
       };
     }
-    return generalFallback(client, question, synth.gaps, model, instruction);
+    return generalFallback(client, question, synth.gaps, model, instruction, images);
   }
 
   const citations = resolveCitations(

@@ -72,6 +72,27 @@ describe("parseMessageResources", () => {
     ]);
   });
 
+  test("extracts embedded images from a rich-text post", () => {
+    expect(
+      parseMessageResources(
+        "post",
+        JSON.stringify({
+          zh_CN: {
+            title: "今晚的晚餐",
+            content: [[
+              { tag: "text", text: "三菜一汤" },
+              { tag: "img", image_key: "img_1" },
+              { tag: "img", image_key: "img_2" },
+            ]],
+          },
+        }),
+      ),
+    ).toEqual([
+      { kind: "image", fileKey: "img_1", resourceType: "image" },
+      { kind: "image", fileKey: "img_2", resourceType: "image" },
+    ]);
+  });
+
   test("malformed and unsupported resource content is ignored", () => {
     expect(parseMessageResources("text", JSON.stringify({ text: "hello" }))).toEqual([]);
     expect(parseMessageResources("file", "not-json")).toEqual([]);

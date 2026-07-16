@@ -34,6 +34,21 @@ describe("makeCliClient", () => {
     expect(seen).toContain("hi");
   });
 
+  test("complete() forwards visual inputs to the provider boundary", async () => {
+    let images: unknown;
+    const cli = makeCliClient("codex", "", async (_id, input) => {
+      images = input.images;
+      return "看到了晚餐图片";
+    });
+
+    await cli.complete({
+      prompt: "分析这顿晚餐",
+      images: [{ path: "/tmp/dinner.png" }],
+    });
+
+    expect(images).toEqual([{ path: "/tmp/dinner.png" }]);
+  });
+
   test("completeJSON() appends a schema instruction, parses, and validates", async () => {
     let seen = "";
     const cli = makeCliClient("trae-cli", "", async (_id, input) => {

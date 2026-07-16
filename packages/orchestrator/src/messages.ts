@@ -28,10 +28,17 @@ export const PROVIDER_TIMEOUT_NOTICE = [
   "可以稍后重试或改用更快的模型；Codex 推荐在“设置”或当前空间的 Agent 中选择 gpt-5.6-luna。",
 ].join("\n");
 
+export const UNSUPPORTED_IMAGE_NOTICE = [
+  "⚠️ 当前 Agent 不支持图片输入，因此我没有分析这张图。",
+  "请在管理后台把当前空间的 Agent 切换到 Codex 后重试；文字问答仍可继续使用当前 Agent。",
+].join("\n");
+
 export function providerNotice(error: unknown): string {
-  return /timed?\s*out|timeout|超时/i.test(String(error))
-    ? PROVIDER_TIMEOUT_NOTICE
-    : NO_PROVIDER_NOTICE;
+  const message = String(error);
+  if (/does not support image inputs|不支持图片输入/i.test(message)) {
+    return UNSUPPORTED_IMAGE_NOTICE;
+  }
+  return /timed?\s*out|timeout|超时/i.test(message) ? PROVIDER_TIMEOUT_NOTICE : NO_PROVIDER_NOTICE;
 }
 
 /** Usage help for the /task chat commands. */

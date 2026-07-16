@@ -396,6 +396,114 @@ describe("orchestrator trunk (cli connector, no feishu)", () => {
     expect(connector.sent[0]!.markdown).toContain("准备得比较用心");
   });
 
+  test("a contextual image request sends the replied image to the answering model", async () => {
+    const reactive = connector as CliConnector & Connector;
+    reactive.resolveReplyTarget = async () => ({
+      messageId: "om_dinner_image",
+      senderId: "ou_other",
+      text: "【图片】",
+      messageType: "image",
+    });
+    let downloadedMessageId = "";
+    let cleaned = false;
+    let images: unknown;
+    orch = new Orchestrator({
+      engine,
+      connector,
+      attachmentDownloader: async (messageId) => {
+        downloadedMessageId = messageId;
+        return [{
+          attachment: { kind: "image", ref: "img_dinner" },
+          localPath: "/tmp/dinner.png",
+          sizeBytes: 1_024,
+          cleanup: () => {
+            cleaned = true;
+          },
+        }];
+      },
+    });
+    engine.ask = async (_spaces, _question, options) => {
+      images = (options as { images?: unknown }).images;
+      return {
+        answer: "从摆盘和菜品搭配看，这顿晚餐准备得很用心。",
+        source: "general",
+        citations: [],
+      };
+    };
+
+    await orch.start();
+    await connector.sendGroup("@agent 分析一下", true);
+
+    expect(downloadedMessageId).toBe("om_dinner_image");
+    expect(images).toEqual([{ path: "/tmp/dinner.png" }]);
+    expect(cleaned).toBe(true);
+    expect(connector.sent[0]!.markdown).toContain("摆盘和菜品搭配");
+  });
+
+  test("an unsupported visual provider gives actionable guidance and still cleans up", async () => {
+    const reactive = connector as CliConnector & Connector;
+    reactive.resolveReplyTarget = async () => ({
+      messageId: "om_dinner_image",
+      text: "【图片】",
+      messageType: "image",
+    });
+    let cleaned = false;
+    orch = new Orchestrator({
+      engine,
+      connector,
+      attachmentDownloader: async () => [{
+        attachment: { kind: "image", ref: "img_dinner" },
+        localPath: "/tmp/dinner.png",
+        sizeBytes: 1_024,
+        cleanup: () => {
+          cleaned = true;
+        },
+      }],
+    });
+    engine.ask = async () => {
+      throw new Error("provider claude does not support image inputs");
+    };
+
+    await orch.start();
+    await connector.sendGroup("@agent 分析下这个晚餐", true);
+
+    expect(connector.sent[0]!.markdown).toContain("当前 Agent 不支持图片输入");
+    expect(connector.sent[0]!.markdown).toContain("Codex");
+    expect(cleaned).toBe(true);
+  });
+
+  test("a failed reply-image download is disclosed to the answering model", async () => {
+    const reactive = connector as CliConnector & Connector;
+    reactive.resolveReplyTarget = async () => ({
+      messageId: "om_missing_image",
+      text: "【图片】",
+      messageType: "image",
+    });
+    let question = "";
+    let images: unknown;
+    orch = new Orchestrator({
+      engine,
+      connector,
+      attachmentDownloader: async () => [],
+    });
+    engine.ask = async (_spaces, input, options) => {
+      question = input;
+      images = (options as { images?: unknown }).images;
+      return {
+        answer: "我暂时没能读取这张图片，请重新发送。",
+        source: "general",
+        citations: [],
+      };
+    };
+
+    await orch.start();
+    await connector.sendGroup("@agent 分析下这个晚餐", true);
+
+    expect(images).toEqual([]);
+    expect(question).toContain("图片未能下载");
+    expect(question).toContain("不要假设已经看到了图片");
+  });
+
   test("a mentioned Chinese question without punctuation reaches ask directly", async () => {
     let asked = 0;
     engine.ask = async (spaces, question) => {
