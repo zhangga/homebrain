@@ -107,7 +107,12 @@ HOMEAGENT_LIVE=1 bun test packages/llm/src/gateway.live.test.ts   # 真调网关
 HOMEAGENT_LIVE=1 bun test packages/core/src/dream.live.test.ts    # 真跑提炼
 HOMEAGENT_LIVE=1 bun test packages/core/src/ask.live.test.ts      # 真跑问答
 bunx tsc -p tsconfig.json --noEmit    # 类型检查
+bun run verify:crash-recovery         # SIGKILL 后知识/任务/提醒/学习恢复验收
+bun run verify:beta                   # 干净候选树的本地预检（不代替外部发布门禁）
 ```
+
+该预检不会宣称签名、公证、全新 Mac 安装或真实飞书演练已经完成。外部门禁见
+[`docs/beta-release-runbook.md`](docs/beta-release-runbook.md)。
 
 ## 本地测试
 

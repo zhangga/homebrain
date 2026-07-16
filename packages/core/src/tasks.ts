@@ -6,11 +6,21 @@
  * space (the dream cycle later distills it into wiki pages), and optionally push
  * a summary to the bound feishu chat.
  *
- * Persisted to data/config/tasks.json using the same whole-file JSON pattern as
- * the agent store (agents.ts) and space registry (registry.ts).
+ * Persisted to data/config/tasks.json through a temporary file + fsync + atomic
+ * rename so a process crash cannot expose a partially written task registry.
  */
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import {
+  closeSync,
+  existsSync,
+  fsyncSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  renameSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { SpaceId } from "@homeagent/shared";
 import { isSpaceId } from "@homeagent/shared";
@@ -130,10 +140,47 @@ export class TaskStore {
     return map;
   }
 
-  private persist(): void {
-    mkdirSync(join(this.configPath, ".."), { recursive: true });
-    const obj: TasksFile = { tasks: Object.fromEntries(this.tasks) };
-    writeFileSync(this.configPath, JSON.stringify(obj, null, 2), "utf8");
+  private persist(tasks = this.tasks): void {
+    const configDir = dirname(this.configPath);
+    mkdirSync(configDir, { recursive: true, mode: 0o700 });
+    const temporaryPath = `${this.configPath}.${process.pid}.${randomUUID()}.tmp`;
+    const obj: TasksFile = { tasks: Object.fromEntries(tasks) };
+    try {
+      writeFileSync(temporaryPath, JSON.stringify(obj, null, 2), {
+        encoding: "utf8",
+        mode: 0o600,
+      });
+      const fileDescriptor = openSync(temporaryPath, "r");
+      try {
+        fsyncSync(fileDescriptor);
+      } finally {
+        closeSync(fileDescriptor);
+      }
+      renameSync(temporaryPath, this.configPath);
+      const directoryDescriptor = openSync(configDir, "r");
+      try {
+        fsyncSync(directoryDescriptor);
+      } finally {
+        closeSync(directoryDescriptor);
+      }
+    } catch (error) {
+      try {
+        unlinkSync(temporaryPath);
+      } catch {
+        // A successful rename consumes the temporary path.
+      }
+      throw error;
+    }
+  }
+
+  private commit<T>(change: (candidate: Map<string, Task>) => T): T {
+    const candidate = new Map(
+      [...this.tasks].map(([id, task]) => [id, { ...task }]),
+    );
+    const result = change(candidate);
+    this.persist(candidate);
+    this.tasks = candidate;
+    return result;
   }
 
   list(): Task[] {
@@ -167,70 +214,78 @@ export class TaskStore {
       createdAt: now,
       updatedAt: now,
     };
-    this.tasks.set(task.id, task);
-    this.persist();
-    return task;
+    return this.commit((candidate) => {
+      candidate.set(task.id, task);
+      return task;
+    });
   }
 
   /** Patch an existing task. Only provided fields change. Returns undefined if absent. */
   update(id: string, input: TaskInput): Task | undefined {
-    const task = this.tasks.get(id);
-    if (!task) return undefined;
-    if (input.name !== undefined) task.name = input.name.trim() || task.name;
-    if (input.space !== undefined && isSpaceId(input.space.trim())) task.space = input.space.trim() as SpaceId;
-    if (input.topic !== undefined) task.topic = input.topic.trim();
-    if (input.cadence !== undefined) task.cadence = normalizeCadence(input.cadence);
-    if (input.hour !== undefined) task.hour = normalizeHour(input.hour);
-    if (input.enabled !== undefined) task.enabled = input.enabled;
-    if (input.notify !== undefined) task.notify = input.notify;
-    if (input.distillOnRun !== undefined) task.distillOnRun = input.distillOnRun;
-    if (input.timeoutMinutes !== undefined) {
-      task.timeoutMinutes = normalizeTimeoutMinutes(input.timeoutMinutes);
-    }
-    task.updatedAt = Date.now();
-    this.persist();
-    return task;
+    if (!this.tasks.has(id)) return undefined;
+    return this.commit((candidate) => {
+      const task = candidate.get(id)!;
+      if (input.name !== undefined) task.name = input.name.trim() || task.name;
+      if (input.space !== undefined && isSpaceId(input.space.trim())) {
+        task.space = input.space.trim() as SpaceId;
+      }
+      if (input.topic !== undefined) task.topic = input.topic.trim();
+      if (input.cadence !== undefined) task.cadence = normalizeCadence(input.cadence);
+      if (input.hour !== undefined) task.hour = normalizeHour(input.hour);
+      if (input.enabled !== undefined) task.enabled = input.enabled;
+      if (input.notify !== undefined) task.notify = input.notify;
+      if (input.distillOnRun !== undefined) task.distillOnRun = input.distillOnRun;
+      if (input.timeoutMinutes !== undefined) {
+        task.timeoutMinutes = normalizeTimeoutMinutes(input.timeoutMinutes);
+      }
+      task.updatedAt = Date.now();
+      return task;
+    });
   }
 
   /** Record the outcome of a run (for display + scheduling). */
   setLastRun(id: string, result: TaskRunResult): void {
-    const task = this.tasks.get(id);
-    if (!task) return;
-    task.lastRunAt = result.at;
-    task.lastStatus = result.status;
-    task.lastSummary = result.status === "ok" ? result.summary : task.lastSummary;
-    task.lastError = result.status === "error" ? result.error : undefined;
-    this.persist();
+    if (!this.tasks.has(id)) return;
+    this.commit((candidate) => {
+      const task = candidate.get(id)!;
+      task.lastRunAt = result.at;
+      task.lastStatus = result.status;
+      task.lastSummary = result.status === "ok" ? result.summary : task.lastSummary;
+      task.lastError = result.status === "error" ? result.error : undefined;
+    });
   }
 
   remove(id: string): boolean {
-    const ok = this.tasks.delete(id);
-    if (ok) this.persist();
-    return ok;
+    if (!this.tasks.has(id)) return false;
+    return this.commit((candidate) => candidate.delete(id));
   }
 
   /** Restore exact archived task records after archive-level validation. */
   restore(tasks: Task[]): Task[] {
-    const restored: Task[] = [];
+    const incomingIds = new Set<string>();
     for (const task of tasks) {
       if (!isSpaceId(task.space)) throw new Error(`invalid task space: ${task.space}`);
-      if (this.tasks.has(task.id)) throw new Error(`task id already exists: ${task.id}`);
-      const copy = { ...task };
-      this.tasks.set(copy.id, copy);
-      restored.push(copy);
+      if (this.tasks.has(task.id) || incomingIds.has(task.id)) {
+        throw new Error(`task id already exists: ${task.id}`);
+      }
+      incomingIds.add(task.id);
     }
-    if (restored.length > 0) this.persist();
-    return restored;
+    if (tasks.length === 0) return [];
+    return this.commit((candidate) => {
+      const restored = tasks.map((task) => ({ ...task }));
+      for (const task of restored) candidate.set(task.id, task);
+      return restored;
+    });
   }
 
   removeBySpace(space: SpaceId): number {
-    let removed = 0;
-    for (const [id, task] of this.tasks) {
-      if (task.space !== space) continue;
-      this.tasks.delete(id);
-      removed += 1;
-    }
-    if (removed > 0) this.persist();
-    return removed;
+    const removed = [...this.tasks.values()].filter((task) => task.space === space).length;
+    if (removed === 0) return 0;
+    return this.commit((candidate) => {
+      for (const [id, task] of candidate) {
+        if (task.space === space) candidate.delete(id);
+      }
+      return removed;
+    });
   }
 }

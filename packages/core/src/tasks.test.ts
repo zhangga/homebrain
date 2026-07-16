@@ -90,4 +90,42 @@ describe("TaskStore", () => {
     expect(store.remove(t.id)).toBe(true);
     expect(new TaskStore(dir).has(t.id)).toBe(false);
   });
+
+  test("keeps visible task state unchanged when durable persistence fails", () => {
+    const store = new TaskStore(dir);
+    const task = store.create({
+      name: "稳定任务",
+      space: SPACE,
+      topic: "原始主题",
+    })!;
+    Object.defineProperty(store, "persist", {
+      value: () => {
+        throw new Error("disk unavailable");
+      },
+    });
+
+    expect(() => store.update(task.id, { topic: "不应生效" })).toThrow("disk unavailable");
+    expect(store.get(task.id)?.topic).toBe("原始主题");
+  });
+
+  test("rejects duplicate restore ids without exposing partial state", () => {
+    const store = new TaskStore(dir);
+    const task = {
+      id: "task_restore",
+      name: "恢复任务",
+      space: SPACE,
+      topic: "恢复",
+      cadence: "daily" as const,
+      hour: 8,
+      enabled: true,
+      notify: false,
+      distillOnRun: false,
+      timeoutMinutes: 5,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+
+    expect(() => store.restore([task, { ...task }])).toThrow("task id already exists");
+    expect(store.list()).toEqual([]);
+  });
 });

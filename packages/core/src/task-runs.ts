@@ -1,6 +1,9 @@
 import {
+  closeSync,
   existsSync,
+  fsyncSync,
   mkdirSync,
+  openSync,
   readFileSync,
   renameSync,
   unlinkSync,
@@ -169,7 +172,7 @@ function isTaskRun(value: unknown): value is TaskRun {
 
 export class TaskRunStore {
   private readonly configPath: string;
-  private readonly runs: Map<string, TaskRun>;
+  private runs: Map<string, TaskRun>;
   private lastStartedAt: number;
 
   constructor(dataDir: string, opts: TaskRunStoreOptions = {}) {
@@ -197,126 +200,163 @@ export class TaskRunStore {
     return runs;
   }
 
-  private persist(): void {
-    mkdirSync(dirname(this.configPath), { recursive: true, mode: 0o700 });
+  private persist(runs = this.runs): void {
+    const configDir = dirname(this.configPath);
+    mkdirSync(configDir, { recursive: true, mode: 0o700 });
     const tempPath = `${this.configPath}.${process.pid}.${randomUUID()}.tmp`;
-    const file: TaskRunsFile = { version: 2, runs: Object.fromEntries(this.runs) };
+    const file: TaskRunsFile = { version: 2, runs: Object.fromEntries(runs) };
     try {
       writeFileSync(tempPath, JSON.stringify(file, null, 2), { encoding: "utf8", mode: 0o600 });
+      const fileDescriptor = openSync(tempPath, "r");
+      try {
+        fsyncSync(fileDescriptor);
+      } finally {
+        closeSync(fileDescriptor);
+      }
       renameSync(tempPath, this.configPath);
+      const directoryDescriptor = openSync(configDir, "r");
+      try {
+        fsyncSync(directoryDescriptor);
+      } finally {
+        closeSync(directoryDescriptor);
+      }
     } finally {
       if (existsSync(tempPath)) unlinkSync(tempPath);
     }
   }
 
-  private recoverInterruptedRuns(): void {
-    const now = Date.now();
-    let changed = false;
-    const affectedTaskIds = new Set<string>();
-    for (const run of this.runs.values()) {
-      if (run.status !== "running") continue;
-      run.status = "failed";
-      run.finishedAt = Math.max(now, run.startedAt);
-      run.error = INTERRUPTED_RUN_ERROR;
-      affectedTaskIds.add(run.taskId);
-      changed = true;
-    }
-    for (const taskId of affectedTaskIds) this.pruneCompletedRuns(taskId);
-    if (changed) this.persist();
+  private commit<T>(
+    change: (
+      candidate: Map<string, TaskRun>,
+      state: { lastStartedAt: number },
+    ) => T,
+  ): T {
+    const candidate = new Map(
+      [...this.runs].map(([id, run]) => [id, clone(run)]),
+    );
+    const state = { lastStartedAt: this.lastStartedAt };
+    const result = change(candidate, state);
+    this.persist(candidate);
+    this.runs = candidate;
+    this.lastStartedAt = state.lastStartedAt;
+    return result;
   }
 
-  private pruneCompletedRuns(taskId: string): void {
-    const completed = [...this.runs.values()].filter(
+  private recoverInterruptedRuns(): void {
+    const now = Date.now();
+    const interrupted = [...this.runs.values()].filter((run) => run.status === "running");
+    if (interrupted.length === 0) return;
+    this.commit((candidate) => {
+      const affectedTaskIds = new Set<string>();
+      for (const run of candidate.values()) {
+        if (run.status !== "running") continue;
+        run.status = "failed";
+        run.finishedAt = Math.max(now, run.startedAt);
+        run.error = INTERRUPTED_RUN_ERROR;
+        affectedTaskIds.add(run.taskId);
+      }
+      for (const taskId of affectedTaskIds) this.pruneCompletedRuns(taskId, candidate);
+    });
+  }
+
+  private pruneCompletedRuns(taskId: string, runs = this.runs): void {
+    const completed = [...runs.values()].filter(
       (run) => run.taskId === taskId && run.status !== "running",
     );
     const excess = completed.length - MAX_TASK_RUN_HISTORY_PER_TASK;
     if (excess <= 0) return;
-    for (const run of completed.slice(0, excess)) this.runs.delete(run.id);
+    for (const run of completed.slice(0, excess)) runs.delete(run.id);
   }
 
   start(input: StartTaskRunInput): TaskRun {
-    const requestedStartedAt = input.startedAt ?? Date.now();
-    const startedAt = Math.max(requestedStartedAt, this.lastStartedAt + 1);
-    this.lastStartedAt = startedAt;
-    const run: TaskRun = {
-      id: `run_${randomUUID()}`,
-      taskId: input.task.id,
-      taskName: input.task.name,
-      space: input.task.space,
-      topic: input.task.topic,
-      trigger: input.trigger,
-      retryOf: input.retryOf,
-      distill: input.distill,
-      notify: input.task.notify,
-      timeoutMs: input.timeoutMs,
-      status: "running",
-      startedAt,
-    };
-    this.runs.set(run.id, run);
-    this.persist();
-    return clone(run);
+    return this.commit((candidate, state) => {
+      const requestedStartedAt = input.startedAt ?? Date.now();
+      const startedAt = Math.max(requestedStartedAt, state.lastStartedAt + 1);
+      state.lastStartedAt = startedAt;
+      const run: TaskRun = {
+        id: `run_${randomUUID()}`,
+        taskId: input.task.id,
+        taskName: input.task.name,
+        space: input.task.space,
+        topic: input.task.topic,
+        trigger: input.trigger,
+        retryOf: input.retryOf,
+        distill: input.distill,
+        notify: input.task.notify,
+        timeoutMs: input.timeoutMs,
+        status: "running",
+        startedAt,
+      };
+      candidate.set(run.id, run);
+      return clone(run);
+    });
   }
 
   succeed(id: string, result: FinishTaskRunInput): TaskRun | undefined {
-    const run = this.runs.get(id);
-    if (!run) return undefined;
-    const output = result.output ?? "";
-    run.status = "succeeded";
-    run.finishedAt = result.finishedAt;
-    run.output = output.slice(0, MAX_TASK_RUN_OUTPUT_CHARACTERS);
-    run.outputTruncated = output.length > MAX_TASK_RUN_OUTPUT_CHARACTERS || undefined;
-    run.summary = result.summary;
-    run.error = undefined;
-    run.rawId = result.rawId;
-    run.pagesWritten = result.pagesWritten;
-    run.notification = run.notify
-      ? { status: "pending", attempts: 0 }
-      : undefined;
-    this.pruneCompletedRuns(run.taskId);
-    this.persist();
-    return clone(run);
+    if (!this.runs.has(id)) return undefined;
+    return this.commit((candidate) => {
+      const run = candidate.get(id)!;
+      const output = result.output ?? "";
+      run.status = "succeeded";
+      run.finishedAt = result.finishedAt;
+      run.output = output.slice(0, MAX_TASK_RUN_OUTPUT_CHARACTERS);
+      run.outputTruncated = output.length > MAX_TASK_RUN_OUTPUT_CHARACTERS || undefined;
+      run.summary = result.summary;
+      run.error = undefined;
+      run.rawId = result.rawId;
+      run.pagesWritten = result.pagesWritten;
+      run.notification = run.notify
+        ? { status: "pending", attempts: 0 }
+        : undefined;
+      this.pruneCompletedRuns(run.taskId, candidate);
+      return clone(run);
+    });
   }
 
   startNotificationAttempt(
     id: string,
     attemptedAt: number,
   ): TaskRun | undefined {
-    const run = this.runs.get(id);
-    if (!run || run.status !== "succeeded" || !run.notification) return undefined;
-    const attempts = run.notification.attempts + 1;
-    const retryDelay = TASK_NOTIFICATION_RETRY_DELAYS_MS[
-      Math.min(attempts - 1, TASK_NOTIFICATION_RETRY_DELAYS_MS.length - 1)
-    ]!;
-    run.notification = {
-      status: "pending",
-      attempts,
-      lastAttemptAt: attemptedAt,
-      nextAttemptAt: attemptedAt + retryDelay,
-    };
-    this.persist();
-    return clone(run);
+    const existing = this.runs.get(id);
+    if (!existing || existing.status !== "succeeded" || !existing.notification) return undefined;
+    return this.commit((candidate) => {
+      const run = candidate.get(id)!;
+      const attempts = run.notification!.attempts + 1;
+      const retryDelay = TASK_NOTIFICATION_RETRY_DELAYS_MS[
+        Math.min(attempts - 1, TASK_NOTIFICATION_RETRY_DELAYS_MS.length - 1)
+      ]!;
+      run.notification = {
+        status: "pending",
+        attempts,
+        lastAttemptAt: attemptedAt,
+        nextAttemptAt: attemptedAt + retryDelay,
+      };
+      return clone(run);
+    });
   }
 
   notificationFailed(id: string, error: string): TaskRun | undefined {
-    const run = this.runs.get(id);
-    if (!run?.notification) return undefined;
-    run.notification.status = "failed";
-    run.notification.error = error.slice(0, MAX_TASK_RUN_ERROR_CHARACTERS);
-    this.persist();
-    return clone(run);
+    if (!this.runs.get(id)?.notification) return undefined;
+    return this.commit((candidate) => {
+      const run = candidate.get(id)!;
+      run.notification!.status = "failed";
+      run.notification!.error = error.slice(0, MAX_TASK_RUN_ERROR_CHARACTERS);
+      return clone(run);
+    });
   }
 
   notificationSent(id: string, sentAt: number): TaskRun | undefined {
-    const run = this.runs.get(id);
-    if (!run?.notification) return undefined;
-    run.notification = {
-      status: "sent",
-      attempts: run.notification.attempts,
-      lastAttemptAt: run.notification.lastAttemptAt,
-      sentAt,
-    };
-    this.persist();
-    return clone(run);
+    if (!this.runs.get(id)?.notification) return undefined;
+    return this.commit((candidate) => {
+      const run = candidate.get(id)!;
+      run.notification = {
+        status: "sent",
+        attempts: run.notification!.attempts,
+        lastAttemptAt: run.notification!.lastAttemptAt,
+        sentAt,
+      };
+      return clone(run);
+    });
   }
 
   private finishWithError(
@@ -325,21 +365,22 @@ export class TaskRunStore {
     result: FinishTaskRunInput,
     defaultError: string,
   ): TaskRun | undefined {
-    const run = this.runs.get(id);
-    if (!run) return undefined;
-    const output = result.output;
-    run.status = status;
-    run.finishedAt = result.finishedAt;
-    run.error = (result.error ?? defaultError).slice(0, MAX_TASK_RUN_ERROR_CHARACTERS);
-    run.output = output?.slice(0, MAX_TASK_RUN_OUTPUT_CHARACTERS);
-    run.outputTruncated = output && output.length > MAX_TASK_RUN_OUTPUT_CHARACTERS
-      ? true
-      : undefined;
-    run.rawId = result.rawId;
-    run.pagesWritten = result.pagesWritten;
-    this.pruneCompletedRuns(run.taskId);
-    this.persist();
-    return clone(run);
+    if (!this.runs.has(id)) return undefined;
+    return this.commit((candidate) => {
+      const run = candidate.get(id)!;
+      const output = result.output;
+      run.status = status;
+      run.finishedAt = result.finishedAt;
+      run.error = (result.error ?? defaultError).slice(0, MAX_TASK_RUN_ERROR_CHARACTERS);
+      run.output = output?.slice(0, MAX_TASK_RUN_OUTPUT_CHARACTERS);
+      run.outputTruncated = output && output.length > MAX_TASK_RUN_OUTPUT_CHARACTERS
+        ? true
+        : undefined;
+      run.rawId = result.rawId;
+      run.pagesWritten = result.pagesWritten;
+      this.pruneCompletedRuns(run.taskId, candidate);
+      return clone(run);
+    });
   }
 
   fail(id: string, result: FinishTaskRunInput): TaskRun | undefined {
@@ -387,45 +428,54 @@ export class TaskRunStore {
   }
 
   restore(runs: TaskRun[]): TaskRun[] {
+    const incomingIds = new Set<string>();
     for (const run of runs) {
-      if (this.runs.has(run.id)) throw new Error(`task run id already exists: ${run.id}`);
+      if (this.runs.has(run.id) || incomingIds.has(run.id)) {
+        throw new Error(`task run id already exists: ${run.id}`);
+      }
       if (run.status === "running") throw new Error(`cannot restore a running task run: ${run.id}`);
+      incomingIds.add(run.id);
     }
-    for (const run of [...runs].sort((a, b) => a.startedAt - b.startedAt)) {
-      this.runs.set(run.id, clone(run));
-    }
-    for (const taskId of new Set(runs.map((run) => run.taskId))) {
-      this.pruneCompletedRuns(taskId);
-    }
-    if (runs.length > 0) this.persist();
-    return runs.map(clone);
+    if (runs.length === 0) return [];
+    return this.commit((candidate, state) => {
+      const restored = [...runs]
+        .sort((a, b) => a.startedAt - b.startedAt)
+        .map(clone);
+      for (const run of restored) {
+        candidate.set(run.id, run);
+        state.lastStartedAt = Math.max(state.lastStartedAt, run.startedAt);
+      }
+      for (const taskId of new Set(restored.map((run) => run.taskId))) {
+        this.pruneCompletedRuns(taskId, candidate);
+      }
+      return restored.map(clone);
+    });
   }
 
   remove(id: string): boolean {
-    const removed = this.runs.delete(id);
-    if (removed) this.persist();
-    return removed;
+    if (!this.runs.has(id)) return false;
+    return this.commit((candidate) => candidate.delete(id));
   }
 
   removeByTask(taskId: string): number {
-    let removed = 0;
-    for (const [id, run] of this.runs) {
-      if (run.taskId !== taskId) continue;
-      this.runs.delete(id);
-      removed += 1;
-    }
-    if (removed > 0) this.persist();
-    return removed;
+    const removed = [...this.runs.values()].filter((run) => run.taskId === taskId).length;
+    if (removed === 0) return 0;
+    return this.commit((candidate) => {
+      for (const [id, run] of candidate) {
+        if (run.taskId === taskId) candidate.delete(id);
+      }
+      return removed;
+    });
   }
 
   removeBySpace(space: SpaceId): number {
-    let removed = 0;
-    for (const [id, run] of this.runs) {
-      if (run.space !== space) continue;
-      this.runs.delete(id);
-      removed += 1;
-    }
-    if (removed > 0) this.persist();
-    return removed;
+    const removed = [...this.runs.values()].filter((run) => run.space === space).length;
+    if (removed === 0) return 0;
+    return this.commit((candidate) => {
+      for (const [id, run] of candidate) {
+        if (run.space === space) candidate.delete(id);
+      }
+      return removed;
+    });
   }
 }

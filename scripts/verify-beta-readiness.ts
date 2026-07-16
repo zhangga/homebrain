@@ -1,0 +1,189 @@
+import { existsSync, readFileSync } from "node:fs";
+import { join, resolve } from "node:path";
+import { smokeMacOSBundle } from "./smoke-macos-bundle.ts";
+
+const REQUIRED_FILES = [
+  "bun.lock",
+  "LICENSE",
+  "THIRD_PARTY_NOTICES.md",
+  ".github/workflows/ci.yml",
+  ".github/workflows/release-macos.yml",
+  "docs/beta-release-runbook.md",
+] as const;
+
+const SIGNING_ENVIRONMENT = [
+  "APPLE_CERTIFICATE_BASE64",
+  "APPLE_CERTIFICATE_PASSWORD",
+  "APPLE_KEYCHAIN_PASSWORD",
+  "APPLE_CODESIGN_IDENTITY",
+  "APPLE_ID",
+  "APPLE_TEAM_ID",
+  "APPLE_APP_PASSWORD",
+] as const;
+
+interface CommandResult {
+  code: number;
+  stdout: string;
+  stderr: string;
+}
+
+export type BetaCommandRunner = (argv: string[], cwd: string) => Promise<CommandResult>;
+
+export interface BetaReadinessOptions {
+  repoRoot?: string;
+  allowDirty?: boolean;
+  checksOnly?: boolean;
+  requireSigningEnvironment?: boolean;
+  appPath?: string;
+  env?: NodeJS.ProcessEnv;
+  runner?: BetaCommandRunner;
+  smoke?: (appPath: string) => Promise<void>;
+}
+
+export interface BetaReadinessReport {
+  scope: "structure-only" | "local-preflight";
+  version: string;
+  commands: string[];
+  localChecksPassed: boolean;
+  appSmokeTested: boolean;
+  signingEnvironmentChecked: boolean;
+  externalGatesPending: string[];
+}
+
+const defaultRunner: BetaCommandRunner = async (argv, cwd) => {
+  const child = Bun.spawn(argv, { cwd, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+  const [stdout, stderr, code] = await Promise.all([
+    new Response(child.stdout).text(),
+    new Response(child.stderr).text(),
+    child.exited,
+  ]);
+  return { code, stdout, stderr };
+};
+
+async function mustRun(
+  runner: BetaCommandRunner,
+  argv: string[],
+  cwd: string,
+): Promise<CommandResult> {
+  const result = await runner(argv, cwd);
+  if (result.code !== 0) {
+    throw new Error(
+      `${argv.join(" ")} failed (${result.code}): `
+      + `${(result.stderr || result.stdout).trim().slice(-600)}`,
+    );
+  }
+  return result;
+}
+
+export async function verifyBetaReadiness(
+  options: BetaReadinessOptions = {},
+): Promise<BetaReadinessReport> {
+  const repoRoot = resolve(options.repoRoot ?? join(import.meta.dir, ".."));
+  const runner = options.runner ?? defaultRunner;
+  for (const file of REQUIRED_FILES) {
+    if (!existsSync(join(repoRoot, file))) throw new Error(`missing beta release input: ${file}`);
+  }
+  const pkg = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8")) as {
+    version?: unknown;
+  };
+  if (
+    typeof pkg.version !== "string"
+    || !/^\d+\.\d+\.\d+-beta(?:\.[0-9A-Za-z.-]+)?$/u.test(pkg.version)
+  ) {
+    throw new Error("package.json must contain a semantic beta version");
+  }
+  if (!options.allowDirty) {
+    const status = await mustRun(runner, ["git", "status", "--porcelain"], repoRoot);
+    if (status.stdout.trim()) throw new Error("working tree must be clean for beta verification");
+  }
+  if (options.requireSigningEnvironment) {
+    const env = options.env ?? process.env;
+    const missing = SIGNING_ENVIRONMENT.filter((name) => !env[name]?.trim());
+    if (missing.length > 0) {
+      throw new Error(`missing release environment: ${missing.join(", ")}`);
+    }
+  }
+
+  const commands: string[] = [];
+  if (!options.checksOnly) {
+    for (const argv of [
+      ["bun", "test"],
+      ["bun", "run", "typecheck"],
+      ["bun", "run", "verify:crash-recovery"],
+    ]) {
+      await mustRun(runner, argv, repoRoot);
+      commands.push(argv.join(" "));
+    }
+  }
+  if (options.appPath) {
+    if (process.platform !== "darwin") {
+      throw new Error("a macOS app smoke test must run on macOS");
+    }
+    await (options.smoke ?? smokeMacOSBundle)(resolve(options.appPath));
+  }
+  return {
+    scope: options.checksOnly ? "structure-only" : "local-preflight",
+    version: pkg.version,
+    commands,
+    localChecksPassed: !options.checksOnly,
+    appSmokeTested: options.appPath !== undefined,
+    signingEnvironmentChecked: options.requireSigningEnvironment ?? false,
+    externalGatesPending: [
+      ...(!options.appPath ? ["packaged-app-crash-smoke"] : []),
+      "signed-and-notarized-release-artifacts",
+      "fresh-mac-no-terminal-install",
+      "real-feishu-24-48h-soak",
+    ],
+  };
+}
+
+export function parseBetaReadinessArgs(args: string[]): BetaReadinessOptions {
+  const parsed: BetaReadinessOptions = {};
+  const seen = new Set<string>();
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index]!;
+    if (seen.has(arg)) throw new Error(`duplicate argument: ${arg}`);
+    if (arg === "--allow-dirty") {
+      parsed.allowDirty = true;
+      seen.add(arg);
+      continue;
+    }
+    if (arg === "--checks-only") {
+      parsed.checksOnly = true;
+      seen.add(arg);
+      continue;
+    }
+    if (arg === "--require-signing-env") {
+      parsed.requireSigningEnvironment = true;
+      seen.add(arg);
+      continue;
+    }
+    if (arg === "--app") {
+      const appPath = args[index + 1];
+      if (!appPath || appPath.startsWith("--")) throw new Error("--app requires a path");
+      parsed.appPath = appPath;
+      seen.add(arg);
+      index += 1;
+      continue;
+    }
+    throw new Error(`unknown argument: ${arg}`);
+  }
+  return parsed;
+}
+
+if (import.meta.main) {
+  try {
+    const args = process.argv.slice(2);
+    const report = await verifyBetaReadiness(parseBetaReadinessArgs(args));
+    const outcome = report.scope === "structure-only"
+      ? "Beta structure check completed"
+      : "Local beta preflight passed";
+    console.log(
+      `${outcome}; external release gates remain pending: `
+      + `${report.externalGatesPending.join(", ")}. ${JSON.stringify(report)}`,
+    );
+  } catch (error) {
+    console.error(`verify:beta: ${error instanceof Error ? error.message : String(error)}`);
+    process.exitCode = 1;
+  }
+}

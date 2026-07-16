@@ -13,7 +13,10 @@
     "service": "bun run packages/app/src/service-cli.ts",
     "doctor": "bun run packages/app/src/doctor.ts",
     "build:macos": "bun run scripts/build-macos-app.ts",
-    "smoke:macos": "bun run scripts/smoke-macos-bundle.ts"
+    "smoke:macos": "bun run scripts/smoke-macos-bundle.ts",
+    "verify:crash-recovery": "bun run scripts/verify-crash-recovery.ts",
+    "verify:beta": "bun run scripts/verify-beta-readiness.ts",
+    "soak": "bun run scripts/soak-runtime.ts"
   },
   "devDependencies": {
     "@types/bun": "^1.3.0",

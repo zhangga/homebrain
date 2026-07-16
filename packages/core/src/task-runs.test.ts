@@ -94,4 +94,34 @@ describe("TaskRunStore", () => {
 
     expect(store.get(run.id)?.error).toBe("e".repeat(MAX_TASK_RUN_ERROR_CHARACTERS));
   });
+
+  test("keeps runs and the monotonic timestamp unchanged when persistence fails", () => {
+    const store = new TaskRunStore(dir);
+    const persist = (TaskRunStore.prototype as unknown as {
+      persist: () => void;
+    }).persist.bind(store);
+    Object.defineProperty(store, "persist", {
+      configurable: true,
+      value: () => {
+        throw new Error("disk unavailable");
+      },
+    });
+
+    expect(() => store.start({
+      task: TASK,
+      trigger: "manual",
+      distill: false,
+      startedAt: 100,
+    })).toThrow("disk unavailable");
+    expect(store.list()).toEqual([]);
+
+    Object.defineProperty(store, "persist", { configurable: true, value: persist });
+    const run = store.start({
+      task: TASK,
+      trigger: "manual",
+      distill: false,
+      startedAt: 100,
+    });
+    expect(run.startedAt).toBe(100);
+  });
 });
