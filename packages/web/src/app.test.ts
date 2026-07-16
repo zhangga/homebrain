@@ -1031,7 +1031,7 @@ describe("management backend (read-write)", () => {
     const governanceBody = await governance.text();
     expect(governanceBody).toContain("数据治理");
     expect(governanceBody).toContain("原始消息保留");
-    expect(governanceBody).toContain("homeagent.space v1/v2/v3/v4/v5");
+    expect(governanceBody).toContain("homeagent.space v1/v2/v3/v4/v5/v6");
 
     const exported = await app.request(`/spaces/${encodeURIComponent(SPACE)}/export`);
     expect(exported.status).toBe(200);
@@ -1040,7 +1040,7 @@ describe("management backend (read-write)", () => {
     expect(JSON.parse(archiveText)).toEqual(
       expect.objectContaining({
         format: "homeagent.space",
-        version: 5,
+        version: 6,
         learning: { plans: [], sources: [], sessions: [] },
         governanceAudit: [],
         taskRuns: [],
@@ -1647,7 +1647,14 @@ describe("management backend (read-write)", () => {
     expect(home).toContain("任务");
     expect(home).toContain("新建任务");
 
-    const form = new URLSearchParams({ name: "每日AI", space: SPACE, topic: "大模型进展", cadence: "daily", hour: "9" });
+    const form = new URLSearchParams({
+      name: "每日AI",
+      space: SPACE,
+      topic: "大模型进展",
+      cadence: "daily",
+      hour: "9",
+      timeoutMinutes: "12",
+    });
     form.append("enabled", "on");
     form.append("notify", "on");
     // distillOnRun checkbox omitted => unchecked => false
@@ -1663,12 +1670,15 @@ describe("management backend (read-write)", () => {
     expect(created?.hour).toBe(9);
     expect(created?.enabled).toBe(true);
     expect(created?.distillOnRun).toBe(false); // omitted checkbox
+    expect(created?.timeoutMinutes).toBe(12);
 
     // editor renders the task + the distill toggle
     const editor = await (await app.request(`/tasks/${encodeURIComponent(created!.id)}`)).text();
     expect(editor).toContain("大模型进展");
     expect(editor).toContain("立即运行");
     expect(editor).toContain("完成后立即提炼");
+    expect(editor).toContain('name="timeoutMinutes"');
+    expect(editor).toContain('value="12"');
   });
 
   test("tasks: create with invalid space is rejected with a flash", async () => {
@@ -1780,6 +1790,95 @@ describe("management backend (read-write)", () => {
     finish?.("完成");
     await active.completion;
     isolatedEngine.close();
+  });
+
+  test("tasks: a running task can be cancelled from its detail page", async () => {
+    const isolatedEngine = new KnowledgeEngine({
+      dataDir: join(dir, "cancel-run"),
+      runProvider: async (_provider, _input, _timeoutMs, signal) =>
+        new Promise<string>((_resolve, reject) => {
+          signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
+        }),
+    });
+    isolatedEngine.ensureSpace(SPACE);
+    const task = isolatedEngine.tasks.create({
+      name: "cancel-me",
+      space: SPACE,
+      topic: "x",
+      distillOnRun: false,
+    })!;
+    const started = isolatedEngine.startTaskRun(task.id);
+    const isolatedApp = createWebApp({ engine: isolatedEngine });
+
+    const runningPage = await (
+      await isolatedApp.request(`/tasks/runs/${encodeURIComponent(started.run.id)}`)
+    ).text();
+    expect(runningPage).toContain("取消运行");
+
+    const response = await isolatedApp.request(
+      `/tasks/runs/${encodeURIComponent(started.run.id)}/cancel`,
+      { method: "POST" },
+    );
+    expect(response.headers.get("location")).toContain(`/tasks/runs/${started.run.id}`);
+    expect((await started.completion).status).toBe("cancelled");
+
+    const cancelledPage = await (
+      await isolatedApp.request(`/tasks/runs/${encodeURIComponent(started.run.id)}`)
+    ).text();
+    expect(cancelledPage).toContain("已取消");
+    expect(cancelledPage).not.toContain("取消运行");
+    isolatedEngine.close();
+  });
+
+  test("tasks: a failed Feishu notification is visible and manually retryable", async () => {
+    fake.onText(() => "等待通知的任务结果");
+    let attempts = 0;
+    const failingApp = createWebApp({
+      engine,
+      onTaskRun: async () => {
+        attempts += 1;
+        throw new Error("Feishu delivery failed");
+      },
+    });
+    const task = engine.tasks.create({
+      name: "notify-me",
+      space: SPACE,
+      topic: "x",
+      notify: true,
+      distillOnRun: false,
+    })!;
+
+    await failingApp.request(`/tasks/${encodeURIComponent(task.id)}/run`, { method: "POST" });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const run = engine.listTaskRuns(task.id)[0]!;
+    expect(run.notification).toEqual(expect.objectContaining({
+      status: "failed",
+      attempts: 1,
+      error: "Error: Feishu delivery failed",
+    }));
+    const failedPage = await (
+      await failingApp.request(`/tasks/runs/${encodeURIComponent(run.id)}`)
+    ).text();
+    expect(failedPage).toContain("通知失败");
+    expect(failedPage).toContain("重试通知");
+
+    const retryApp = createWebApp({
+      engine,
+      onTaskRun: async () => {
+        attempts += 1;
+      },
+    });
+    const retryResponse = await retryApp.request(
+      `/tasks/runs/${encodeURIComponent(run.id)}/notification/retry`,
+      { method: "POST" },
+    );
+
+    expect(retryResponse.headers.get("location")).toContain(`/tasks/runs/${run.id}`);
+    expect(attempts).toBe(2);
+    expect(engine.getTaskRun(run.id)?.notification).toEqual(expect.objectContaining({
+      status: "sent",
+      attempts: 2,
+    }));
   });
 
   test("tasks: delete removes it", async () => {

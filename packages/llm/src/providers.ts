@@ -182,22 +182,48 @@ async function runCmd(
   bin: string,
   args: string[],
   timeoutMs: number,
-): Promise<{ code: number | null; stdout: string; stderr: string; timedOut: boolean }> {
+  signal?: AbortSignal,
+): Promise<{
+  code: number | null;
+  stdout: string;
+  stderr: string;
+  timedOut: boolean;
+  aborted: boolean;
+}> {
+  if (signal?.aborted) throw signal.reason ?? new Error("provider run cancelled");
   const proc = Bun.spawn([bin, ...args], { stdout: "pipe", stderr: "pipe", stdin: "ignore" });
   let timedOut = false;
+  let aborted = false;
+  let terminating = false;
+  let forceKillTimer: ReturnType<typeof setTimeout> | undefined;
+  const terminate = () => {
+    if (terminating) return;
+    terminating = true;
+    proc.kill(); // SIGTERM
+    forceKillTimer = setTimeout(() => {
+      proc.kill(9); // SIGKILL if the CLI ignored graceful termination
+    }, 2_000);
+  };
   const timer = setTimeout(() => {
     timedOut = true;
-    proc.kill(); // SIGTERM
+    terminate();
   }, timeoutMs);
+  const onAbort = () => {
+    aborted = true;
+    terminate();
+  };
+  signal?.addEventListener("abort", onAbort, { once: true });
   try {
     const [stdout, stderr, code] = await Promise.all([
       new Response(proc.stdout).text(),
       new Response(proc.stderr).text(),
       proc.exited,
     ]);
-    return { code, stdout, stderr, timedOut };
+    return { code, stdout, stderr, timedOut, aborted };
   } finally {
     clearTimeout(timer);
+    if (forceKillTimer) clearTimeout(forceKillTimer);
+    signal?.removeEventListener("abort", onAbort);
   }
 }
 
@@ -278,6 +304,7 @@ export async function runProvider(
   id: ProviderId,
   input: RunInput,
   timeoutMs = 120_000,
+  signal?: AbortSignal,
 ): Promise<string> {
   const spec = specById.get(id);
   if (!spec) throw new Error(`unknown provider: ${id}`);
@@ -287,7 +314,13 @@ export async function runProvider(
   }
   const bin = providerBin(spec);
   log.info("running local provider", { id, bin });
-  const { code, stdout, stderr, timedOut } = await runCmd(bin, args, timeoutMs);
+  const { code, stdout, stderr, timedOut, aborted } = await runCmd(
+    bin,
+    args,
+    timeoutMs,
+    signal,
+  );
+  if (aborted) throw signal?.reason ?? new Error(`provider ${id} cancelled`);
   if (timedOut) throw new Error(`provider ${id} timed out after ${timeoutMs}ms`);
   if (code !== 0) throw new Error(`provider ${id} exited ${code}: ${providerFailureDetail(stdout, stderr)}`);
   return stdout.trim();

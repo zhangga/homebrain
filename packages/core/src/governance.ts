@@ -14,12 +14,19 @@ import {
 } from "@homeagent/llm";
 import type { Agent } from "./agents.ts";
 import { AGENT_PERMISSIONS } from "./agents.ts";
-import { TASK_CADENCES, type Task } from "./tasks.ts";
+import {
+  DEFAULT_TASK_TIMEOUT_MINUTES,
+  MAX_TASK_TIMEOUT_MINUTES,
+  MIN_TASK_TIMEOUT_MINUTES,
+  TASK_CADENCES,
+  type Task,
+} from "./tasks.ts";
 import {
   MAX_TASK_RUN_ERROR_CHARACTERS,
   MAX_TASK_RUN_HISTORY_PER_TASK,
   MAX_TASK_RUN_OUTPUT_CHARACTERS,
   type TaskRun,
+  type TaskRunNotification,
 } from "./task-runs.ts";
 import type { Reminder } from "./reminders.ts";
 import type {
@@ -41,7 +48,8 @@ export const LEGACY_SPACE_ARCHIVE_VERSION = 1 as const;
 export const LEARNING_SPACE_ARCHIVE_VERSION = 2 as const;
 export const ADAPTIVE_LEARNING_SPACE_ARCHIVE_VERSION = 3 as const;
 export const KNOWLEDGE_GOVERNANCE_SPACE_ARCHIVE_VERSION = 4 as const;
-export const SPACE_ARCHIVE_VERSION = 5 as const;
+export const TASK_RUN_HISTORY_SPACE_ARCHIVE_VERSION = 5 as const;
+export const SPACE_ARCHIVE_VERSION = 6 as const;
 
 export interface MessageRetractionRecord {
   chatId: string;
@@ -82,12 +90,16 @@ export interface SpaceArchiveV4 extends Omit<SpaceArchiveV3, "version"> {
 }
 
 export interface SpaceArchiveV5 extends Omit<SpaceArchiveV4, "version"> {
-  version: typeof SPACE_ARCHIVE_VERSION;
+  version: typeof TASK_RUN_HISTORY_SPACE_ARCHIVE_VERSION;
   taskRuns: TaskRun[];
 }
 
+export interface SpaceArchiveV6 extends Omit<SpaceArchiveV5, "version"> {
+  version: typeof SPACE_ARCHIVE_VERSION;
+}
+
 /** Current normalized archive shape returned by export and parsing. */
-export type SpaceArchive = SpaceArchiveV5;
+export type SpaceArchive = SpaceArchiveV6;
 
 export interface SpaceDeleteResult {
   status: "deleted" | "not_found";
@@ -269,7 +281,7 @@ function parseAgent(value: unknown): Agent {
   };
 }
 
-function parseTask(value: unknown, index: number, space: SpaceId): Task {
+function parseTask(value: unknown, index: number, space: SpaceId, version: number): Task {
   const item = record(value, `tasks[${index}]`);
   if (item.space !== space) throw new Error(`tasks[${index}].space does not match archive space`);
   const cadence = text(item.cadence, `tasks[${index}].cadence`) as Task["cadence"];
@@ -282,6 +294,17 @@ function parseTask(value: unknown, index: number, space: SpaceId): Task {
   if (!Number.isInteger(hour) || hour < 0 || hour > 23) {
     throw new Error(`tasks[${index}].hour is invalid`);
   }
+  const timeoutMinutes = item.timeoutMinutes === undefined
+    && version < SPACE_ARCHIVE_VERSION
+    ? DEFAULT_TASK_TIMEOUT_MINUTES
+    : finiteNumber(item.timeoutMinutes, `tasks[${index}].timeoutMinutes`);
+  if (
+    !Number.isInteger(timeoutMinutes)
+    || timeoutMinutes < MIN_TASK_TIMEOUT_MINUTES
+    || timeoutMinutes > MAX_TASK_TIMEOUT_MINUTES
+  ) {
+    throw new Error(`tasks[${index}].timeoutMinutes is invalid`);
+  }
   return {
     id: nonemptyText(item.id, `tasks[${index}].id`),
     name: text(item.name, `tasks[${index}].name`),
@@ -292,6 +315,7 @@ function parseTask(value: unknown, index: number, space: SpaceId): Task {
     enabled: boolean(item.enabled, `tasks[${index}].enabled`),
     notify: boolean(item.notify, `tasks[${index}].notify`),
     distillOnRun: boolean(item.distillOnRun, `tasks[${index}].distillOnRun`),
+    timeoutMinutes,
     lastRunAt: item.lastRunAt === undefined ? undefined : finiteNumber(item.lastRunAt, `tasks[${index}].lastRunAt`),
     lastStatus,
     lastError: optionalText(item.lastError, `tasks[${index}].lastError`),
@@ -299,6 +323,57 @@ function parseTask(value: unknown, index: number, space: SpaceId): Task {
     createdAt: finiteNumber(item.createdAt, `tasks[${index}].createdAt`),
     updatedAt: finiteNumber(item.updatedAt, `tasks[${index}].updatedAt`),
   };
+}
+
+function parseTaskRunNotification(
+  value: unknown,
+  index: number,
+): TaskRunNotification | undefined {
+  if (value === undefined) return undefined;
+  const item = record(value, `taskRuns[${index}].notification`);
+  const status = text(
+    item.status,
+    `taskRuns[${index}].notification.status`,
+  ) as TaskRunNotification["status"];
+  if (!["pending", "sent", "failed"].includes(status)) {
+    throw new Error(`taskRuns[${index}].notification.status is invalid`);
+  }
+  const attempts = finiteNumber(
+    item.attempts,
+    `taskRuns[${index}].notification.attempts`,
+  );
+  if (!Number.isInteger(attempts) || attempts < 0) {
+    throw new Error(`taskRuns[${index}].notification.attempts is invalid`);
+  }
+  const notification: TaskRunNotification = {
+    status,
+    attempts,
+    lastAttemptAt: item.lastAttemptAt === undefined
+      ? undefined
+      : finiteNumber(item.lastAttemptAt, `taskRuns[${index}].notification.lastAttemptAt`),
+    nextAttemptAt: item.nextAttemptAt === undefined
+      ? undefined
+      : finiteNumber(item.nextAttemptAt, `taskRuns[${index}].notification.nextAttemptAt`),
+    sentAt: item.sentAt === undefined
+      ? undefined
+      : finiteNumber(item.sentAt, `taskRuns[${index}].notification.sentAt`),
+    error: optionalText(item.error, `taskRuns[${index}].notification.error`),
+  };
+  if (status === "sent" && notification.sentAt === undefined) {
+    throw new Error(`taskRuns[${index}].notification.sentAt is required`);
+  }
+  if (status === "failed" && !notification.error) {
+    throw new Error(`taskRuns[${index}].notification.error is required`);
+  }
+  if (
+    notification.error
+    && notification.error.length > MAX_TASK_RUN_ERROR_CHARACTERS
+  ) {
+    throw new Error(
+      `taskRuns[${index}].notification.error exceeds ${MAX_TASK_RUN_ERROR_CHARACTERS} characters`,
+    );
+  }
+  return notification;
 }
 
 function parseTaskRun(
@@ -314,7 +389,7 @@ function parseTaskRun(
   const taskId = nonemptyText(item.taskId, `taskRuns[${index}].taskId`);
   if (!taskIds.has(taskId)) throw new Error(`taskRuns[${index}].taskId is unknown`);
   const status = text(item.status, `taskRuns[${index}].status`) as TaskRun["status"];
-  if (status !== "succeeded" && status !== "failed") {
+  if (!["succeeded", "failed", "cancelled", "timed_out"].includes(status)) {
     throw new Error(`taskRuns[${index}].status is invalid`);
   }
   const trigger = text(item.trigger, `taskRuns[${index}].trigger`) as TaskRun["trigger"];
@@ -337,7 +412,9 @@ function parseTaskRun(
     throw new Error(`taskRuns[${index}].pagesWritten is invalid`);
   }
   const error = optionalText(item.error, `taskRuns[${index}].error`);
-  if (status === "failed" && !error) throw new Error(`taskRuns[${index}].error is required`);
+  if (status !== "succeeded" && !error) {
+    throw new Error(`taskRuns[${index}].error is required`);
+  }
   if (error && error.length > MAX_TASK_RUN_ERROR_CHARACTERS) {
     throw new Error(
       `taskRuns[${index}].error exceeds ${MAX_TASK_RUN_ERROR_CHARACTERS} characters`,
@@ -349,6 +426,22 @@ function parseTaskRun(
   if (outputTruncated && output === undefined) {
     throw new Error(`taskRuns[${index}].outputTruncated requires output`);
   }
+  const timeoutMs = item.timeoutMs === undefined
+    ? undefined
+    : finiteNumber(item.timeoutMs, `taskRuns[${index}].timeoutMs`);
+  if (timeoutMs !== undefined && (!Number.isInteger(timeoutMs) || timeoutMs <= 0)) {
+    throw new Error(`taskRuns[${index}].timeoutMs is invalid`);
+  }
+  const notify = item.notify === undefined
+    ? undefined
+    : boolean(item.notify, `taskRuns[${index}].notify`);
+  const notification = parseTaskRunNotification(item.notification, index);
+  if (notification && status !== "succeeded") {
+    throw new Error(`taskRuns[${index}].notification requires a succeeded run`);
+  }
+  if (notification && notify === false) {
+    throw new Error(`taskRuns[${index}].notification conflicts with notify=false`);
+  }
   return {
     id: nonemptyText(item.id, `taskRuns[${index}].id`),
     taskId,
@@ -358,6 +451,8 @@ function parseTaskRun(
     trigger,
     retryOf: optionalText(item.retryOf, `taskRuns[${index}].retryOf`),
     distill: boolean(item.distill, `taskRuns[${index}].distill`),
+    notify,
+    timeoutMs,
     status,
     startedAt,
     finishedAt,
@@ -367,6 +462,7 @@ function parseTaskRun(
     error,
     rawId: optionalText(item.rawId, `taskRuns[${index}].rawId`),
     pagesWritten,
+    notification,
   };
 }
 
@@ -727,6 +823,7 @@ export function parseSpaceArchive(value: unknown): SpaceArchive {
       && version !== LEARNING_SPACE_ARCHIVE_VERSION
       && version !== ADAPTIVE_LEARNING_SPACE_ARCHIVE_VERSION
       && version !== KNOWLEDGE_GOVERNANCE_SPACE_ARCHIVE_VERSION
+      && version !== TASK_RUN_HISTORY_SPACE_ARCHIVE_VERSION
       && version !== SPACE_ARCHIVE_VERSION
     )
   ) {
@@ -755,7 +852,10 @@ export function parseSpaceArchive(value: unknown): SpaceArchive {
       version >= KNOWLEDGE_GOVERNANCE_SPACE_ARCHIVE_VERSION
       && !Array.isArray(root.governanceAudit)
     )
-    || (version >= SPACE_ARCHIVE_VERSION && !Array.isArray(root.taskRuns))
+    || (
+      version >= TASK_RUN_HISTORY_SPACE_ARCHIVE_VERSION
+      && !Array.isArray(root.taskRuns)
+    )
   ) {
     throw new Error("archive collections must be arrays");
   }
@@ -775,9 +875,9 @@ export function parseSpaceArchive(value: unknown): SpaceArchive {
       createdAt: finiteNumber(item.createdAt, `retractions[${index}].createdAt`),
     };
   });
-  const tasks = root.tasks.map((item, index) => parseTask(item, index, id));
+  const tasks = root.tasks.map((item, index) => parseTask(item, index, id, version));
   const taskIds = new Set(tasks.map((task) => task.id));
-  const taskRuns = version < SPACE_ARCHIVE_VERSION
+  const taskRuns = version < TASK_RUN_HISTORY_SPACE_ARCHIVE_VERSION
     ? []
     : (root.taskRuns as unknown[]).map((item, index) =>
         parseTaskRun(item, index, id, taskIds)

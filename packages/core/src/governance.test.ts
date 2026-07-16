@@ -113,7 +113,7 @@ describe("space data governance", () => {
     expect(archive).toEqual(
       expect.objectContaining({
         format: "homeagent.space",
-        version: 5,
+        version: 6,
         space: expect.objectContaining({ id: SPACE, name: "治理群", agentId: agent.id }),
         agent: expect.objectContaining({ id: agent.id, name: "治理助手" }),
         pages: [expect.objectContaining({ slug: page.slug, title: page.title })],
@@ -194,7 +194,7 @@ describe("space data governance", () => {
     } = archive;
     const parsed = parseSpaceArchive({ ...withoutLearning, version: 1 });
 
-    expect(parsed.version).toBe(5);
+    expect(parsed.version).toBe(6);
     expect(parsed.learning).toEqual({ plans: [], sources: [], sessions: [] });
     expect(parsed.governanceAudit).toEqual([]);
     expect(parsed.taskRuns).toEqual([]);
@@ -226,7 +226,7 @@ describe("space data governance", () => {
 
     const parsed = parseSpaceArchive(archive);
 
-    expect(parsed.version).toBe(5);
+    expect(parsed.version).toBe(6);
     expect(parsed.learning.plans[0]).toEqual(expect.objectContaining({
       id: plan.id,
       mode: "reading",
@@ -274,7 +274,7 @@ describe("space data governance", () => {
     expect(target.learning.source(plan.id)?.materials).toEqual([
       expect.objectContaining({ title: "Async Book", rawIds: ["raw_async"] }),
     ]);
-    expect((await target.exportSpace(SPACE)).version).toBe(5);
+    expect((await target.exportSpace(SPACE)).version).toBe(6);
     target.close();
   });
 
@@ -288,8 +288,43 @@ describe("space data governance", () => {
 
     const parsed = parseSpaceArchive(archive);
 
-    expect(parsed.version).toBe(5);
+    expect(parsed.version).toBe(6);
     expect(parsed.taskRuns).toEqual([]);
+  });
+
+  test("accepts version 5 task history and backfills execution limits", async () => {
+    const engine = new KnowledgeEngine({
+      dataDir: tempDir("ha-v5-archive-"),
+      runProvider: async () => "旧版任务结果",
+    });
+    engine.ensureSpace(SPACE);
+    const task = engine.tasks.create({
+      name: "旧版任务",
+      space: SPACE,
+      topic: "兼容迁移",
+      notify: false,
+      distillOnRun: false,
+    })!;
+    await engine.runTask(task.id);
+    const archive = JSON.parse(JSON.stringify(await engine.exportSpace(SPACE))) as Record<string, any>;
+    engine.close();
+    archive.version = 5;
+    delete archive.tasks[0].timeoutMinutes;
+    delete archive.taskRuns[0].timeoutMs;
+    delete archive.taskRuns[0].notify;
+    delete archive.taskRuns[0].notification;
+
+    const parsed = parseSpaceArchive(archive);
+
+    expect(parsed.version).toBe(6);
+    expect(parsed.tasks[0]?.timeoutMinutes).toBe(5);
+    expect(parsed.taskRuns).toEqual([
+      expect.objectContaining({
+        taskId: task.id,
+        status: "succeeded",
+        output: "旧版任务结果",
+      }),
+    ]);
   });
 
   test("deleting a space removes its knowledge and tasks but keeps shared agents", async () => {

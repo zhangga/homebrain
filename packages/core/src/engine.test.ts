@@ -831,6 +831,183 @@ describe("Knowledge seam contract", () => {
     reopened.close();
   });
 
+  test("an active task run can be cancelled and records a durable cancelled outcome", async () => {
+    let providerSignal: AbortSignal | undefined;
+    const taskEngine = new KnowledgeEngine({
+      dataDir: dir,
+      runProvider: async (_provider, _input, _timeoutMs, signal) => {
+        providerSignal = signal;
+        return new Promise<string>((_resolve, reject) => {
+          signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
+        });
+      },
+    });
+    taskEngine.ensureSpace(SPACE);
+    const task = taskEngine.tasks.create({
+      name: "可取消任务",
+      space: SPACE,
+      topic: "等待取消",
+      distillOnRun: false,
+    })!;
+
+    const started = taskEngine.startTaskRun(task.id);
+    expect(taskEngine.cancelTaskRun(started.run.id)).toBe(true);
+    const report = await started.completion;
+
+    expect(providerSignal?.aborted).toBe(true);
+    expect(report).toEqual(expect.objectContaining({
+      runId: started.run.id,
+      ok: false,
+      status: "cancelled",
+      error: "任务已由用户取消",
+    }));
+    expect(taskEngine.getTaskRun(started.run.id)).toEqual(expect.objectContaining({
+      status: "cancelled",
+      error: "任务已由用户取消",
+      finishedAt: expect.any(Number),
+    }));
+    taskEngine.close();
+  });
+
+  test("a task that exceeds its configured timeout is terminated and can be retried", async () => {
+    let attempts = 0;
+    let timedOutSignal: AbortSignal | undefined;
+    const taskEngine = new KnowledgeEngine({
+      dataDir: dir,
+      runProvider: async (_provider, _input, _timeoutMs, signal) => {
+        attempts += 1;
+        if (attempts > 1) return "超时后的重试结果";
+        timedOutSignal = signal;
+        return new Promise<string>((_resolve, reject) => {
+          signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
+        });
+      },
+    });
+    taskEngine.ensureSpace(SPACE);
+    const task = taskEngine.tasks.create({
+      name: "有限时任务",
+      space: SPACE,
+      topic: "不要无限等待",
+      distillOnRun: false,
+    })!;
+
+    const timedOut = await taskEngine.runTask(task.id, { timeoutMs: 10 });
+
+    expect(timedOutSignal?.aborted).toBe(true);
+    expect(timedOut).toEqual(expect.objectContaining({
+      ok: false,
+      status: "timed_out",
+      error: "任务运行超过 10 ms，已自动终止",
+    }));
+    expect(taskEngine.getTaskRun(timedOut.runId)).toEqual(expect.objectContaining({
+      status: "timed_out",
+      timeoutMs: 10,
+    }));
+
+    const retried = taskEngine.retryTaskRun(timedOut.runId);
+    expect((await retried.completion).status).toBe("succeeded");
+    taskEngine.close();
+  });
+
+  test("a timeout during immediate distillation preserves research without quarantining it", async () => {
+    let calls = 0;
+    const taskEngine = new KnowledgeEngine({
+      dataDir: dir,
+      runProvider: async (_provider, _input, _timeoutMs, signal) => {
+        calls += 1;
+        if (calls === 1) return "已经完成的研究输出";
+        return new Promise<string>((_resolve, reject) => {
+          signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
+        });
+      },
+    });
+    taskEngine.ensureSpace(SPACE);
+    const task = taskEngine.tasks.create({
+      name: "提炼超时",
+      space: SPACE,
+      topic: "保留研究结果",
+      distillOnRun: true,
+    })!;
+
+    const report = await taskEngine.runTask(task.id, { timeoutMs: 20 });
+
+    expect(report.status).toBe("timed_out");
+    expect(taskEngine.getTaskRun(report.runId)).toEqual(expect.objectContaining({
+      status: "timed_out",
+      output: "已经完成的研究输出",
+      rawId: expect.any(String),
+    }));
+    expect(taskEngine.registry.store(SPACE).index().listRaw({ onlyPending: true })).toEqual([
+      expect.objectContaining({
+        source: "task",
+        content: expect.stringContaining("已经完成的研究输出"),
+      }),
+    ]);
+    expect(await taskEngine.listQuarantines(SPACE)).toEqual([]);
+    taskEngine.close();
+  });
+
+  test("notification failures remain durable and can be retried to a sent outcome", async () => {
+    const taskEngine = new KnowledgeEngine({
+      dataDir: dir,
+      runProvider: async () => "需要推送的研究摘要",
+    });
+    taskEngine.ensureSpace(SPACE);
+    const task = taskEngine.tasks.create({
+      name: "通知任务",
+      space: SPACE,
+      topic: "记录通知状态",
+      notify: true,
+      distillOnRun: false,
+    })!;
+    const report = await taskEngine.runTask(task.id);
+    const attemptedAt = Date.now();
+
+    expect(taskEngine.getTaskRun(report.runId)?.notification).toEqual({
+      status: "pending",
+      attempts: 0,
+    });
+    await expect(taskEngine.deliverTaskRunNotification(
+      report.runId,
+      async () => {
+        throw new Error("Feishu unavailable");
+      },
+      { attemptedAt },
+    )).rejects.toThrow("Feishu unavailable");
+
+    expect(taskEngine.getTaskRun(report.runId)?.notification).toEqual({
+      status: "failed",
+      attempts: 1,
+      lastAttemptAt: attemptedAt,
+      nextAttemptAt: attemptedAt + 60_000,
+      error: "Error: Feishu unavailable",
+    });
+    expect(taskEngine.listTaskRunsNeedingNotification(attemptedAt + 59_999)).toEqual([]);
+    expect(taskEngine.listTaskRunsNeedingNotification(attemptedAt + 60_000)).toEqual([
+      expect.objectContaining({ id: report.runId }),
+    ]);
+    taskEngine.close();
+
+    const reopened = new KnowledgeEngine({ dataDir: dir, runProvider: async () => "" });
+    const delivered: string[] = [];
+    const sent = await reopened.deliverTaskRunNotification(
+      report.runId,
+      async (run) => {
+        delivered.push(run.summary ?? "");
+      },
+      { attemptedAt: attemptedAt + 60_000 },
+    );
+
+    expect(delivered).toEqual(["需要推送的研究摘要"]);
+    expect(sent.notification).toEqual({
+      status: "sent",
+      attempts: 2,
+      lastAttemptAt: attemptedAt + 60_000,
+      sentAt: attemptedAt + 60_000,
+    });
+    reopened.close();
+  });
+
   test("a failed task run can be retried as a linked durable run", async () => {
     let attempts = 0;
     const prompts: string[] = [];

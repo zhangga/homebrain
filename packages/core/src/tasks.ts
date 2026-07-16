@@ -18,6 +18,9 @@ import { isSpaceId } from "@homeagent/shared";
 /** How often a task runs. */
 export type TaskCadence = "hourly" | "daily";
 export const TASK_CADENCES: TaskCadence[] = ["hourly", "daily"];
+export const DEFAULT_TASK_TIMEOUT_MINUTES = 5;
+export const MIN_TASK_TIMEOUT_MINUTES = 1;
+export const MAX_TASK_TIMEOUT_MINUTES = 60;
 
 /** Outcome of the last run, for display + scheduling. */
 export type TaskStatus = "ok" | "error";
@@ -39,6 +42,8 @@ export interface Task {
   notify: boolean;
   /** distill the captured output into wiki pages right after the run (default true) */
   distillOnRun: boolean;
+  /** hard execution limit; the provider process is terminated when exceeded */
+  timeoutMinutes: number;
   /** epoch ms of the last run (any outcome) */
   lastRunAt?: number;
   lastStatus?: TaskStatus;
@@ -59,6 +64,7 @@ export interface TaskInput {
   enabled?: boolean;
   notify?: boolean;
   distillOnRun?: boolean;
+  timeoutMinutes?: number;
 }
 
 /** Patch applied after a run to record its outcome. */
@@ -83,6 +89,14 @@ function normalizeHour(raw?: number): number {
   return Math.max(0, Math.min(23, Math.trunc(raw)));
 }
 
+function normalizeTimeoutMinutes(raw?: number): number {
+  if (typeof raw !== "number" || !Number.isFinite(raw)) return DEFAULT_TASK_TIMEOUT_MINUTES;
+  return Math.max(
+    MIN_TASK_TIMEOUT_MINUTES,
+    Math.min(MAX_TASK_TIMEOUT_MINUTES, Math.trunc(raw)),
+  );
+}
+
 export class TaskStore {
   private configPath: string;
   private tasks: Map<string, Task>;
@@ -101,6 +115,11 @@ export class TaskStore {
           if (t && typeof t.id === "string" && isSpaceId(t.space)) {
             // Backfill for older records written before distillOnRun existed.
             if (typeof t.distillOnRun !== "boolean") t.distillOnRun = true;
+            if (typeof t.timeoutMinutes !== "number") {
+              t.timeoutMinutes = DEFAULT_TASK_TIMEOUT_MINUTES;
+            } else {
+              t.timeoutMinutes = normalizeTimeoutMinutes(t.timeoutMinutes);
+            }
             map.set(id, t);
           }
         }
@@ -144,6 +163,7 @@ export class TaskStore {
       enabled: input.enabled ?? true,
       notify: input.notify ?? true,
       distillOnRun: input.distillOnRun ?? true,
+      timeoutMinutes: normalizeTimeoutMinutes(input.timeoutMinutes),
       createdAt: now,
       updatedAt: now,
     };
@@ -164,6 +184,9 @@ export class TaskStore {
     if (input.enabled !== undefined) task.enabled = input.enabled;
     if (input.notify !== undefined) task.notify = input.notify;
     if (input.distillOnRun !== undefined) task.distillOnRun = input.distillOnRun;
+    if (input.timeoutMinutes !== undefined) {
+      task.timeoutMinutes = normalizeTimeoutMinutes(input.timeoutMinutes);
+    }
     task.updatedAt = Date.now();
     this.persist();
     return task;

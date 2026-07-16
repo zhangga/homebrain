@@ -14,7 +14,7 @@ import {
   TaskAlreadyRunningError,
   type KnowledgeEngine,
   type Task,
-  type TaskReport,
+  type TaskRun,
 } from "@homeagent/core";
 import { localHour, dayKey, type RuntimeLoopHealth } from "./scheduler.ts";
 
@@ -50,7 +50,7 @@ export function shouldRunTask(task: Task, now: Date): boolean {
 }
 
 /** Called after a successful run when the task opts into notifications. */
-export type TaskNotify = (task: Task, report: TaskReport) => void | Promise<void>;
+export type TaskNotify = (task: Task, run: TaskRun) => void | Promise<void>;
 
 export class TaskScheduler {
   private engine: KnowledgeEngine;
@@ -116,6 +116,26 @@ export class TaskScheduler {
     const ran: string[] = [];
     const errors: string[] = [];
     try {
+      if (this.notify) {
+        for (const run of this.engine.listTaskRunsNeedingNotification(now.getTime())) {
+          const task = this.engine.tasks.get(run.taskId);
+          if (!task) continue;
+          try {
+            await this.engine.deliverTaskRunNotification(
+              run.id,
+              (current) => this.notify!(task, current),
+              { attemptedAt: now.getTime() },
+            );
+          } catch (err) {
+            errors.push(`notification ${run.id}: ${String(err)}`);
+            log.warn("task notification retry failed", {
+              runId: run.id,
+              taskId: task.id,
+              err: String(err),
+            });
+          }
+        }
+      }
       for (const task of this.engine.tasks.list()) {
         if (!shouldRunTask(task, now)) continue;
         log.info("running scheduled task", { taskId: task.id, space: task.space, reason });
@@ -123,7 +143,20 @@ export class TaskScheduler {
           const report = await this.engine.runTask(task.id, { trigger: "scheduled" });
           ran.push(task.id);
           if (report.ok && task.notify && this.notify) {
-            await this.notify(task, report);
+            try {
+              await this.engine.deliverTaskRunNotification(
+                report.runId,
+                (run) => this.notify!(task, run),
+                { attemptedAt: now.getTime() },
+              );
+            } catch (err) {
+              errors.push(`notification ${report.runId}: ${String(err)}`);
+              log.warn("task notification failed", {
+                runId: report.runId,
+                taskId: task.id,
+                err: String(err),
+              });
+            }
           }
         } catch (err) {
           if (err instanceof TaskAlreadyRunningError) {
@@ -136,6 +169,12 @@ export class TaskScheduler {
           errors.push(`${task.id}: ${String(err)}`);
           log.error("scheduled task failed", { taskId: task.id, err: String(err) });
         }
+      }
+      const unresolvedNotifications = this.engine.listTaskRuns().filter(
+        (run) => run.notification?.status === "failed",
+      );
+      if (unresolvedNotifications.length > 0) {
+        errors.push(`${unresolvedNotifications.length} task notification(s) awaiting retry`);
       }
     } catch (err) {
       errors.push(String(err));

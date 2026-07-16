@@ -13,6 +13,8 @@ export interface DreamOptions {
   force?: boolean;
   /** model override for distillation */
   model?: string;
+  /** cancel the active CLI work without starting more distillation steps */
+  signal?: AbortSignal;
 }
 
 export interface AskOptions {

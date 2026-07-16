@@ -34,7 +34,11 @@ import {
   type CodexLoginSession,
   type DetectedProvider,
 } from "@homeagent/llm";
-import { TaskAlreadyRunningError, type KnowledgeEngine } from "@homeagent/core";
+import {
+  TaskAlreadyRunningError,
+  type KnowledgeEngine,
+  type TaskRun,
+} from "@homeagent/core";
 import { layout } from "./layout.ts";
 import type { CodexSetupPort, FeishuRuntimeStatus, LarkSetupPort } from "./integrations.ts";
 import { buildSetupSnapshot } from "./setup.ts";
@@ -93,7 +97,7 @@ export interface WebOptions {
    * app can push a summary to feishu. main.ts wires this to connector.notice;
    * unset (tests / no connector) => run still writes to the KB, just no push.
    */
-  onTaskRun?: (taskId: string) => void;
+  onTaskRun?: (taskId: string, run: TaskRun) => void | Promise<void>;
   /** Gracefully terminate a launchd-managed process so KeepAlive can restart it. */
   onServiceRestart?: () => void;
 }
@@ -1161,6 +1165,15 @@ export function createWebApp(opts: WebOptions): Hono {
 
   // ---- Tasks ---------------------------------------------------------------
 
+  const deliverTaskRunNotification = async (runId: string): Promise<void> => {
+    if (!opts.onTaskRun) return;
+    if (!engine.getTaskRun(runId)?.notification) return;
+    await engine.deliverTaskRunNotification(
+      runId,
+      (run) => opts.onTaskRun!(run.taskId, run),
+    );
+  };
+
   app.get("/tasks", async (c) => {
     const ok = c.req.query("ok") ?? undefined;
     return c.html(
@@ -1204,6 +1217,7 @@ export function createWebApp(opts: WebOptions): Hono {
 
   app.post("/tasks", async (c) => {
     const body = await c.req.parseBody();
+    const timeoutMinutes = str(body, "timeoutMinutes");
     const task = engine.tasks.create({
       name: str(body, "name"),
       space: str(body, "space"),
@@ -1213,6 +1227,7 @@ export function createWebApp(opts: WebOptions): Hono {
       enabled: checkbox(body, "enabled"),
       notify: checkbox(body, "notify"),
       distillOnRun: checkbox(body, "distillOnRun"),
+      timeoutMinutes: timeoutMinutes ? Number(timeoutMinutes) : undefined,
     });
     if (!task) return c.redirect(`/tasks?ok=${encodeURIComponent("创建失败：请选择有效空间")}`);
     return c.redirect(`/tasks/${encodeURIComponent(task.id)}?ok=${encodeURIComponent("已创建")}`);
@@ -1222,6 +1237,7 @@ export function createWebApp(opts: WebOptions): Hono {
     const id = decodeURIComponent(c.req.param("id"));
     if (!engine.tasks.has(id)) return c.notFound();
     const body = await c.req.parseBody();
+    const timeoutMinutes = str(body, "timeoutMinutes");
     engine.tasks.update(id, {
       name: str(body, "name"),
       space: str(body, "space"),
@@ -1231,6 +1247,7 @@ export function createWebApp(opts: WebOptions): Hono {
       enabled: checkbox(body, "enabled"),
       notify: checkbox(body, "notify"),
       distillOnRun: checkbox(body, "distillOnRun"),
+      timeoutMinutes: timeoutMinutes ? Number(timeoutMinutes) : undefined,
     });
     return c.redirect(`/tasks/${encodeURIComponent(id)}?ok=${encodeURIComponent("已保存")}`);
   });
@@ -1254,9 +1271,18 @@ export function createWebApp(opts: WebOptions): Hono {
     if (!engine.tasks.has(id)) return c.notFound();
     try {
       const started = engine.startTaskRun(id, { trigger: "manual" });
-      void started.completion.then((report) => {
-        if (report.ok) opts.onTaskRun?.(id);
-      }).catch(() => {});
+      void started.completion
+        .then(async (report) => {
+          if (report.ok && opts.onTaskRun) {
+            await deliverTaskRunNotification(report.runId);
+          }
+        })
+        .catch((err) => {
+          log.warn("manual task completion hook failed", {
+            runId: started.run.id,
+            err: String(err),
+          });
+        });
       return c.redirect(`/tasks/runs/${encodeURIComponent(started.run.id)}?ok=${encodeURIComponent("任务已开始，可刷新查看最新状态")}`);
     } catch (err) {
       if (err instanceof TaskAlreadyRunningError) {
@@ -1273,9 +1299,18 @@ export function createWebApp(opts: WebOptions): Hono {
     if (!previous) return c.notFound();
     try {
       const started = engine.retryTaskRun(runId);
-      void started.completion.then((report) => {
-        if (report.ok) opts.onTaskRun?.(report.taskId);
-      }).catch(() => {});
+      void started.completion
+        .then(async (report) => {
+          if (report.ok && opts.onTaskRun) {
+            await deliverTaskRunNotification(report.runId);
+          }
+        })
+        .catch((err) => {
+          log.warn("task retry completion hook failed", {
+            runId: started.run.id,
+            err: String(err),
+          });
+        });
       return c.redirect(`/tasks/runs/${encodeURIComponent(started.run.id)}?ok=${encodeURIComponent("重试已开始")}`);
     } catch (err) {
       if (err instanceof TaskAlreadyRunningError) {
@@ -1283,6 +1318,37 @@ export function createWebApp(opts: WebOptions): Hono {
       }
       log.error("task retry failed", { runId, err: String(err) });
       return c.redirect(`/tasks/runs/${encodeURIComponent(runId)}?ok=${encodeURIComponent("重试启动失败，请稍后再试")}`);
+    }
+  });
+
+  app.post("/tasks/runs/:runId/cancel", async (c) => {
+    const runId = decodeURIComponent(c.req.param("runId"));
+    const run = engine.getTaskRun(runId);
+    if (!run) return c.notFound();
+    const cancelled = engine.cancelTaskRun(runId);
+    const message = cancelled ? "已发送取消请求" : "该运行已结束，无法取消";
+    return c.redirect(`/tasks/runs/${encodeURIComponent(runId)}?ok=${encodeURIComponent(message)}`);
+  });
+
+  app.post("/tasks/runs/:runId/notification/retry", async (c) => {
+    const runId = decodeURIComponent(c.req.param("runId"));
+    const run = engine.getTaskRun(runId);
+    if (!run) return c.notFound();
+    if (!opts.onTaskRun) {
+      return c.redirect(
+        `/tasks/runs/${encodeURIComponent(runId)}?ok=${encodeURIComponent("通知通道未配置")}`,
+      );
+    }
+    try {
+      await deliverTaskRunNotification(runId);
+      return c.redirect(
+        `/tasks/runs/${encodeURIComponent(runId)}?ok=${encodeURIComponent("通知已发送")}`,
+      );
+    } catch (err) {
+      log.warn("manual task notification retry failed", { runId, err: String(err) });
+      return c.redirect(
+        `/tasks/runs/${encodeURIComponent(runId)}?ok=${encodeURIComponent("通知发送失败，已保留重试状态")}`,
+      );
     }
   });
 

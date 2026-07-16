@@ -115,12 +115,30 @@ export class TaskAlreadyRunningError extends Error {
   }
 }
 
+class TaskRunCancelledError extends Error {
+  constructor() {
+    super("任务已由用户取消");
+    this.name = "TaskRunCancelledError";
+  }
+}
+
+class TaskRunTimeoutError extends Error {
+  constructor(readonly timeoutMs: number) {
+    const limit = timeoutMs >= 60_000 && timeoutMs % 60_000 === 0
+      ? `${timeoutMs / 60_000} 分钟`
+      : `${timeoutMs} ms`;
+    super(`任务运行超过 ${limit}，已自动终止`);
+    this.name = "TaskRunTimeoutError";
+  }
+}
+
 /** Summary of one task run. */
 export interface TaskReport {
   runId: string;
   taskId: string;
   space: SpaceId;
   ok: boolean;
+  status: TaskRun["status"];
   /** short preview of the captured output (for notifications/UI) */
   summary?: string;
   error?: string;
@@ -143,11 +161,21 @@ export interface RunTaskOptions {
    * stay offline.
    */
   distill?: boolean;
+  /** Override the task timeout for this run. */
+  timeoutMs?: number;
 }
 
 export interface StartedTaskRun {
   run: TaskRun;
   completion: Promise<TaskReport>;
+}
+
+export type TaskRunNotificationDelivery = (
+  run: TaskRun,
+) => void | Promise<void>;
+
+export interface DeliverTaskRunNotificationOptions {
+  attemptedAt?: number;
 }
 
 export interface CreateLearningPlanFromMessageInput {
@@ -188,6 +216,42 @@ export type LearningDelivery = (
 
 /** How long a research task may run before the CLI is killed (much longer than Q&A). */
 const TASK_TIMEOUT_MS = 300_000;
+
+function taskRunAbortReason(signal: AbortSignal): Error {
+  return signal.reason instanceof Error
+    ? signal.reason
+    : new Error(signal.reason ? String(signal.reason) : "任务已终止");
+}
+
+function throwIfTaskRunAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) throw taskRunAbortReason(signal);
+}
+
+function normalizeTaskRunTimeoutMs(value: number | undefined, fallback: number): number {
+  if (value === undefined || !Number.isFinite(value) || value <= 0) return fallback;
+  return Math.max(1, Math.min(60 * 60_000, Math.trunc(value)));
+}
+
+async function awaitTaskRunStep<T>(
+  promise: Promise<T>,
+  signal: AbortSignal,
+): Promise<T> {
+  throwIfTaskRunAborted(signal);
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(taskRunAbortReason(signal));
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(
+      (value) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(value);
+      },
+      (err) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(err);
+      },
+    );
+  });
+}
 const LEARNING_TIMEOUT_MS = 300_000;
 
 const TOPIC_ROUTE_SCHEMA = {
@@ -483,6 +547,8 @@ export class KnowledgeEngine implements Knowledge {
   private providerRuns = new Map<ProviderId, ProviderRunHealth>();
   private dreamCycles = new Map<SpaceId, DreamCycleHealth>();
   private activeTaskRuns = new Map<string, string>();
+  private taskRunControllers = new Map<string, AbortController>();
+  private deliveringTaskRunNotifications = new Set<string>();
   private deliveringReminderCounts = new Map<string, number>();
   private deliveringLearningCounts = new Map<string, number>();
 
@@ -500,13 +566,13 @@ export class KnowledgeEngine implements Knowledge {
     this.serializer = opts.serializer ?? new Serializer();
     this.llm = opts.llm;
     const providerRunner = opts.runProvider ?? runLocalProvider;
-    this.runProvider = async (provider, input, timeoutMs) => {
+    this.runProvider = async (provider, input, timeoutMs, signal) => {
       const run = this.providerRuns.get(provider) ?? { provider, running: 0 };
       run.running += 1;
       run.lastStartedAt = Date.now();
       this.providerRuns.set(provider, run);
       try {
-        const output = await providerRunner(provider, input, timeoutMs);
+        const output = await providerRunner(provider, input, timeoutMs, signal);
         run.lastSuccessAt = Date.now();
         run.lastStatus = "ok";
         run.lastError = undefined;
@@ -885,7 +951,11 @@ export class KnowledgeEngine implements Knowledge {
    * the assigned Agent CLI/provider/model or the configured default CLI. Throws
    * NoProviderError if neither resolves to a supported local CLI.
    */
-  llmClientForSpace(space: SpaceId, timeoutMs?: number): LlmClient {
+  llmClientForSpace(
+    space: SpaceId,
+    timeoutMs?: number,
+    signal?: AbortSignal,
+  ): LlmClient {
     if (this.llm) return this.llm;
     const agent = this.agentForSpace(space);
     const cfg = config();
@@ -904,7 +974,14 @@ export class KnowledgeEngine implements Knowledge {
         ? agent.reasoningEffort
         : undefined;
     if (!isCliProvider(provider)) throw new NoProviderError(space);
-    return makeCliClient(provider as ProviderId, model, this.runProvider, timeoutMs, reasoningEffort);
+    return makeCliClient(
+      provider as ProviderId,
+      model,
+      this.runProvider,
+      timeoutMs,
+      reasoningEffort,
+      signal,
+    );
   }
 
   async remember(entry: RawEntry): Promise<string> {
@@ -1328,8 +1405,12 @@ export class KnowledgeEngine implements Knowledge {
     health.lastStartedAt = Date.now();
     this.dreamCycles.set(space, health);
     try {
+      throwIfTaskRunAborted(opts.signal);
       const store = this.registry.ensure(space);
-      const report = await distillSpace(store, opts, { client: this.llmClientForSpace(space) });
+      const report = await distillSpace(store, opts, {
+        client: this.llmClientForSpace(space, undefined, opts.signal),
+      });
+      throwIfTaskRunAborted(opts.signal);
       this.registry.setLastDream(space, report.finishedAt);
       health.lastExamined = report.examined;
       health.lastPagesWritten = report.pagesWritten;
@@ -1673,6 +1754,43 @@ export class KnowledgeEngine implements Knowledge {
     return this.taskRuns.list(taskId);
   }
 
+  listTaskRunsNeedingNotification(now = Date.now()): TaskRun[] {
+    return this.taskRuns.listNeedingNotification(now);
+  }
+
+  async deliverTaskRunNotification(
+    runId: string,
+    deliver: TaskRunNotificationDelivery,
+    opts: DeliverTaskRunNotificationOptions = {},
+  ): Promise<TaskRun> {
+    const current = this.taskRuns.get(runId);
+    if (!current) throw new Error(`unknown task run: ${runId}`);
+    if (current.status !== "succeeded" || !current.notification) {
+      throw new Error(`task run has no pending notification: ${runId}`);
+    }
+    if (current.notification.status === "sent") return current;
+    if (this.deliveringTaskRunNotifications.has(runId)) {
+      throw new Error(`task run notification is already being delivered: ${runId}`);
+    }
+    const attemptedAt = opts.attemptedAt !== undefined
+      && Number.isFinite(opts.attemptedAt)
+      && opts.attemptedAt >= 0
+      ? Math.trunc(opts.attemptedAt)
+      : Date.now();
+    const attempting = this.taskRuns.startNotificationAttempt(runId, attemptedAt);
+    if (!attempting) throw new Error(`task run has no pending notification: ${runId}`);
+    this.deliveringTaskRunNotifications.add(runId);
+    try {
+      await deliver(attempting);
+      return this.taskRuns.notificationSent(runId, attemptedAt) ?? attempting;
+    } catch (err) {
+      this.taskRuns.notificationFailed(runId, String(err));
+      throw err;
+    } finally {
+      this.deliveringTaskRunNotifications.delete(runId);
+    }
+  }
+
   removeTask(taskId: string): boolean {
     const activeRunId = this.activeTaskRunId(taskId);
     if (activeRunId) throw new TaskAlreadyRunningError(taskId, activeRunId);
@@ -1684,13 +1802,31 @@ export class KnowledgeEngine implements Knowledge {
   startTaskRun(taskId: string, opts: RunTaskOptions = {}): StartedTaskRun {
     const task = this.tasks.get(taskId);
     if (!task) throw new Error(`unknown task: ${taskId}`);
-    return this.launchTaskRun(task, opts.trigger ?? "manual", opts.distill ?? task.distillOnRun);
+    const configuredTimeoutMs = task.timeoutMinutes * 60_000;
+    return this.launchTaskRun(
+      task,
+      opts.trigger ?? "manual",
+      opts.distill ?? task.distillOnRun,
+      undefined,
+      normalizeTaskRunTimeoutMs(opts.timeoutMs, configuredTimeoutMs),
+    );
+  }
+
+  cancelTaskRun(runId: string): boolean {
+    const run = this.taskRuns.get(runId);
+    if (!run || run.status !== "running") return false;
+    const controller = this.taskRunControllers.get(runId);
+    if (!controller) return false;
+    controller.abort(new TaskRunCancelledError());
+    return true;
   }
 
   retryTaskRun(runId: string): StartedTaskRun {
     const previous = this.taskRuns.get(runId);
     if (!previous) throw new Error(`unknown task run: ${runId}`);
-    if (previous.status !== "failed") throw new Error(`task run is not retryable: ${runId}`);
+    if (!["failed", "cancelled", "timed_out"].includes(previous.status)) {
+      throw new Error(`task run is not retryable: ${runId}`);
+    }
     const task = this.tasks.get(previous.taskId);
     if (!task) throw new Error(`unknown task: ${previous.taskId}`);
     return this.launchTaskRun({
@@ -1698,7 +1834,8 @@ export class KnowledgeEngine implements Knowledge {
       name: previous.taskName,
       space: previous.space,
       topic: previous.topic,
-    }, "retry", previous.distill, previous.id);
+      notify: previous.notify ?? task.notify,
+    }, "retry", previous.distill, previous.id, previous.timeoutMs ?? TASK_TIMEOUT_MS);
   }
 
   private launchTaskRun(
@@ -1706,6 +1843,7 @@ export class KnowledgeEngine implements Knowledge {
     trigger: TaskRunTrigger,
     distill: boolean,
     retryOf?: string,
+    timeoutMs = TASK_TIMEOUT_MS,
   ): StartedTaskRun {
     const taskId = task.id;
     const activeRunId = this.activeTaskRunId(taskId);
@@ -1717,11 +1855,18 @@ export class KnowledgeEngine implements Knowledge {
       trigger,
       retryOf,
       distill,
+      timeoutMs,
     });
+    const controller = new AbortController();
+    const timeout = setTimeout(() => {
+      controller.abort(new TaskRunTimeoutError(timeoutMs));
+    }, timeoutMs);
     this.activeTaskRuns.set(taskId, run.id);
+    this.taskRunControllers.set(run.id, controller);
     return {
       run,
-      completion: this.executeTaskRun(task, run, distill),
+      completion: this.executeTaskRun(task, run, distill, controller)
+        .finally(() => clearTimeout(timeout)),
     };
   }
 
@@ -1734,31 +1879,47 @@ export class KnowledgeEngine implements Knowledge {
     return this.startTaskRun(taskId, opts).completion;
   }
 
-  private async executeTaskRun(task: Task, run: TaskRun, distill: boolean): Promise<TaskReport> {
+  private async executeTaskRun(
+    task: Task,
+    run: TaskRun,
+    distill: boolean,
+    controller: AbortController,
+  ): Promise<TaskReport> {
     const startedAt = run.startedAt;
     let output: string | undefined;
+    let rawId: string | undefined;
     try {
       this.registry.ensure(task.space);
       const agent = this.agentForSpace(task.space);
       // The LLM call runs OUTSIDE the per-space serializer — research is
       // long-running and must not block captures/distillation. Only the write
       // (remember) is serialized, and it acquires the lock itself.
-      const client = this.llmClientForSpace(task.space, TASK_TIMEOUT_MS);
-      const res = await client.complete({
-        system: agent?.instruction || undefined,
-        prompt: researchPrompt(task.topic),
-        model: agent?.model || undefined,
-        purpose: "distill",
-        space: task.space,
-      });
+      const client = this.llmClientForSpace(
+        task.space,
+        run.timeoutMs ?? TASK_TIMEOUT_MS,
+        controller.signal,
+      );
+      const res = await awaitTaskRunStep(
+        client.complete({
+          system: agent?.instruction || undefined,
+          prompt: researchPrompt(task.topic),
+          model: agent?.model || undefined,
+          purpose: "distill",
+          space: task.space,
+        }),
+        controller.signal,
+      );
+      throwIfTaskRunAborted(controller.signal);
       const text = res.text.trim();
       if (!text) throw new Error("task produced empty output");
       output = text;
-      const rawId = await this.remember({
+      throwIfTaskRunAborted(controller.signal);
+      rawId = await this.remember({
         space: task.space,
         source: "task",
         content: `# 任务研究：${task.name}\n主题：${task.topic}\n\n${text}`,
       });
+      throwIfTaskRunAborted(controller.signal);
       // Distill immediately so the research becomes a wiki page now, not at the
       // next nightly cycle. The per-task `distillOnRun` is the default; an
       // explicit opts.distill overrides it. Best-effort: a distillation failure
@@ -1766,9 +1927,13 @@ export class KnowledgeEngine implements Knowledge {
       let pagesWritten: number | undefined;
       if (distill) {
         try {
-          const report = await this.runDreamCycle(task.space);
+          const report = await this.runDreamCycle(task.space, {
+            signal: controller.signal,
+          });
+          throwIfTaskRunAborted(controller.signal);
           pagesWritten = report.pagesWritten;
         } catch (err) {
+          throwIfTaskRunAborted(controller.signal);
           log.warn("post-task distillation failed (raw kept for nightly)", { taskId: task.id, err: String(err) });
         }
       }
@@ -1788,6 +1953,7 @@ export class KnowledgeEngine implements Knowledge {
         taskId: task.id,
         space: task.space,
         ok: true,
+        status: "succeeded",
         summary,
         rawId,
         pagesWritten,
@@ -1795,16 +1961,27 @@ export class KnowledgeEngine implements Knowledge {
         finishedAt,
       };
     } catch (err) {
-      const error = String(err).slice(0, MAX_TASK_RUN_ERROR_CHARACTERS);
+      const abortReason = controller.signal.aborted ? controller.signal.reason : undefined;
+      const timedOut = abortReason instanceof TaskRunTimeoutError;
+      const cancelled = abortReason instanceof TaskRunCancelledError;
+      const error = (timedOut || cancelled ? abortReason.message : String(err))
+        .slice(0, MAX_TASK_RUN_ERROR_CHARACTERS);
       const finishedAt = Math.max(Date.now(), startedAt);
       this.tasks.setLastRun(task.id, { at: finishedAt, status: "error", error });
-      this.taskRuns.fail(run.id, { finishedAt, error, output });
+      if (timedOut) {
+        this.taskRuns.timeout(run.id, { finishedAt, error, output, rawId });
+      } else if (cancelled) {
+        this.taskRuns.cancel(run.id, { finishedAt, error, output, rawId });
+      } else {
+        this.taskRuns.fail(run.id, { finishedAt, error, output, rawId });
+      }
       log.error("task run failed", { runId: run.id, taskId: task.id, space: task.space, err: error });
       return {
         runId: run.id,
         taskId: task.id,
         space: task.space,
         ok: false,
+        status: timedOut ? "timed_out" : cancelled ? "cancelled" : "failed",
         error,
         startedAt,
         finishedAt,
@@ -1813,6 +1990,7 @@ export class KnowledgeEngine implements Knowledge {
       if (this.activeTaskRuns.get(task.id) === run.id) {
         this.activeTaskRuns.delete(task.id);
       }
+      this.taskRunControllers.delete(run.id);
     }
   }
 

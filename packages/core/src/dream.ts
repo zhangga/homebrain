@@ -403,6 +403,12 @@ export async function runDreamCycle(
   const force = opts.force ?? false;
   const startedAt = Date.now();
   const errors: string[] = [];
+  const throwIfAborted = () => {
+    if (!opts.signal?.aborted) return;
+    throw opts.signal.reason instanceof Error
+      ? opts.signal.reason
+      : new Error(opts.signal.reason ? String(opts.signal.reason) : "distillation cancelled");
+  };
 
   const idx = store.index();
   const batch =
@@ -438,8 +444,11 @@ export async function runDreamCycle(
 
   let plan: AnalyzeResult;
   try {
+    throwIfAborted();
     plan = await analyze(client, store, batch, model);
+    throwIfAborted();
   } catch (err) {
+    throwIfAborted();
     errors.push(`analyze failed: ${String(err)}`);
     report.finishedAt = Date.now();
     return report;
@@ -449,6 +458,7 @@ export async function runDreamCycle(
   report.skipped = ingestedIds.size;
 
   for (const op of plan.operations) {
+    throwIfAborted();
     const slug = canonicalSlug(op.type, op.name);
     const sources = op.rawIds.map((id) => rawById.get(id)).filter((r): r is RawRecord => !!r);
     if (sources.length === 0) continue;
@@ -464,6 +474,7 @@ export async function runDreamCycle(
 
     try {
       const gen = await generate(client, store, op, slug, existing, sources, model);
+      throwIfAborted();
       const mergedSources = [...new Set([...(existing?.sources ?? []), ...sources.map((s) => s.id)])];
       const page: Page = {
         slug,
@@ -483,6 +494,7 @@ export async function runDreamCycle(
       report.distilled += sources.length;
       for (const s of sources) ingestedIds.add(s.id);
     } catch (err) {
+      throwIfAborted();
       report.pagesQuarantined += 1;
       quarantine(store, slug, err, sources);
       // Mark contributing raw ingested so a permanently-bad entry does not
@@ -493,6 +505,7 @@ export async function runDreamCycle(
     }
   }
 
+  throwIfAborted();
   idx.markIngested([...ingestedIds]);
   report.processedRawIds = [...ingestedIds];
 

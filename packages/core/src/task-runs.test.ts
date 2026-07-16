@@ -23,6 +23,7 @@ const TASK: Task = {
   enabled: true,
   notify: false,
   distillOnRun: false,
+  timeoutMinutes: 5,
   createdAt: 1,
   updatedAt: 1,
 };

@@ -29,7 +29,12 @@ import type {
   RawGovernanceDetail,
   QuarantineRecord,
 } from "@homeagent/core";
-import { AGENT_PERMISSIONS, TASK_CADENCES, learningProgress } from "@homeagent/core";
+import {
+  AGENT_PERMISSIONS,
+  MAX_TASK_NOTIFICATION_ATTEMPTS,
+  TASK_CADENCES,
+  learningProgress,
+} from "@homeagent/core";
 import { codexReasoningEffortsForModel, type DetectedProvider } from "@homeagent/llm";
 import type { FeishuRuntimeStatus } from "./integrations.ts";
 import type { FeishuExternalSharingStatus } from "./external-sharing.ts";
@@ -488,7 +493,7 @@ export function governanceView(
     </div>
     <div class="card">
       <h2 style="margin-top:0">恢复空间</h2>
-      <p class="muted">接受 homeagent.space v1/v2/v3/v4/v5 归档；v2 包含阅读计划，v3 包含主题路线与多来源材料，v4 包含知识人工治理审计，v5 包含任务运行历史，已有同名空间不会被覆盖。</p>
+      <p class="muted">接受 homeagent.space v1/v2/v3/v4/v5/v6 归档；v2 包含阅读计划，v3 包含主题路线与多来源材料，v4 包含知识人工治理审计，v5 包含任务运行历史，v6 包含运行时限与通知状态，已有同名空间不会被覆盖。</p>
       <form method="post" action="/governance/restore" enctype="multipart/form-data" class="actions">
         <input type="file" name="archive" accept="application/json,.json" required />
         <button type="submit">上传并恢复</button>
@@ -753,6 +758,7 @@ export function tasksView(
   const enabledOn = editing ? editing.enabled : true;
   const notifyOn = editing ? editing.notify : true;
   const distillOn = editing ? editing.distillOnRun : true;
+  const timeoutMinutes = editing?.timeoutMinutes ?? 5;
 
   const spaceOptions = spaces.length
     ? spaces.map((s) => html`<option value="${s.id}" ${s.id === spaceVal ? "selected" : ""}>${s.name?.trim() || s.id}</option>`)
@@ -831,6 +837,10 @@ export function tasksView(
               <label>每天几点 <span class="hint">0-23，仅每天周期用</span></label>
               <input type="number" min="0" max="23" name="hour" value="${hourVal}" />
             </div>
+            <div class="field">
+              <label>最长运行时间 <span class="hint">分钟，超时会终止 CLI 进程</span></label>
+              <input type="number" min="1" max="60" name="timeoutMinutes" value="${timeoutMinutes}" />
+            </div>
           </div>
           <div class="toggle-row">
             <div><strong>启用</strong><div class="hint">关闭后调度器不会自动运行</div></div>
@@ -859,6 +869,8 @@ export function tasksView(
 function taskRunStatus(status: TaskRun["status"]): HtmlEscapedString | Promise<HtmlEscapedString> {
   if (status === "running") return html`<span class="badge general">运行中</span>`;
   if (status === "succeeded") return html`<span class="badge knowledge">成功</span>`;
+  if (status === "cancelled") return html`<span class="badge general">已取消</span>`;
+  if (status === "timed_out") return html`<span class="badge general">已超时</span>`;
   return html`<span class="badge general">失败</span>`;
 }
 
@@ -878,14 +890,39 @@ function taskRunDuration(run: TaskRun): string {
   return `${(milliseconds / 1000).toFixed(1)} 秒`;
 }
 
+function taskRunTimeout(run: TaskRun): string {
+  if (!run.timeoutMs) return "—";
+  if (run.timeoutMs < 60_000) return `${run.timeoutMs} ms`;
+  return `${run.timeoutMs / 60_000} 分钟`;
+}
+
 export function taskRunView(
   run: TaskRun,
   task: Task | undefined,
   flashMsg?: string,
 ): HtmlEscapedString | Promise<HtmlEscapedString> {
-  const retryForm = run.status === "failed" && task
+  const retryForm = ["failed", "cancelled", "timed_out"].includes(run.status) && task
     ? html`<form method="post" action="/tasks/runs/${encodeURIComponent(run.id)}/retry" class="inline-form">
         <button type="submit">重新运行</button>
+      </form>`
+    : "";
+  const cancelForm = run.status === "running"
+    ? html`<form method="post" action="/tasks/runs/${encodeURIComponent(run.id)}/cancel" class="inline-form"
+        onsubmit="return confirm('取消这次运行？')">
+        <button type="submit" class="danger">取消运行</button>
+      </form>`
+    : "";
+  const notification = run.notification;
+  const notificationLabel = notification?.status === "sent"
+    ? "已发送"
+    : notification?.status === "failed"
+      ? "通知失败"
+      : notification
+        ? "待发送"
+        : "未请求";
+  const notificationRetry = notification?.status === "failed"
+    ? html`<form method="post" action="/tasks/runs/${encodeURIComponent(run.id)}/notification/retry" class="inline-form">
+        <button type="submit" class="secondary">重试通知</button>
       </form>`
     : "";
   return html`<h1>运行详情</h1>
@@ -899,6 +936,20 @@ export function taskRunView(
       <div><strong>触发方式：</strong>${taskRunTrigger(run.trigger)}</div>
       <div><strong>开始时间：</strong>${fmtTime(run.startedAt)}</div>
       <div><strong>完成时间：</strong>${fmtTime(run.finishedAt)} · ${taskRunDuration(run)}</div>
+      <div><strong>运行上限：</strong>${taskRunTimeout(run)}</div>
+      <div><strong>飞书通知：</strong>${notificationLabel}${notification ? ` · 已尝试 ${notification.attempts} 次` : ""}</div>
+      ${notification?.nextAttemptAt
+        && notification.status !== "sent"
+        && notification.attempts < MAX_TASK_NOTIFICATION_ATTEMPTS
+        ? html`<div><strong>下次自动重试：</strong>${fmtTime(notification.nextAttemptAt)}</div>`
+        : ""}
+      ${notification?.status === "failed"
+        && notification.attempts >= MAX_TASK_NOTIFICATION_ATTEMPTS
+        ? html`<div class="muted">自动重试已停止，可手动重试通知。</div>`
+        : ""}
+      ${notification?.error
+        ? html`<div><strong>通知错误：</strong><span class="muted">${notification.error}</span></div>`
+        : ""}
       ${run.retryOf
         ? html`<div><strong>重试来源：</strong><a href="/tasks/runs/${encodeURIComponent(run.retryOf)}">${run.retryOf}</a></div>`
         : ""}
@@ -911,7 +962,7 @@ export function taskRunView(
             ${run.outputTruncated ? html`<div class="muted">输出过长，运行记录仅保留前 100,000 个字符。</div>` : ""}</div>`
         : ""}
       ${run.error ? html`<div><strong>错误</strong><div class="contentbox" style="margin-top:8px">${run.error}</div></div>` : ""}
-      <div class="actions">${retryForm}</div>
+      <div class="actions">${cancelForm}${retryForm}${notificationRetry}</div>
     </div>`;
 }
 

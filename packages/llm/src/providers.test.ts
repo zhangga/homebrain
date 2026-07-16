@@ -1,4 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   codexReasoningEffortsForModel,
   curatedProviderModels,
@@ -118,6 +121,32 @@ describe("provider detection", () => {
 
   test("runProvider rejects an unknown provider id", async () => {
     await expect(runProvider("gateway" as never, { prompt: "hi" })).rejects.toThrow();
+  });
+
+  test("runProvider terminates the CLI process when its abort signal fires", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ha-provider-abort-"));
+    const bin = join(dir, "slow-provider");
+    const previous = process.env.HOMEAGENT_TRAE_BIN;
+    try {
+      writeFileSync(bin, "#!/bin/sh\nexec sleep 10\n", "utf8");
+      chmodSync(bin, 0o755);
+      process.env.HOMEAGENT_TRAE_BIN = bin;
+      const controller = new AbortController();
+      const completion = runProvider(
+        "trae-cli",
+        { prompt: "wait" },
+        5_000,
+        controller.signal,
+      );
+
+      setTimeout(() => controller.abort(new Error("caller cancelled")), 10);
+
+      await expect(completion).rejects.toThrow("caller cancelled");
+    } finally {
+      if (previous === undefined) delete process.env.HOMEAGENT_TRAE_BIN;
+      else process.env.HOMEAGENT_TRAE_BIN = previous;
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   test("provider errors fall back to stdout when stderr is empty", () => {

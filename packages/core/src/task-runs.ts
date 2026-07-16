@@ -11,8 +11,18 @@ import { dirname, join } from "node:path";
 import { isSpaceId, type SpaceId } from "@homeagent/shared";
 import type { Task } from "./tasks.ts";
 
-export type TaskRunStatus = "running" | "succeeded" | "failed";
+export type TaskRunStatus = "running" | "succeeded" | "failed" | "cancelled" | "timed_out";
 export type TaskRunTrigger = "manual" | "scheduled" | "chat" | "retry";
+export type TaskRunNotificationStatus = "pending" | "sent" | "failed";
+
+export interface TaskRunNotification {
+  status: TaskRunNotificationStatus;
+  attempts: number;
+  lastAttemptAt?: number;
+  nextAttemptAt?: number;
+  sentAt?: number;
+  error?: string;
+}
 
 export interface TaskRun {
   id: string;
@@ -23,6 +33,8 @@ export interface TaskRun {
   trigger: TaskRunTrigger;
   retryOf?: string;
   distill: boolean;
+  notify?: boolean;
+  timeoutMs?: number;
   status: TaskRunStatus;
   startedAt: number;
   finishedAt?: number;
@@ -32,10 +44,11 @@ export interface TaskRun {
   error?: string;
   rawId?: string;
   pagesWritten?: number;
+  notification?: TaskRunNotification;
 }
 
 interface TaskRunsFile {
-  version: 1;
+  version: 2;
   runs: Record<string, TaskRun>;
 }
 
@@ -44,6 +57,7 @@ export interface StartTaskRunInput {
   trigger: TaskRunTrigger;
   retryOf?: string;
   distill: boolean;
+  timeoutMs?: number;
   startedAt?: number;
 }
 
@@ -63,10 +77,21 @@ export interface TaskRunStoreOptions {
 export const MAX_TASK_RUN_OUTPUT_CHARACTERS = 100_000;
 export const MAX_TASK_RUN_ERROR_CHARACTERS = 20_000;
 export const MAX_TASK_RUN_HISTORY_PER_TASK = 100;
+export const MAX_TASK_NOTIFICATION_ATTEMPTS = 5;
+const TASK_NOTIFICATION_RETRY_DELAYS_MS = [
+  60_000,
+  5 * 60_000,
+  30 * 60_000,
+  2 * 60 * 60_000,
+  6 * 60 * 60_000,
+] as const;
 const INTERRUPTED_RUN_ERROR = "应用在任务完成前停止，运行已标记为失败";
 
 function clone(run: TaskRun): TaskRun {
-  return { ...run };
+  return {
+    ...run,
+    notification: run.notification ? { ...run.notification } : undefined,
+  };
 }
 
 function isTaskRun(value: unknown): value is TaskRun {
@@ -79,8 +104,29 @@ function isTaskRun(value: unknown): value is TaskRun {
     run.error,
     run.rawId,
   ].every((item) => item === undefined || typeof item === "string");
-  const optionalNumbers = [run.finishedAt, run.pagesWritten].every(
+  const optionalNumbers = [run.finishedAt, run.pagesWritten, run.timeoutMs].every(
     (item) => item === undefined || (typeof item === "number" && Number.isFinite(item)),
+  );
+  const notification = run.notification;
+  const validNotification = notification === undefined || (
+    typeof notification === "object"
+    && notification !== null
+    && !Array.isArray(notification)
+    && ["pending", "sent", "failed"].includes(String(notification.status))
+    && Number.isInteger(notification.attempts)
+    && notification.attempts >= 0
+    && [
+      notification.lastAttemptAt,
+      notification.nextAttemptAt,
+      notification.sentAt,
+    ].every((item) => item === undefined || (typeof item === "number" && Number.isFinite(item)))
+    && (notification.error === undefined || typeof notification.error === "string")
+    && (
+      notification.error === undefined
+      || notification.error.length <= MAX_TASK_RUN_ERROR_CHARACTERS
+    )
+    && (notification.status !== "sent" || typeof notification.sentAt === "number")
+    && (notification.status !== "failed" || typeof notification.error === "string")
   );
   return (
     typeof run.id === "string"
@@ -91,14 +137,21 @@ function isTaskRun(value: unknown): value is TaskRun {
     && typeof run.topic === "string"
     && ["manual", "scheduled", "chat", "retry"].includes(String(run.trigger))
     && typeof run.distill === "boolean"
-    && ["running", "succeeded", "failed"].includes(String(run.status))
+    && (run.notify === undefined || typeof run.notify === "boolean")
+    && ["running", "succeeded", "failed", "cancelled", "timed_out"].includes(String(run.status))
     && typeof run.startedAt === "number"
     && Number.isFinite(run.startedAt)
     && optionalStrings
     && optionalNumbers
+    && validNotification
+    && (run.notification === undefined || run.status === "succeeded")
+    && (run.notification === undefined || run.notify !== false)
     && (run.outputTruncated === undefined || typeof run.outputTruncated === "boolean")
     && (run.status === "running" || typeof run.finishedAt === "number")
-    && (run.status !== "failed" || typeof run.error === "string")
+    && (
+      !["failed", "cancelled", "timed_out"].includes(String(run.status))
+      || typeof run.error === "string"
+    )
     && (run.finishedAt === undefined || run.finishedAt >= run.startedAt)
     && (run.output === undefined || run.output.length <= MAX_TASK_RUN_OUTPUT_CHARACTERS)
     && (run.error === undefined || run.error.length <= MAX_TASK_RUN_ERROR_CHARACTERS)
@@ -106,6 +159,10 @@ function isTaskRun(value: unknown): value is TaskRun {
     && (
       run.pagesWritten === undefined
       || (Number.isInteger(run.pagesWritten) && run.pagesWritten >= 0)
+    )
+    && (
+      run.timeoutMs === undefined
+      || (Number.isInteger(run.timeoutMs) && run.timeoutMs > 0)
     )
   );
 }
@@ -143,7 +200,7 @@ export class TaskRunStore {
   private persist(): void {
     mkdirSync(dirname(this.configPath), { recursive: true, mode: 0o700 });
     const tempPath = `${this.configPath}.${process.pid}.${randomUUID()}.tmp`;
-    const file: TaskRunsFile = { version: 1, runs: Object.fromEntries(this.runs) };
+    const file: TaskRunsFile = { version: 2, runs: Object.fromEntries(this.runs) };
     try {
       writeFileSync(tempPath, JSON.stringify(file, null, 2), { encoding: "utf8", mode: 0o600 });
       renameSync(tempPath, this.configPath);
@@ -190,6 +247,8 @@ export class TaskRunStore {
       trigger: input.trigger,
       retryOf: input.retryOf,
       distill: input.distill,
+      notify: input.task.notify,
+      timeoutMs: input.timeoutMs,
       status: "running",
       startedAt,
     };
@@ -210,25 +269,89 @@ export class TaskRunStore {
     run.error = undefined;
     run.rawId = result.rawId;
     run.pagesWritten = result.pagesWritten;
+    run.notification = run.notify
+      ? { status: "pending", attempts: 0 }
+      : undefined;
+    this.pruneCompletedRuns(run.taskId);
+    this.persist();
+    return clone(run);
+  }
+
+  startNotificationAttempt(
+    id: string,
+    attemptedAt: number,
+  ): TaskRun | undefined {
+    const run = this.runs.get(id);
+    if (!run || run.status !== "succeeded" || !run.notification) return undefined;
+    const attempts = run.notification.attempts + 1;
+    const retryDelay = TASK_NOTIFICATION_RETRY_DELAYS_MS[
+      Math.min(attempts - 1, TASK_NOTIFICATION_RETRY_DELAYS_MS.length - 1)
+    ]!;
+    run.notification = {
+      status: "pending",
+      attempts,
+      lastAttemptAt: attemptedAt,
+      nextAttemptAt: attemptedAt + retryDelay,
+    };
+    this.persist();
+    return clone(run);
+  }
+
+  notificationFailed(id: string, error: string): TaskRun | undefined {
+    const run = this.runs.get(id);
+    if (!run?.notification) return undefined;
+    run.notification.status = "failed";
+    run.notification.error = error.slice(0, MAX_TASK_RUN_ERROR_CHARACTERS);
+    this.persist();
+    return clone(run);
+  }
+
+  notificationSent(id: string, sentAt: number): TaskRun | undefined {
+    const run = this.runs.get(id);
+    if (!run?.notification) return undefined;
+    run.notification = {
+      status: "sent",
+      attempts: run.notification.attempts,
+      lastAttemptAt: run.notification.lastAttemptAt,
+      sentAt,
+    };
+    this.persist();
+    return clone(run);
+  }
+
+  private finishWithError(
+    id: string,
+    status: "failed" | "cancelled" | "timed_out",
+    result: FinishTaskRunInput,
+    defaultError: string,
+  ): TaskRun | undefined {
+    const run = this.runs.get(id);
+    if (!run) return undefined;
+    const output = result.output;
+    run.status = status;
+    run.finishedAt = result.finishedAt;
+    run.error = (result.error ?? defaultError).slice(0, MAX_TASK_RUN_ERROR_CHARACTERS);
+    run.output = output?.slice(0, MAX_TASK_RUN_OUTPUT_CHARACTERS);
+    run.outputTruncated = output && output.length > MAX_TASK_RUN_OUTPUT_CHARACTERS
+      ? true
+      : undefined;
+    run.rawId = result.rawId;
+    run.pagesWritten = result.pagesWritten;
     this.pruneCompletedRuns(run.taskId);
     this.persist();
     return clone(run);
   }
 
   fail(id: string, result: FinishTaskRunInput): TaskRun | undefined {
-    const run = this.runs.get(id);
-    if (!run) return undefined;
-    const output = result.output;
-    run.status = "failed";
-    run.finishedAt = result.finishedAt;
-    run.error = (result.error ?? "任务运行失败").slice(0, MAX_TASK_RUN_ERROR_CHARACTERS);
-    run.output = output?.slice(0, MAX_TASK_RUN_OUTPUT_CHARACTERS);
-    run.outputTruncated = output && output.length > MAX_TASK_RUN_OUTPUT_CHARACTERS
-      ? true
-      : undefined;
-    this.pruneCompletedRuns(run.taskId);
-    this.persist();
-    return clone(run);
+    return this.finishWithError(id, "failed", result, "任务运行失败");
+  }
+
+  cancel(id: string, result: FinishTaskRunInput): TaskRun | undefined {
+    return this.finishWithError(id, "cancelled", result, "任务已由用户取消");
+  }
+
+  timeout(id: string, result: FinishTaskRunInput): TaskRun | undefined {
+    return this.finishWithError(id, "timed_out", result, "任务运行超时");
   }
 
   get(id: string): TaskRun | undefined {
@@ -244,6 +367,22 @@ export class TaskRunStore {
     return [...this.runs.values()]
       .filter((run) => !taskId || run.taskId === taskId)
       .sort((a, b) => b.startedAt - a.startedAt)
+      .map(clone);
+  }
+
+  listNeedingNotification(now = Date.now()): TaskRun[] {
+    return [...this.runs.values()]
+      .filter((run) => (
+        run.status === "succeeded"
+        && run.notification !== undefined
+        && run.notification.status !== "sent"
+        && run.notification.attempts < MAX_TASK_NOTIFICATION_ATTEMPTS
+        && (
+          run.notification.nextAttemptAt === undefined
+          || run.notification.nextAttemptAt <= now
+        )
+      ))
+      .sort((a, b) => a.startedAt - b.startedAt)
       .map(clone);
   }
 

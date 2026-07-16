@@ -36,6 +36,7 @@ export type RunProviderFn = (
     reasoningEffort?: CodexReasoningEffort;
   },
   timeoutMs?: number,
+  signal?: AbortSignal,
 ) => Promise<string>;
 
 const zeroResult = (model: string): CompleteResult => ({
@@ -89,6 +90,7 @@ export function makeCliClient(
   run: RunProviderFn = realRunProvider,
   timeoutMs?: number,
   reasoningEffort?: CodexReasoningEffort,
+  signal?: AbortSignal,
 ): LlmClient {
   // The model is fixed at construction (the engine already resolved it from the
   // space's agent / global default). We deliberately IGNORE per-call opts.model:
@@ -110,6 +112,7 @@ export function makeCliClient(
         provider,
         { prompt, system: opts.system, model: cliModel, reasoningEffort },
         timeoutMs,
+        signal,
       );
       return { ...zeroResult(cliModel ?? provider), text: out.trim() };
     },
@@ -121,6 +124,7 @@ export function makeCliClient(
         provider,
         { prompt, system: opts.system, model: cliModel, reasoningEffort },
         timeoutMs,
+        signal,
       );
       let parsed: unknown;
       try {

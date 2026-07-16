@@ -12,7 +12,7 @@ const T10 = new Date("2026-07-06T10:00:00+08:00");
 const T23 = new Date("2026-07-06T23:00:00+08:00");
 
 function task(over: Partial<Task>): Task {
-  return {
+  const value = {
     id: "task_1",
     name: "t",
     space: SPACE,
@@ -22,10 +22,15 @@ function task(over: Partial<Task>): Task {
     enabled: true,
     notify: false,
     distillOnRun: false,
+    timeoutMinutes: 5,
     createdAt: 0,
     updatedAt: 0,
     ...over,
   };
+  return {
+    ...value,
+    timeoutMinutes: over.timeoutMinutes ?? value.timeoutMinutes,
+  } as Task;
 }
 
 describe("shouldRunTask", () => {
@@ -81,7 +86,52 @@ describe("TaskScheduler.tick", () => {
     expect(ran).toContain(t.id);
     expect(notified).toContain(t.id);
     expect(engine.tasks.get(t.id)?.lastStatus).toBe("ok");
-    expect(engine.listTaskRuns(t.id)[0]?.trigger).toBe("scheduled");
+    expect(engine.listTaskRuns(t.id)[0]).toEqual(expect.objectContaining({
+      trigger: "scheduled",
+      notification: expect.objectContaining({ status: "sent", attempts: 1 }),
+    }));
+  });
+
+  test("persists a notification failure and retries it on a later tick", async () => {
+    const t = engine.tasks.create({
+      name: "通知恢复",
+      space: SPACE,
+      topic: "x",
+      notify: true,
+      distillOnRun: false,
+    })!;
+    let attempts = 0;
+    const sched = new TaskScheduler(engine, {
+      notify: async () => {
+        attempts += 1;
+        if (attempts === 1) throw new Error("Feishu network unavailable");
+      },
+    });
+
+    expect(await sched.tick("initial", T10)).toEqual([t.id]);
+    expect(engine.listTaskRuns(t.id)[0]?.notification).toEqual(expect.objectContaining({
+      status: "failed",
+      attempts: 1,
+      error: "Error: Feishu network unavailable",
+      nextAttemptAt: T10.getTime() + 60_000,
+    }));
+    expect(sched.health()).toEqual(expect.objectContaining({
+      lastStatus: "error",
+      lastError: expect.stringContaining("Feishu network unavailable"),
+    }));
+
+    const retryAt = new Date(engine.tasks.get(t.id)!.lastRunAt! + 60_000);
+    expect(await sched.tick("notification-retry", retryAt)).toEqual([]);
+    expect(attempts).toBe(2);
+    expect(engine.listTaskRuns(t.id)[0]?.notification).toEqual(expect.objectContaining({
+      status: "sent",
+      attempts: 2,
+      sentAt: retryAt.getTime(),
+    }));
+    expect(sched.health()).toEqual(expect.objectContaining({
+      lastStatus: "ok",
+      lastError: undefined,
+    }));
   });
 
   test("skips a disabled task and does not notify", async () => {

@@ -78,7 +78,8 @@ async function run(cfg: ReturnType<typeof config>, processLock: ProcessLock): Pr
   // scheduler and the backend's manual "run now").
   const notifyTaskDone = async (space: string, name: string, summary?: string) => {
     const chatId = engine.registry.get(space as never)?.chatId;
-    if (!chatId || !summary) return;
+    if (!chatId) throw new Error(`task space has no bound Feishu chat: ${space}`);
+    if (!summary) throw new Error(`task run has no notification summary: ${name}`);
     await connector.notice(chatId, `🔎 任务「${name}」已完成：\n\n${summary}`);
   };
 
@@ -127,9 +128,8 @@ async function run(cfg: ReturnType<typeof config>, processLock: ProcessLock): Pr
       ? { botName: cfg.feishuBotName, botOpenId: cfg.feishuBotOpenId }
       : undefined,
     onIntegrationTest: async (chatId, text) => connector.notice(chatId, text),
-    onTaskRun: (taskId) => {
-      const t = engine.tasks.get(taskId);
-      if (t) void notifyTaskDone(t.space, t.name, t.lastSummary).catch(() => {});
+    onTaskRun: async (_taskId, run) => {
+      await notifyTaskDone(run.space, run.taskName, run.summary);
     },
     onServiceRestart: () => {
       setTimeout(() => process.kill(process.pid, "SIGTERM"), 250);
@@ -152,8 +152,8 @@ async function run(cfg: ReturnType<typeof config>, processLock: ProcessLock): Pr
   // 4. task scheduler (research tasks). On completion, push a summary to the
   // task's space-bound feishu chat when the task opts in.
   taskScheduler = new TaskScheduler(engine, {
-    notify: async (task, report) => {
-      await notifyTaskDone(task.space, task.name, report.summary);
+    notify: async (_task, run) => {
+      await notifyTaskDone(run.space, run.taskName, run.summary);
     },
   });
   await taskScheduler.start();

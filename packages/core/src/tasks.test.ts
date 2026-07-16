@@ -29,6 +29,7 @@ describe("TaskStore", () => {
     expect(t!.enabled).toBe(true);
     expect(t!.notify).toBe(true);
     expect(t!.distillOnRun).toBe(true); // default on
+    expect(t!.timeoutMinutes).toBe(5);
 
     const path = join(dir, "config", "tasks.json");
     expect(existsSync(path)).toBe(true);
@@ -43,6 +44,13 @@ describe("TaskStore", () => {
     const b = store.create({ name: "b", space: SPACE, cadence: "hourly", hour: 5 });
     expect(b!.cadence).toBe("hourly");
     expect(b!.hour).toBe(5);
+  });
+
+  test("timeout minutes are configurable and clamped to a safe range", () => {
+    const store = new TaskStore(dir);
+    expect(store.create({ name: "fast", space: SPACE, timeoutMinutes: 0 })?.timeoutMinutes).toBe(1);
+    expect(store.create({ name: "normal", space: SPACE, timeoutMinutes: 12 })?.timeoutMinutes).toBe(12);
+    expect(store.create({ name: "bounded", space: SPACE, timeoutMinutes: 999 })?.timeoutMinutes).toBe(60);
   });
 
   test("update patches only provided fields", () => {
