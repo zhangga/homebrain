@@ -21,7 +21,10 @@ afterEach(() => {
 
 describe("space data governance", () => {
   test("a versioned export restores the complete space into a fresh data directory", async () => {
-    const source = new KnowledgeEngine({ dataDir: tempDir("hb-export-") });
+    const source = new KnowledgeEngine({
+      dataDir: tempDir("hb-export-"),
+      runProvider: async () => "项目运行记录",
+    });
     source.ensureSpace(SPACE, { chatId: "oc_governance" });
     const agent = source.agents.create({
       name: "治理助手",
@@ -59,7 +62,13 @@ describe("space data governance", () => {
     await source.upsertPage(SPACE, page);
     // Markdown is authoritative; simulate a missing/stale rebuildable index.
     source.registry.store(SPACE).index().deletePage(page.slug);
-    source.tasks.create({ name: "每日报告", space: SPACE, topic: "项目进展" });
+    const task = source.tasks.create({
+      name: "每日报告",
+      space: SPACE,
+      topic: "项目进展",
+      distillOnRun: false,
+    })!;
+    await source.runTask(task.id, { trigger: "scheduled" });
     source.reminders.create({
       title: "提交每日报告",
       space: SPACE,
@@ -104,15 +113,26 @@ describe("space data governance", () => {
     expect(archive).toEqual(
       expect.objectContaining({
         format: "homeagent.space",
-        version: 4,
+        version: 5,
         space: expect.objectContaining({ id: SPACE, name: "治理群", agentId: agent.id }),
         agent: expect.objectContaining({ id: agent.id, name: "治理助手" }),
         pages: [expect.objectContaining({ slug: page.slug, title: page.title })],
-        raw: [expect.objectContaining({ id: rawId, messageId: "om_keep" })],
+        raw: expect.arrayContaining([
+          expect.objectContaining({ id: rawId, messageId: "om_keep" }),
+          expect.objectContaining({ source: "task", content: expect.stringContaining("项目运行记录") }),
+        ]),
         retractions: [
           expect.objectContaining({ chatId: "oc_governance", messageId: "om_retracted" }),
         ],
         tasks: [expect.objectContaining({ name: "每日报告", space: SPACE })],
+        taskRuns: [
+          expect.objectContaining({
+            taskId: task.id,
+            status: "succeeded",
+            trigger: "scheduled",
+            output: "项目运行记录",
+          }),
+        ],
         reminders: [expect.objectContaining({ title: "提交每日报告", space: SPACE })],
         learning: {
           plans: [expect.objectContaining({ id: learningPlan.id, name: "读《原则》" })],
@@ -136,12 +156,14 @@ describe("space data governance", () => {
     expect(restored.registry.get(SPACE)).toEqual(archive.space);
     expect(restored.agentForSpace(SPACE)).toEqual(archive.agent);
     expect(restored.tasks.list()).toEqual(archive.tasks);
+    expect(restored.listTaskRuns(task.id)).toEqual(archive.taskRuns);
     expect(restored.reminders.list()).toEqual(archive.reminders);
     expect(restored.learning.exportBySpace(SPACE)).toEqual(archive.learning);
     const roundTrip = await restored.exportSpace(SPACE);
     expect(roundTrip.raw).toEqual(archive.raw);
     expect(roundTrip.retractions).toEqual(archive.retractions);
     expect(roundTrip.reminders).toEqual(archive.reminders);
+    expect(roundTrip.taskRuns).toEqual(archive.taskRuns);
     expect(roundTrip.learning).toEqual(archive.learning);
     expect(roundTrip.governanceAudit).toEqual(archive.governanceAudit);
     restored.close();
@@ -172,9 +194,10 @@ describe("space data governance", () => {
     } = archive;
     const parsed = parseSpaceArchive({ ...withoutLearning, version: 1 });
 
-    expect(parsed.version).toBe(4);
+    expect(parsed.version).toBe(5);
     expect(parsed.learning).toEqual({ plans: [], sources: [], sessions: [] });
     expect(parsed.governanceAudit).toEqual([]);
+    expect(parsed.taskRuns).toEqual([]);
   });
 
   test("accepts version 2 reading archives and normalizes their learning fields", async () => {
@@ -203,7 +226,7 @@ describe("space data governance", () => {
 
     const parsed = parseSpaceArchive(archive);
 
-    expect(parsed.version).toBe(4);
+    expect(parsed.version).toBe(5);
     expect(parsed.learning.plans[0]).toEqual(expect.objectContaining({
       id: plan.id,
       mode: "reading",
@@ -251,8 +274,22 @@ describe("space data governance", () => {
     expect(target.learning.source(plan.id)?.materials).toEqual([
       expect.objectContaining({ title: "Async Book", rawIds: ["raw_async"] }),
     ]);
-    expect((await target.exportSpace(SPACE)).version).toBe(4);
+    expect((await target.exportSpace(SPACE)).version).toBe(5);
     target.close();
+  });
+
+  test("accepts version 4 governance archives with no task run history", async () => {
+    const engine = new KnowledgeEngine({ dataDir: tempDir("ha-v4-archive-") });
+    engine.ensureSpace(SPACE);
+    const archive = JSON.parse(JSON.stringify(await engine.exportSpace(SPACE))) as Record<string, unknown>;
+    engine.close();
+    archive.version = 4;
+    delete archive.taskRuns;
+
+    const parsed = parseSpaceArchive(archive);
+
+    expect(parsed.version).toBe(5);
+    expect(parsed.taskRuns).toEqual([]);
   });
 
   test("deleting a space removes its knowledge and tasks but keeps shared agents", async () => {
@@ -278,7 +315,17 @@ describe("space data governance", () => {
       updatedAt: 1,
       contentHash: "deleted",
     });
-    engine.tasks.create({ name: "空间任务", space: SPACE, topic: "x" });
+    const task = engine.tasks.create({ name: "空间任务", space: SPACE, topic: "x" })!;
+    const taskRun = engine.taskRuns.start({
+      task,
+      trigger: "scheduled",
+      distill: false,
+      startedAt: 2,
+    });
+    engine.taskRuns.succeed(taskRun.id, {
+      finishedAt: taskRun.startedAt,
+      output: "空间任务结果",
+    });
     engine.reminders.create({
       title: "空间提醒",
       space: SPACE,
@@ -310,6 +357,7 @@ describe("space data governance", () => {
     expect(engine.registry.has(SPACE)).toBe(false);
     expect(await engine.getPage(SPACE, "concepts/deleted")).toBeNull();
     expect(engine.tasks.list()).toEqual([]);
+    expect(engine.listTaskRuns(task.id)).toEqual([]);
     expect(engine.reminders.list()).toEqual([]);
     expect(engine.learning.get(learningPlan.id)).toBeUndefined();
     expect(engine.agents.has(agent.id)).toBe(true);
@@ -326,6 +374,7 @@ describe("space data governance", () => {
     await engine.restoreSpace(backup);
     expect(await engine.getPage(SPACE, "concepts/deleted")).not.toBeNull();
     expect(engine.tasks.list()).toEqual(backup.tasks);
+    expect(engine.listTaskRuns(task.id)).toEqual(backup.taskRuns);
     expect(engine.reminders.list()).toEqual(backup.reminders);
     expect(engine.learning.exportBySpace(SPACE)).toEqual(backup.learning);
     engine.close();

@@ -15,6 +15,12 @@ import {
 import type { Agent } from "./agents.ts";
 import { AGENT_PERMISSIONS } from "./agents.ts";
 import { TASK_CADENCES, type Task } from "./tasks.ts";
+import {
+  MAX_TASK_RUN_ERROR_CHARACTERS,
+  MAX_TASK_RUN_HISTORY_PER_TASK,
+  MAX_TASK_RUN_OUTPUT_CHARACTERS,
+  type TaskRun,
+} from "./task-runs.ts";
 import type { Reminder } from "./reminders.ts";
 import type {
   LearningArchive,
@@ -34,7 +40,8 @@ export const LEGACY_SPACE_ARCHIVE_FORMAT = "homebrain.space" as const;
 export const LEGACY_SPACE_ARCHIVE_VERSION = 1 as const;
 export const LEARNING_SPACE_ARCHIVE_VERSION = 2 as const;
 export const ADAPTIVE_LEARNING_SPACE_ARCHIVE_VERSION = 3 as const;
-export const SPACE_ARCHIVE_VERSION = 4 as const;
+export const KNOWLEDGE_GOVERNANCE_SPACE_ARCHIVE_VERSION = 4 as const;
+export const SPACE_ARCHIVE_VERSION = 5 as const;
 
 export interface MessageRetractionRecord {
   chatId: string;
@@ -70,12 +77,17 @@ export interface SpaceArchiveV3 extends Omit<SpaceArchiveV2, "version"> {
 }
 
 export interface SpaceArchiveV4 extends Omit<SpaceArchiveV3, "version"> {
-  version: typeof SPACE_ARCHIVE_VERSION;
+  version: typeof KNOWLEDGE_GOVERNANCE_SPACE_ARCHIVE_VERSION;
   governanceAudit: KnowledgeGovernanceAuditRecord[];
 }
 
+export interface SpaceArchiveV5 extends Omit<SpaceArchiveV4, "version"> {
+  version: typeof SPACE_ARCHIVE_VERSION;
+  taskRuns: TaskRun[];
+}
+
 /** Current normalized archive shape returned by export and parsing. */
-export type SpaceArchive = SpaceArchiveV4;
+export type SpaceArchive = SpaceArchiveV5;
 
 export interface SpaceDeleteResult {
   status: "deleted" | "not_found";
@@ -286,6 +298,75 @@ function parseTask(value: unknown, index: number, space: SpaceId): Task {
     lastSummary: optionalText(item.lastSummary, `tasks[${index}].lastSummary`),
     createdAt: finiteNumber(item.createdAt, `tasks[${index}].createdAt`),
     updatedAt: finiteNumber(item.updatedAt, `tasks[${index}].updatedAt`),
+  };
+}
+
+function parseTaskRun(
+  value: unknown,
+  index: number,
+  space: SpaceId,
+  taskIds: Set<string>,
+): TaskRun {
+  const item = record(value, `taskRuns[${index}]`);
+  if (item.space !== space) {
+    throw new Error(`taskRuns[${index}].space does not match archive space`);
+  }
+  const taskId = nonemptyText(item.taskId, `taskRuns[${index}].taskId`);
+  if (!taskIds.has(taskId)) throw new Error(`taskRuns[${index}].taskId is unknown`);
+  const status = text(item.status, `taskRuns[${index}].status`) as TaskRun["status"];
+  if (status !== "succeeded" && status !== "failed") {
+    throw new Error(`taskRuns[${index}].status is invalid`);
+  }
+  const trigger = text(item.trigger, `taskRuns[${index}].trigger`) as TaskRun["trigger"];
+  if (!["manual", "scheduled", "chat", "retry"].includes(trigger)) {
+    throw new Error(`taskRuns[${index}].trigger is invalid`);
+  }
+  const startedAt = finiteNumber(item.startedAt, `taskRuns[${index}].startedAt`);
+  const finishedAt = finiteNumber(item.finishedAt, `taskRuns[${index}].finishedAt`);
+  if (finishedAt < startedAt) throw new Error(`taskRuns[${index}].finishedAt is invalid`);
+  const output = optionalText(item.output, `taskRuns[${index}].output`);
+  if (output && output.length > MAX_TASK_RUN_OUTPUT_CHARACTERS) {
+    throw new Error(
+      `taskRuns[${index}].output exceeds ${MAX_TASK_RUN_OUTPUT_CHARACTERS} characters`,
+    );
+  }
+  const pagesWritten = item.pagesWritten === undefined
+    ? undefined
+    : finiteNumber(item.pagesWritten, `taskRuns[${index}].pagesWritten`);
+  if (pagesWritten !== undefined && (!Number.isInteger(pagesWritten) || pagesWritten < 0)) {
+    throw new Error(`taskRuns[${index}].pagesWritten is invalid`);
+  }
+  const error = optionalText(item.error, `taskRuns[${index}].error`);
+  if (status === "failed" && !error) throw new Error(`taskRuns[${index}].error is required`);
+  if (error && error.length > MAX_TASK_RUN_ERROR_CHARACTERS) {
+    throw new Error(
+      `taskRuns[${index}].error exceeds ${MAX_TASK_RUN_ERROR_CHARACTERS} characters`,
+    );
+  }
+  const outputTruncated = item.outputTruncated === undefined
+    ? undefined
+    : boolean(item.outputTruncated, `taskRuns[${index}].outputTruncated`);
+  if (outputTruncated && output === undefined) {
+    throw new Error(`taskRuns[${index}].outputTruncated requires output`);
+  }
+  return {
+    id: nonemptyText(item.id, `taskRuns[${index}].id`),
+    taskId,
+    taskName: text(item.taskName, `taskRuns[${index}].taskName`),
+    space,
+    topic: text(item.topic, `taskRuns[${index}].topic`),
+    trigger,
+    retryOf: optionalText(item.retryOf, `taskRuns[${index}].retryOf`),
+    distill: boolean(item.distill, `taskRuns[${index}].distill`),
+    status,
+    startedAt,
+    finishedAt,
+    output,
+    outputTruncated,
+    summary: optionalText(item.summary, `taskRuns[${index}].summary`),
+    error,
+    rawId: optionalText(item.rawId, `taskRuns[${index}].rawId`),
+    pagesWritten,
   };
 }
 
@@ -645,6 +726,7 @@ export function parseSpaceArchive(value: unknown): SpaceArchive {
       version !== LEGACY_SPACE_ARCHIVE_VERSION
       && version !== LEARNING_SPACE_ARCHIVE_VERSION
       && version !== ADAPTIVE_LEARNING_SPACE_ARCHIVE_VERSION
+      && version !== KNOWLEDGE_GOVERNANCE_SPACE_ARCHIVE_VERSION
       && version !== SPACE_ARCHIVE_VERSION
     )
   ) {
@@ -670,9 +752,10 @@ export function parseSpaceArchive(value: unknown): SpaceArchive {
     || !Array.isArray(root.tasks)
     || (root.reminders !== undefined && !Array.isArray(root.reminders))
     || (
-      version === SPACE_ARCHIVE_VERSION
+      version >= KNOWLEDGE_GOVERNANCE_SPACE_ARCHIVE_VERSION
       && !Array.isArray(root.governanceAudit)
     )
+    || (version >= SPACE_ARCHIVE_VERSION && !Array.isArray(root.taskRuns))
   ) {
     throw new Error("archive collections must be arrays");
   }
@@ -693,6 +776,28 @@ export function parseSpaceArchive(value: unknown): SpaceArchive {
     };
   });
   const tasks = root.tasks.map((item, index) => parseTask(item, index, id));
+  const taskIds = new Set(tasks.map((task) => task.id));
+  const taskRuns = version < SPACE_ARCHIVE_VERSION
+    ? []
+    : (root.taskRuns as unknown[]).map((item, index) =>
+        parseTaskRun(item, index, id, taskIds)
+      );
+  const taskRunCounts = new Map<string, number>();
+  for (const run of taskRuns) {
+    const count = (taskRunCounts.get(run.taskId) ?? 0) + 1;
+    if (count > MAX_TASK_RUN_HISTORY_PER_TASK) {
+      throw new Error(
+        `taskRuns exceeds ${MAX_TASK_RUN_HISTORY_PER_TASK} records for task ${run.taskId}`,
+      );
+    }
+    taskRunCounts.set(run.taskId, count);
+  }
+  const rawIds = new Set(raw.map((entry) => entry.id));
+  for (const run of taskRuns) {
+    if (run.rawId && !rawIds.has(run.rawId)) {
+      throw new Error(`task run rawId is unknown: ${run.id}`);
+    }
+  }
   const reminders = (root.reminders ?? []).map(
     (item: unknown, index: number) => parseReminder(item, index, id),
   );
@@ -700,9 +805,10 @@ export function parseSpaceArchive(value: unknown): SpaceArchive {
   assertUnique(raw, (entry) => entry.id, "raw id");
   assertUnique(retractions, (entry) => `${entry.chatId}\0${entry.messageId}`, "retraction");
   assertUnique(tasks, (task) => task.id, "task id");
+  assertUnique(taskRuns, (run) => run.id, "task run id");
   assertUnique(reminders, (reminder) => reminder.id, "reminder id");
   const learning = parseLearningArchive(root.learning, version, id);
-  const governanceAudit = version < SPACE_ARCHIVE_VERSION
+  const governanceAudit = version < KNOWLEDGE_GOVERNANCE_SPACE_ARCHIVE_VERSION
     ? []
     : (root.governanceAudit as unknown[]).map((item, index) =>
         parseKnowledgeGovernanceAuditRecord(item, index + 1, id)
@@ -720,6 +826,7 @@ export function parseSpaceArchive(value: unknown): SpaceArchive {
     raw,
     retractions,
     tasks,
+    taskRuns,
     reminders,
     learning,
     governanceAudit,

@@ -16,7 +16,11 @@
  */
 import type { SpaceId } from "@homeagent/shared";
 import { logger, spaceKind } from "@homeagent/shared";
-import type { KnowledgeEngine, Task } from "@homeagent/core";
+import {
+  TaskAlreadyRunningError,
+  type KnowledgeEngine,
+  type Task,
+} from "@homeagent/core";
 import { TASK_HELP } from "./messages.ts";
 
 const log = logger.child("task-commands");
@@ -74,8 +78,6 @@ export async function handleTaskCommand(
   cmd: TaskCommand,
   deps: TaskCommandDeps = {},
 ): Promise<string> {
-  const runTask = deps.runTask ?? ((id) => void engine.runTask(id).catch((err) => log.error("chat task run failed", { id, err: String(err) })));
-
   if (cmd.verb === "help") return TASK_HELP;
 
   const tasks = engine.tasks.list().filter((t) => t.space === space);
@@ -101,6 +103,21 @@ export async function handleTaskCommand(
   if (!cmd.arg.trim()) return "请指定要运行的任务：`/task run <名称或序号>`（用 `/task` 查看列表）";
   const target = findTask(tasks, cmd.arg.trim());
   if (!target) return `没找到任务「${cmd.arg.trim()}」。用 \`/task\` 查看本空间任务列表。`;
-  runTask(target.id);
-  return `已开始运行任务「${target.name}」，完成后结果会写入本空间知识库${target.notify ? "并在此通知你" : ""}。`;
+  try {
+    if (deps.runTask) {
+      deps.runTask(target.id);
+      return `已开始运行任务「${target.name}」，完成后结果会写入本空间知识库${target.notify ? "并在此通知你" : ""}。`;
+    }
+    const started = engine.startTaskRun(target.id, { trigger: "chat" });
+    void started.completion.catch((err) => {
+      log.error("chat task run failed", { id: target.id, runId: started.run.id, err: String(err) });
+    });
+    return `已开始运行任务「${target.name}」（运行编号：${started.run.id}），完成后结果会写入本空间知识库${target.notify ? "并在此通知你" : ""}。`;
+  } catch (err) {
+    if (err instanceof TaskAlreadyRunningError) {
+      return `任务「${target.name}」正在运行（运行编号：${err.runId}），不会重复启动。`;
+    }
+    log.error("chat task run could not start", { id: target.id, err: String(err) });
+    return `任务「${target.name}」启动失败，请稍后重试。`;
+  }
 }

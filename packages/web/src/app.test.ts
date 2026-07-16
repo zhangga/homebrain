@@ -1031,7 +1031,7 @@ describe("management backend (read-write)", () => {
     const governanceBody = await governance.text();
     expect(governanceBody).toContain("数据治理");
     expect(governanceBody).toContain("原始消息保留");
-    expect(governanceBody).toContain("homeagent.space v1/v2/v3/v4");
+    expect(governanceBody).toContain("homeagent.space v1/v2/v3/v4/v5");
 
     const exported = await app.request(`/spaces/${encodeURIComponent(SPACE)}/export`);
     expect(exported.status).toBe(200);
@@ -1040,9 +1040,10 @@ describe("management backend (read-write)", () => {
     expect(JSON.parse(archiveText)).toEqual(
       expect.objectContaining({
         format: "homeagent.space",
-        version: 4,
+        version: 5,
         learning: { plans: [], sources: [], sessions: [] },
         governanceAudit: [],
+        taskRuns: [],
       }),
     );
 
@@ -1682,7 +1683,7 @@ describe("management backend (read-write)", () => {
     expect(engine.tasks.list().length).toBe(0);
   });
 
-  test("tasks: manual run captures output and fires onTaskRun", async () => {
+  test("tasks: manual run redirects to a durable run detail and fires onTaskRun", async () => {
     // make the fake client return research text
     fake.onText(() => "研究结果：要点若干");
     let ranId: string | undefined;
@@ -1695,19 +1696,101 @@ describe("management backend (read-write)", () => {
     const task = engine.tasks.create({ name: "run-me", space: SPACE, topic: "x" })!;
     const res = await app2.request(`/tasks/${encodeURIComponent(task.id)}/run`, { method: "POST" });
     expect([302, 303]).toContain(res.status);
-    // runTask is fire-and-forget; give the microtask queue a beat
+    const location = res.headers.get("location")!;
+    expect(location).toMatch(/^\/tasks\/runs\/run_/);
     await new Promise((r) => setTimeout(r, 20));
     expect(engine.tasks.get(task.id)?.lastStatus).toBe("ok");
     expect(ranId).toBe(task.id);
+    const run = engine.listTaskRuns(task.id)[0]!;
+    expect(location).toContain(run.id);
+    const detail = await (await app2.request(location)).text();
+    expect(detail).toContain("运行详情");
+    expect(detail).toContain("研究结果：要点若干");
     // captured into the space as a task raw entry
     expect(engine.registry.store(SPACE).index().listRaw({}).some((r) => r.source === "task")).toBe(true);
   });
 
+  test("tasks: failed run is visible in history and can be retried", async () => {
+    let attempts = 0;
+    fake.onText(() => {
+      attempts += 1;
+      if (attempts === 1) throw new Error("temporary task failure");
+      return "重试成功后的完整输出";
+    });
+    const task = engine.tasks.create({
+      name: "retry-me",
+      space: SPACE,
+      topic: "x",
+      distillOnRun: false,
+    })!;
+
+    const failedResponse = await app.request(`/tasks/${encodeURIComponent(task.id)}/run`, { method: "POST" });
+    const failedLocation = failedResponse.headers.get("location")!;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    const taskPage = await (await app.request(`/tasks/${encodeURIComponent(task.id)}`)).text();
+    const failedRun = engine.listTaskRuns(task.id)[0]!;
+    expect(taskPage).toContain("运行历史");
+    expect(taskPage).toContain(failedRun.id);
+
+    const failedPage = await (await app.request(failedLocation)).text();
+    expect(failedPage).toContain("temporary task failure");
+    expect(failedPage).toContain("重新运行");
+
+    const retryResponse = await app.request(`/tasks/runs/${encodeURIComponent(failedRun.id)}/retry`, { method: "POST" });
+    const retryLocation = retryResponse.headers.get("location")!;
+    expect(retryLocation).toMatch(/^\/tasks\/runs\/run_/);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    const runs = engine.listTaskRuns(task.id);
+    expect(runs).toHaveLength(2);
+    expect(runs[0]).toEqual(expect.objectContaining({
+      status: "succeeded",
+      trigger: "retry",
+      retryOf: failedRun.id,
+    }));
+    const retryPage = await (await app.request(retryLocation)).text();
+    expect(retryPage).toContain("重试成功后的完整输出");
+    expect(retryPage).toContain(failedRun.id);
+  });
+
+  test("tasks: a duplicate manual run redirects to the active run", async () => {
+    let finish: ((value: string) => void) | undefined;
+    const isolatedEngine = new KnowledgeEngine({
+      dataDir: join(dir, "duplicate-run"),
+      runProvider: async () => new Promise<string>((resolve) => {
+        finish = resolve;
+      }),
+    });
+    isolatedEngine.ensureSpace(SPACE);
+    const task = isolatedEngine.tasks.create({
+      name: "single-flight",
+      space: SPACE,
+      topic: "x",
+      distillOnRun: false,
+    })!;
+    const active = isolatedEngine.startTaskRun(task.id);
+    const isolatedApp = createWebApp({ engine: isolatedEngine });
+
+    const response = await isolatedApp.request(`/tasks/${encodeURIComponent(task.id)}/run`, { method: "POST" });
+
+    expect(response.headers.get("location")).toContain(`/tasks/runs/${active.run.id}`);
+    expect(decodeURIComponent(response.headers.get("location")!)).toContain("任务正在运行");
+    expect(isolatedEngine.listTaskRuns(task.id)).toHaveLength(1);
+    finish?.("完成");
+    await active.completion;
+    isolatedEngine.close();
+  });
+
   test("tasks: delete removes it", async () => {
+    fake.onText(() => "删除前运行");
     const task = engine.tasks.create({ name: "del", space: SPACE, topic: "x" })!;
+    await engine.runTask(task.id, { distill: false });
+    expect(engine.listTaskRuns(task.id)).toHaveLength(1);
     const res = await app.request(`/tasks/${encodeURIComponent(task.id)}/delete`, { method: "POST" });
     expect([302, 303]).toContain(res.status);
     expect(engine.tasks.has(task.id)).toBe(false);
+    expect(engine.listTaskRuns(task.id)).toEqual([]);
   });
 
   test("learning: nav, list, detail, and administrative controls reflect durable state", async () => {

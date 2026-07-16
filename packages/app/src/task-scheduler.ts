@@ -10,7 +10,12 @@
  * optional notify callback (wired to connector.notice in main.ts).
  */
 import { logger } from "@homeagent/shared";
-import type { KnowledgeEngine, Task, TaskReport } from "@homeagent/core";
+import {
+  TaskAlreadyRunningError,
+  type KnowledgeEngine,
+  type Task,
+  type TaskReport,
+} from "@homeagent/core";
 import { localHour, dayKey, type RuntimeLoopHealth } from "./scheduler.ts";
 
 const log = logger.child("task-scheduler");
@@ -115,12 +120,19 @@ export class TaskScheduler {
         if (!shouldRunTask(task, now)) continue;
         log.info("running scheduled task", { taskId: task.id, space: task.space, reason });
         try {
-          const report = await this.engine.runTask(task.id);
+          const report = await this.engine.runTask(task.id, { trigger: "scheduled" });
           ran.push(task.id);
           if (report.ok && task.notify && this.notify) {
             await this.notify(task, report);
           }
         } catch (err) {
+          if (err instanceof TaskAlreadyRunningError) {
+            log.info("scheduled task already running; skipping duplicate", {
+              taskId: task.id,
+              runId: err.runId,
+            });
+            continue;
+          }
           errors.push(`${task.id}: ${String(err)}`);
           log.error("scheduled task failed", { taskId: task.id, err: String(err) });
         }

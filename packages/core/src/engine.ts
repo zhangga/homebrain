@@ -52,6 +52,12 @@ import {
 import { SpaceRegistry } from "./registry.ts";
 import { AgentStore, type Agent } from "./agents.ts";
 import { TaskStore, type Task } from "./tasks.ts";
+import {
+  MAX_TASK_RUN_ERROR_CHARACTERS,
+  TaskRunStore,
+  type TaskRun,
+  type TaskRunTrigger,
+} from "./task-runs.ts";
 import { ReminderStore, type Reminder } from "./reminders.ts";
 import {
   LearningPlanStore,
@@ -99,8 +105,19 @@ export class NoProviderError extends Error {
   }
 }
 
+export class TaskAlreadyRunningError extends Error {
+  constructor(
+    readonly taskId: string,
+    readonly runId: string,
+  ) {
+    super(`task already running: ${taskId} (${runId})`);
+    this.name = "TaskAlreadyRunningError";
+  }
+}
+
 /** Summary of one task run. */
 export interface TaskReport {
+  runId: string;
   taskId: string;
   space: SpaceId;
   ok: boolean;
@@ -116,6 +133,8 @@ export interface TaskReport {
 
 /** Options for a task run. */
 export interface RunTaskOptions {
+  /** Identifies where the run was requested for history and diagnostics. */
+  trigger?: TaskRunTrigger;
   /**
    * Override immediate distillation. When omitted, the task's own
    * `distillOnRun` field decides (default true) — distill the captured output
@@ -124,6 +143,11 @@ export interface RunTaskOptions {
    * stay offline.
    */
   distill?: boolean;
+}
+
+export interface StartedTaskRun {
+  run: TaskRun;
+  completion: Promise<TaskReport>;
 }
 
 export interface CreateLearningPlanFromMessageInput {
@@ -419,6 +443,8 @@ export interface EngineOptions {
   llm?: LlmClient;
   /** override the local-CLI runner (tests inject a fake to avoid spawning) */
   runProvider?: RunProviderFn;
+  /** Mark task runs left active by a previous service process as failed. */
+  recoverInterruptedTaskRuns?: boolean;
 }
 
 interface ProviderRunHealth {
@@ -447,6 +473,7 @@ export class KnowledgeEngine implements Knowledge {
   readonly registry: SpaceRegistry;
   readonly agents: AgentStore;
   readonly tasks: TaskStore;
+  readonly taskRuns: TaskRunStore;
   readonly reminders: ReminderStore;
   readonly learning: LearningPlanStore;
   readonly serializer: Serializer;
@@ -455,7 +482,7 @@ export class KnowledgeEngine implements Knowledge {
   private runProvider: RunProviderFn;
   private providerRuns = new Map<ProviderId, ProviderRunHealth>();
   private dreamCycles = new Map<SpaceId, DreamCycleHealth>();
-  private runningTaskCounts = new Map<string, number>();
+  private activeTaskRuns = new Map<string, string>();
   private deliveringReminderCounts = new Map<string, number>();
   private deliveringLearningCounts = new Map<string, number>();
 
@@ -464,6 +491,10 @@ export class KnowledgeEngine implements Knowledge {
     this.registry = new SpaceRegistry(this.dataDir);
     this.agents = new AgentStore(this.dataDir);
     this.tasks = new TaskStore(this.dataDir);
+    this.taskRuns = new TaskRunStore(this.dataDir, {
+      recoverInterrupted: opts.recoverInterruptedTaskRuns,
+    });
+    this.reconcileTaskRunHealth();
     this.reminders = new ReminderStore(this.dataDir);
     this.learning = new LearningPlanStore(this.dataDir);
     this.serializer = opts.serializer ?? new Serializer();
@@ -489,6 +520,29 @@ export class KnowledgeEngine implements Knowledge {
         run.running -= 1;
       }
     };
+  }
+
+  private reconcileTaskRunHealth(): void {
+    for (const task of this.tasks.list()) {
+      const latest = this.taskRuns.list(task.id)[0];
+      if (!latest?.finishedAt || latest.finishedAt <= (task.lastRunAt ?? 0)) continue;
+      this.tasks.setLastRun(task.id, latest.status === "succeeded"
+        ? {
+            at: latest.finishedAt,
+            status: "ok",
+            summary: latest.summary,
+          }
+        : {
+            at: latest.finishedAt,
+            status: "error",
+            error: latest.error,
+          });
+    }
+  }
+
+  private activeTaskRunId(taskId: string): string | undefined {
+    return this.activeTaskRuns.get(taskId)
+      ?? this.taskRuns.list(taskId).find((run) => run.status === "running")?.id;
   }
 
   /** Ensure a space exists (used by connectors when a group is joined). */
@@ -1376,6 +1430,11 @@ export class KnowledgeEngine implements Knowledge {
       const store = this.registry.store(space);
       const index = store.index();
       const agent = meta.agentId ? this.agents.get(meta.agentId) : undefined;
+      const tasks = this.tasks.list().filter((task) => task.space === space);
+      if (tasks.some((task) => this.activeTaskRunId(task.id) !== undefined)) {
+        throw new Error(`space has running tasks: ${space}`);
+      }
+      const taskIds = new Set(tasks.map((task) => task.id));
       return {
         format: SPACE_ARCHIVE_FORMAT,
         version: SPACE_ARCHIVE_VERSION,
@@ -1387,7 +1446,10 @@ export class KnowledgeEngine implements Knowledge {
         pages: store.listPagesFromDisk(),
         raw: index.listRaw({}),
         retractions: index.listMessageRetractions(),
-        tasks: this.tasks.list().filter((task) => task.space === space),
+        tasks,
+        taskRuns: this.taskRuns.list().filter(
+          (run) => run.space === space && taskIds.has(run.taskId),
+        ),
         reminders: this.reminders.list().filter((reminder) => reminder.space === space),
         learning: this.learning.exportBySpace(space),
         governanceAudit: listKnowledgeGovernanceAudit(store),
@@ -1411,6 +1473,8 @@ export class KnowledgeEngine implements Knowledge {
       }
       const taskConflict = archive.tasks.find((task) => this.tasks.has(task.id));
       if (taskConflict) throw new Error(`task id already exists: ${taskConflict.id}`);
+      const taskRunConflict = archive.taskRuns.find((run) => this.taskRuns.has(run.id));
+      if (taskRunConflict) throw new Error(`task run id already exists: ${taskRunConflict.id}`);
       const reminderConflict = archive.reminders.find((reminder) => this.reminders.has(reminder.id));
       if (reminderConflict) throw new Error(`reminder id already exists: ${reminderConflict.id}`);
       if (this.learning.listBySpace(space).length > 0) {
@@ -1422,6 +1486,7 @@ export class KnowledgeEngine implements Knowledge {
         throw new Error(`agent id already exists with different data: ${archive.agent!.id}`);
       }
       const taskIdsBefore = new Set(this.tasks.list().map((task) => task.id));
+      const taskRunIdsBefore = new Set(this.taskRuns.list().map((run) => run.id));
       const reminderIdsBefore = new Set(this.reminders.list().map((reminder) => reminder.id));
       const agentWasPresent = Boolean(existingAgent);
       let learningRestored = false;
@@ -1435,6 +1500,7 @@ export class KnowledgeEngine implements Knowledge {
         for (const record of archive.retractions) index.restoreMessageRetraction(record);
         for (const page of archive.pages) store.writePage(page);
         this.tasks.restore(archive.tasks);
+        this.taskRuns.restore(archive.taskRuns);
         this.reminders.restore(archive.reminders);
         this.learning.restore(archive.learning);
         learningRestored = archive.learning.plans.length > 0;
@@ -1444,6 +1510,9 @@ export class KnowledgeEngine implements Knowledge {
           agentId: archive.space.agentId,
         });
       } catch (err) {
+        for (const run of this.taskRuns.list()) {
+          if (run.space === space && !taskRunIdsBefore.has(run.id)) this.taskRuns.remove(run.id);
+        }
         for (const task of this.tasks.list()) {
           if (task.space === space && !taskIdsBefore.has(task.id)) this.tasks.remove(task.id);
         }
@@ -1481,9 +1550,10 @@ export class KnowledgeEngine implements Knowledge {
     return this.serializer.run(space, async () => {
       if (!this.registry.has(space)) return empty();
       const tasks = this.tasks.list().filter((task) => task.space === space);
+      const taskRuns = this.taskRuns.list().filter((run) => run.space === space);
       const reminders = this.reminders.list().filter((reminder) => reminder.space === space);
       const learning = this.learning.listBySpace(space);
-      if (tasks.some((task) => (this.runningTaskCounts.get(task.id) ?? 0) > 0)) {
+      if (tasks.some((task) => this.activeTaskRunId(task.id) !== undefined)) {
         throw new Error(`space has running tasks: ${space}`);
       }
       if (reminders.some(
@@ -1505,11 +1575,14 @@ export class KnowledgeEngine implements Knowledge {
       let learningPlansDeleted = 0;
       const learningArchive = this.learning.exportBySpace(space);
       try {
+        this.taskRuns.removeBySpace(space);
         tasksDeleted = this.tasks.removeBySpace(space);
         remindersDeleted = this.reminders.removeBySpace(space);
         learningPlansDeleted = this.learning.removeBySpace(space);
         this.registry.remove(space);
       } catch (err) {
+        const missingTaskRuns = taskRuns.filter((run) => !this.taskRuns.has(run.id));
+        if (missingTaskRuns.length > 0) this.taskRuns.restore(missingTaskRuns);
         const missingTasks = tasks.filter((task) => !this.tasks.has(task.id));
         if (missingTasks.length > 0) this.tasks.restore(missingTasks);
         const missingReminders = reminders.filter((reminder) => !this.reminders.has(reminder.id));
@@ -1592,68 +1665,154 @@ export class KnowledgeEngine implements Knowledge {
     return report;
   }
 
+  getTaskRun(runId: string): TaskRun | undefined {
+    return this.taskRuns.get(runId);
+  }
+
+  listTaskRuns(taskId?: string): TaskRun[] {
+    return this.taskRuns.list(taskId);
+  }
+
+  removeTask(taskId: string): boolean {
+    const activeRunId = this.activeTaskRunId(taskId);
+    if (activeRunId) throw new TaskAlreadyRunningError(taskId, activeRunId);
+    const removed = this.tasks.remove(taskId);
+    if (removed) this.taskRuns.removeByTask(taskId);
+    return removed;
+  }
+
+  startTaskRun(taskId: string, opts: RunTaskOptions = {}): StartedTaskRun {
+    const task = this.tasks.get(taskId);
+    if (!task) throw new Error(`unknown task: ${taskId}`);
+    return this.launchTaskRun(task, opts.trigger ?? "manual", opts.distill ?? task.distillOnRun);
+  }
+
+  retryTaskRun(runId: string): StartedTaskRun {
+    const previous = this.taskRuns.get(runId);
+    if (!previous) throw new Error(`unknown task run: ${runId}`);
+    if (previous.status !== "failed") throw new Error(`task run is not retryable: ${runId}`);
+    const task = this.tasks.get(previous.taskId);
+    if (!task) throw new Error(`unknown task: ${previous.taskId}`);
+    return this.launchTaskRun({
+      ...task,
+      name: previous.taskName,
+      space: previous.space,
+      topic: previous.topic,
+    }, "retry", previous.distill, previous.id);
+  }
+
+  private launchTaskRun(
+    task: Task,
+    trigger: TaskRunTrigger,
+    distill: boolean,
+    retryOf?: string,
+  ): StartedTaskRun {
+    const taskId = task.id;
+    const activeRunId = this.activeTaskRunId(taskId);
+    if (activeRunId) {
+      throw new TaskAlreadyRunningError(taskId, activeRunId);
+    }
+    const run = this.taskRuns.start({
+      task,
+      trigger,
+      retryOf,
+      distill,
+    });
+    this.activeTaskRuns.set(taskId, run.id);
+    return {
+      run,
+      completion: this.executeTaskRun(task, run, distill),
+    };
+  }
+
   /**
    * Run a task: hand its research topic to the space's agent CLI, capture the
    * output as raw material (source "task") in that space, and record the
    * outcome. The dream cycle later distills the raw entry into wiki pages.
-   * Serialized per space so it never races capture/distillation. NoProviderError
-   * propagates when the space has no runnable CLI (caller decides how to surface).
    */
   async runTask(taskId: string, opts: RunTaskOptions = {}): Promise<TaskReport> {
-    const task = this.tasks.get(taskId);
-    if (!task) throw new Error(`unknown task: ${taskId}`);
-    const startedAt = Date.now();
-    this.runningTaskCounts.set(taskId, (this.runningTaskCounts.get(taskId) ?? 0) + 1);
+    return this.startTaskRun(taskId, opts).completion;
+  }
+
+  private async executeTaskRun(task: Task, run: TaskRun, distill: boolean): Promise<TaskReport> {
+    const startedAt = run.startedAt;
+    let output: string | undefined;
     try {
       this.registry.ensure(task.space);
       const agent = this.agentForSpace(task.space);
-      try {
-        // The LLM call runs OUTSIDE the per-space serializer — research is
-        // long-running and must not block captures/distillation. Only the write
-        // (remember) is serialized, and it acquires the lock itself.
-        const client = this.llmClientForSpace(task.space, TASK_TIMEOUT_MS);
-        const res = await client.complete({
-          system: agent?.instruction || undefined,
-          prompt: researchPrompt(task.topic),
-          model: agent?.model || undefined,
-          purpose: "distill",
-          space: task.space,
-        });
-        const text = res.text.trim();
-        if (!text) throw new Error("task produced empty output");
-        const rawId = await this.remember({
-          space: task.space,
-          source: "task",
-          content: `# 任务研究：${task.name}\n主题：${task.topic}\n\n${text}`,
-        });
-        // Distill immediately so the research becomes a wiki page now, not at the
-        // next nightly cycle. The per-task `distillOnRun` is the default; an
-        // explicit opts.distill overrides it. Best-effort: a distillation failure
-        // doesn't fail the task (the raw entry is safely captured for later).
-        let pagesWritten: number | undefined;
-        const distill = opts.distill ?? task.distillOnRun;
-        if (distill) {
-          try {
-            const report = await this.runDreamCycle(task.space);
-            pagesWritten = report.pagesWritten;
-          } catch (err) {
-            log.warn("post-task distillation failed (raw kept for nightly)", { taskId, err: String(err) });
-          }
+      // The LLM call runs OUTSIDE the per-space serializer — research is
+      // long-running and must not block captures/distillation. Only the write
+      // (remember) is serialized, and it acquires the lock itself.
+      const client = this.llmClientForSpace(task.space, TASK_TIMEOUT_MS);
+      const res = await client.complete({
+        system: agent?.instruction || undefined,
+        prompt: researchPrompt(task.topic),
+        model: agent?.model || undefined,
+        purpose: "distill",
+        space: task.space,
+      });
+      const text = res.text.trim();
+      if (!text) throw new Error("task produced empty output");
+      output = text;
+      const rawId = await this.remember({
+        space: task.space,
+        source: "task",
+        content: `# 任务研究：${task.name}\n主题：${task.topic}\n\n${text}`,
+      });
+      // Distill immediately so the research becomes a wiki page now, not at the
+      // next nightly cycle. The per-task `distillOnRun` is the default; an
+      // explicit opts.distill overrides it. Best-effort: a distillation failure
+      // doesn't fail the task (the raw entry is safely captured for later).
+      let pagesWritten: number | undefined;
+      if (distill) {
+        try {
+          const report = await this.runDreamCycle(task.space);
+          pagesWritten = report.pagesWritten;
+        } catch (err) {
+          log.warn("post-task distillation failed (raw kept for nightly)", { taskId: task.id, err: String(err) });
         }
-        const summary = text.slice(0, 200);
-        this.tasks.setLastRun(taskId, { at: Date.now(), status: "ok", summary });
-        log.info("task run ok", { taskId, space: task.space, rawId, pagesWritten });
-        return { taskId, space: task.space, ok: true, summary, rawId, pagesWritten, startedAt, finishedAt: Date.now() };
-      } catch (err) {
-        const error = String(err);
-        this.tasks.setLastRun(taskId, { at: Date.now(), status: "error", error });
-        log.error("task run failed", { taskId, space: task.space, err: error });
-        return { taskId, space: task.space, ok: false, error, startedAt, finishedAt: Date.now() };
       }
+      const summary = text.slice(0, 200);
+      const finishedAt = Math.max(Date.now(), startedAt);
+      this.tasks.setLastRun(task.id, { at: finishedAt, status: "ok", summary });
+      this.taskRuns.succeed(run.id, {
+        finishedAt,
+        output: text,
+        summary,
+        rawId,
+        pagesWritten,
+      });
+      log.info("task run ok", { runId: run.id, taskId: task.id, space: task.space, rawId, pagesWritten });
+      return {
+        runId: run.id,
+        taskId: task.id,
+        space: task.space,
+        ok: true,
+        summary,
+        rawId,
+        pagesWritten,
+        startedAt,
+        finishedAt,
+      };
+    } catch (err) {
+      const error = String(err).slice(0, MAX_TASK_RUN_ERROR_CHARACTERS);
+      const finishedAt = Math.max(Date.now(), startedAt);
+      this.tasks.setLastRun(task.id, { at: finishedAt, status: "error", error });
+      this.taskRuns.fail(run.id, { finishedAt, error, output });
+      log.error("task run failed", { runId: run.id, taskId: task.id, space: task.space, err: error });
+      return {
+        runId: run.id,
+        taskId: task.id,
+        space: task.space,
+        ok: false,
+        error,
+        startedAt,
+        finishedAt,
+      };
     } finally {
-      const remaining = (this.runningTaskCounts.get(taskId) ?? 1) - 1;
-      if (remaining > 0) this.runningTaskCounts.set(taskId, remaining);
-      else this.runningTaskCounts.delete(taskId);
+      if (this.activeTaskRuns.get(task.id) === run.id) {
+        this.activeTaskRuns.delete(task.id);
+      }
     }
   }
 
@@ -1748,16 +1907,20 @@ export class KnowledgeEngine implements Knowledge {
         dreamCycles: [...this.dreamCycles.values()]
           .map((cycle) => ({ ...cycle }))
           .sort((a, b) => a.space.localeCompare(b.space)),
-        tasks: this.tasks.list().map((task) => ({
-          id: task.id,
-          name: task.name,
-          space: task.space,
-          enabled: task.enabled,
-          running: (this.runningTaskCounts.get(task.id) ?? 0) > 0,
-          lastRunAt: task.lastRunAt,
-          lastStatus: task.lastStatus,
-          lastError: task.lastError,
-        })),
+        tasks: this.tasks.list().map((task) => {
+          const activeRunId = this.activeTaskRunId(task.id);
+          return {
+            id: task.id,
+            name: task.name,
+            space: task.space,
+            enabled: task.enabled,
+            running: activeRunId !== undefined,
+            activeRunId,
+            lastRunAt: task.lastRunAt,
+            lastStatus: task.lastStatus,
+            lastError: task.lastError,
+          };
+        }),
         reminders: {
           total: reminders.length,
           ...reminderCounts,

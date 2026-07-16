@@ -17,6 +17,7 @@ import { readdirSync, readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import {
   config,
+  logger,
   saveSettings,
   isSpaceId,
   isLoopbackHost,
@@ -33,7 +34,7 @@ import {
   type CodexLoginSession,
   type DetectedProvider,
 } from "@homeagent/llm";
-import type { KnowledgeEngine } from "@homeagent/core";
+import { TaskAlreadyRunningError, type KnowledgeEngine } from "@homeagent/core";
 import { layout } from "./layout.ts";
 import type { CodexSetupPort, FeishuRuntimeStatus, LarkSetupPort } from "./integrations.ts";
 import { buildSetupSnapshot } from "./setup.ts";
@@ -59,11 +60,13 @@ import {
   spaceDetailView,
   spaceGovernanceView,
   spaceListView,
+  taskRunView,
   tasksView,
 } from "./views.ts";
 
 const MUTATING_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 const LOCAL_GOVERNANCE_ACTOR = "local-admin";
+const log = logger.child("web");
 
 export interface WebOptions {
   engine: KnowledgeEngine;
@@ -1161,7 +1164,26 @@ export function createWebApp(opts: WebOptions): Hono {
   app.get("/tasks", async (c) => {
     const ok = c.req.query("ok") ?? undefined;
     return c.html(
-      await layout("任务", [{ label: "任务" }], await tasksView(engine.tasks.list(), null, engine.registry.list(), ok), "tasks"),
+      await layout("任务", [{ label: "任务" }], await tasksView(engine.tasks.list(), null, engine.registry.list(), [], ok), "tasks"),
+    );
+  });
+
+  app.get("/tasks/runs/:runId", async (c) => {
+    const runId = decodeURIComponent(c.req.param("runId"));
+    const run = engine.getTaskRun(runId);
+    if (!run) return c.notFound();
+    const ok = c.req.query("ok") ?? undefined;
+    return c.html(
+      await layout(
+        "运行详情",
+        [
+          { label: "任务", href: "/tasks" },
+          { label: run.taskName, href: `/tasks/${encodeURIComponent(run.taskId)}` },
+          { label: "运行详情" },
+        ],
+        await taskRunView(run, engine.tasks.get(run.taskId), ok),
+        "tasks",
+      ),
     );
   });
 
@@ -1174,7 +1196,7 @@ export function createWebApp(opts: WebOptions): Hono {
       await layout(
         task.name,
         [{ label: "任务", href: "/tasks" }, { label: task.name }],
-        await tasksView(engine.tasks.list(), task, engine.registry.list(), ok),
+        await tasksView(engine.tasks.list(), task, engine.registry.list(), engine.listTaskRuns(task.id), ok),
         "tasks",
       ),
     );
@@ -1215,21 +1237,53 @@ export function createWebApp(opts: WebOptions): Hono {
 
   app.post("/tasks/:id/delete", async (c) => {
     const id = decodeURIComponent(c.req.param("id"));
-    engine.tasks.remove(id);
+    try {
+      engine.removeTask(id);
+    } catch (err) {
+      if (err instanceof TaskAlreadyRunningError) {
+        return c.redirect(`/tasks/runs/${encodeURIComponent(err.runId)}?ok=${encodeURIComponent("任务正在运行")}`);
+      }
+      log.error("task delete failed", { taskId: id, err: String(err) });
+      return c.redirect(`/tasks/${encodeURIComponent(id)}?ok=${encodeURIComponent("任务删除失败")}`);
+    }
     return c.redirect(`/tasks?ok=${encodeURIComponent("已删除")}`);
   });
 
   app.post("/tasks/:id/run", async (c) => {
     const id = decodeURIComponent(c.req.param("id"));
     if (!engine.tasks.has(id)) return c.notFound();
-    // Fire-and-forget: research is long-running. The list shows status on reload.
-    void engine
-      .runTask(id)
-      .then((report) => {
+    try {
+      const started = engine.startTaskRun(id, { trigger: "manual" });
+      void started.completion.then((report) => {
         if (report.ok) opts.onTaskRun?.(id);
-      })
-      .catch(() => {});
-    return c.redirect(`/tasks/${encodeURIComponent(id)}?ok=${encodeURIComponent("任务已开始，完成后刷新查看结果")}`);
+      }).catch(() => {});
+      return c.redirect(`/tasks/runs/${encodeURIComponent(started.run.id)}?ok=${encodeURIComponent("任务已开始，可刷新查看最新状态")}`);
+    } catch (err) {
+      if (err instanceof TaskAlreadyRunningError) {
+        return c.redirect(`/tasks/runs/${encodeURIComponent(err.runId)}?ok=${encodeURIComponent("任务正在运行")}`);
+      }
+      log.error("manual task start failed", { taskId: id, err: String(err) });
+      return c.redirect(`/tasks/${encodeURIComponent(id)}?ok=${encodeURIComponent("任务启动失败，请稍后重试")}`);
+    }
+  });
+
+  app.post("/tasks/runs/:runId/retry", async (c) => {
+    const runId = decodeURIComponent(c.req.param("runId"));
+    const previous = engine.getTaskRun(runId);
+    if (!previous) return c.notFound();
+    try {
+      const started = engine.retryTaskRun(runId);
+      void started.completion.then((report) => {
+        if (report.ok) opts.onTaskRun?.(report.taskId);
+      }).catch(() => {});
+      return c.redirect(`/tasks/runs/${encodeURIComponent(started.run.id)}?ok=${encodeURIComponent("重试已开始")}`);
+    } catch (err) {
+      if (err instanceof TaskAlreadyRunningError) {
+        return c.redirect(`/tasks/runs/${encodeURIComponent(err.runId)}?ok=${encodeURIComponent("任务正在运行")}`);
+      }
+      log.error("task retry failed", { runId, err: String(err) });
+      return c.redirect(`/tasks/runs/${encodeURIComponent(runId)}?ok=${encodeURIComponent("重试启动失败，请稍后再试")}`);
+    }
   });
 
   // ---- Guided learning ----------------------------------------------------

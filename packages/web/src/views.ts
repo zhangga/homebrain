@@ -20,6 +20,7 @@ import type {
   SpaceMeta,
   Agent,
   Task,
+  TaskRun,
   Reminder,
   LearningPlan,
   LearningSession,
@@ -487,7 +488,7 @@ export function governanceView(
     </div>
     <div class="card">
       <h2 style="margin-top:0">恢复空间</h2>
-      <p class="muted">接受 homeagent.space v1/v2/v3/v4 归档；v2 包含阅读计划，v3 包含主题路线与多来源材料，v4 包含知识人工治理审计，已有同名空间不会被覆盖。</p>
+      <p class="muted">接受 homeagent.space v1/v2/v3/v4/v5 归档；v2 包含阅读计划，v3 包含主题路线与多来源材料，v4 包含知识人工治理审计，v5 包含任务运行历史，已有同名空间不会被覆盖。</p>
       <form method="post" action="/governance/restore" enctype="multipart/form-data" class="actions">
         <input type="file" name="archive" accept="application/json,.json" required />
         <button type="submit">上传并恢复</button>
@@ -722,6 +723,7 @@ export function tasksView(
   tasks: Task[],
   selected: Task | null,
   spaces: SpaceMeta[],
+  runs: TaskRun[] = [],
   flashMsg?: string,
 ): HtmlEscapedString | Promise<HtmlEscapedString> {
   const statusBadge = (t: Task) => {
@@ -756,16 +758,17 @@ export function tasksView(
     ? spaces.map((s) => html`<option value="${s.id}" ${s.id === spaceVal ? "selected" : ""}>${s.name?.trim() || s.id}</option>`)
     : [html`<option value="">（还没有空间，先让机器人进群或私聊）</option>`];
 
-  const deleteForm = editing
-    ? html`<form method="post" action="/tasks/${encodeURIComponent(editing.id)}/delete" class="inline-form"
-        onsubmit="return confirm('删除该任务？')">
-        <button type="submit" class="danger">删除</button>
-      </form>`
+  const deleteControl = editing
+    ? html`<button type="submit" class="danger"
+        formaction="/tasks/${encodeURIComponent(editing.id)}/delete" formmethod="post"
+        onclick="return confirm('删除该任务？')">删除</button>`
     : "";
-  const runForm = editing
-    ? html`<form method="post" action="/tasks/${encodeURIComponent(editing.id)}/run" class="inline-form">
-        <button type="submit" class="secondary">立即运行</button>
-      </form>`
+  const activeRun = runs.find((run) => run.status === "running");
+  const runControl = editing
+    ? activeRun
+      ? html`<a href="/tasks/runs/${encodeURIComponent(activeRun.id)}">查看运行中任务</a>`
+      : html`<button type="submit" class="secondary"
+          formaction="/tasks/${encodeURIComponent(editing.id)}/run" formmethod="post">立即运行</button>`
     : "";
 
   const lastRun = editing?.lastRunAt
@@ -774,6 +777,22 @@ export function tasksView(
           ? html`<div class="muted">错误：${editing.lastError.slice(0, 200)}</div>`
           : ""}
         ${editing.lastSummary ? html`<div class="contentbox" style="margin-top:8px">${editing.lastSummary}</div>` : ""}`
+    : "";
+  const runHistory = editing
+    ? html`<div class="card" style="margin-top:16px">
+        <h2>运行历史</h2>
+        ${runs.length === 0
+          ? html`<div class="empty">还没有运行记录。</div>`
+          : html`<table>
+              <tr><th>状态</th><th>触发方式</th><th>开始时间</th><th>耗时</th></tr>
+              ${runs.map((run) => html`<tr>
+                <td><a href="/tasks/runs/${encodeURIComponent(run.id)}">${taskRunStatus(run.status)}</a></td>
+                <td>${taskRunTrigger(run.trigger)}</td>
+                <td>${fmtTime(run.startedAt)}</td>
+                <td>${taskRunDuration(run)}</td>
+              </tr>`)}
+            </table>`}
+      </div>`
     : "";
 
   return html`<h1>任务</h1>
@@ -828,11 +847,71 @@ export function tasksView(
           ${lastRun}
           <div class="actions">
             <button type="submit">${submitLabel}</button>
-            ${runForm}
-            ${deleteForm}
+            ${runControl}
+            ${deleteControl}
           </div>
         </form>
+        ${runHistory}
       </div>
+    </div>`;
+}
+
+function taskRunStatus(status: TaskRun["status"]): HtmlEscapedString | Promise<HtmlEscapedString> {
+  if (status === "running") return html`<span class="badge general">运行中</span>`;
+  if (status === "succeeded") return html`<span class="badge knowledge">成功</span>`;
+  return html`<span class="badge general">失败</span>`;
+}
+
+function taskRunTrigger(trigger: TaskRun["trigger"]): string {
+  return {
+    manual: "后台手动",
+    scheduled: "定时调度",
+    chat: "飞书命令",
+    retry: "失败重试",
+  }[trigger];
+}
+
+function taskRunDuration(run: TaskRun): string {
+  if (!run.finishedAt) return "运行中";
+  const milliseconds = Math.max(0, run.finishedAt - run.startedAt);
+  if (milliseconds < 1000) return `${milliseconds} ms`;
+  return `${(milliseconds / 1000).toFixed(1)} 秒`;
+}
+
+export function taskRunView(
+  run: TaskRun,
+  task: Task | undefined,
+  flashMsg?: string,
+): HtmlEscapedString | Promise<HtmlEscapedString> {
+  const retryForm = run.status === "failed" && task
+    ? html`<form method="post" action="/tasks/runs/${encodeURIComponent(run.id)}/retry" class="inline-form">
+        <button type="submit">重新运行</button>
+      </form>`
+    : "";
+  return html`<h1>运行详情</h1>
+    <p class="subtitle">
+      <a href="/tasks/${encodeURIComponent(run.taskId)}">${run.taskName}</a>
+      · ${run.id}
+    </p>
+    ${flash(flashMsg)}
+    <div class="card stack">
+      <div><strong>状态：</strong>${taskRunStatus(run.status)}</div>
+      <div><strong>触发方式：</strong>${taskRunTrigger(run.trigger)}</div>
+      <div><strong>开始时间：</strong>${fmtTime(run.startedAt)}</div>
+      <div><strong>完成时间：</strong>${fmtTime(run.finishedAt)} · ${taskRunDuration(run)}</div>
+      ${run.retryOf
+        ? html`<div><strong>重试来源：</strong><a href="/tasks/runs/${encodeURIComponent(run.retryOf)}">${run.retryOf}</a></div>`
+        : ""}
+      ${run.rawId
+        ? html`<div><strong>原始记录：</strong><a href="/spaces/${encodeURIComponent(run.space)}/raw/${encodeURIComponent(run.rawId)}">${run.rawId}</a></div>`
+        : ""}
+      ${run.pagesWritten !== undefined ? html`<div><strong>写入知识页：</strong>${run.pagesWritten}</div>` : ""}
+      ${run.output
+        ? html`<div><strong>运行输出</strong><div class="contentbox" style="margin-top:8px">${run.output}</div>
+            ${run.outputTruncated ? html`<div class="muted">输出过长，运行记录仅保留前 100,000 个字符。</div>` : ""}</div>`
+        : ""}
+      ${run.error ? html`<div><strong>错误</strong><div class="contentbox" style="margin-top:8px">${run.error}</div></div>` : ""}
+      <div class="actions">${retryForm}</div>
     </div>`;
 }
 

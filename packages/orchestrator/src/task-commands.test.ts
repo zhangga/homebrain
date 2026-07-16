@@ -104,4 +104,35 @@ describe("handleTaskCommand", () => {
     expect(reply).toContain("没找到");
     expect(ran).toEqual([]);
   });
+
+  test("run reports the active run instead of claiming a duplicate started", async () => {
+    let finish: ((value: string) => void) | undefined;
+    const duplicateEngine = new KnowledgeEngine({
+      dataDir: join(dir, "duplicate"),
+      runProvider: async () => new Promise<string>((resolve) => {
+        finish = resolve;
+      }),
+    });
+    duplicateEngine.ensureSpace(SPACE);
+    const task = duplicateEngine.tasks.create({
+      name: "运行中任务",
+      space: SPACE,
+      topic: "x",
+      distillOnRun: false,
+    })!;
+    const active = duplicateEngine.startTaskRun(task.id, { trigger: "chat" });
+
+    const reply = await handleTaskCommand(
+      duplicateEngine,
+      SPACE,
+      { verb: "run", arg: task.name },
+    );
+
+    expect(reply).toContain("正在运行");
+    expect(reply).toContain(active.run.id);
+    expect(duplicateEngine.listTaskRuns(task.id)).toHaveLength(1);
+    finish?.("完成");
+    await active.completion;
+    duplicateEngine.close();
+  });
 });

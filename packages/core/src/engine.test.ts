@@ -663,7 +663,7 @@ describe("Knowledge seam contract", () => {
     ]);
   });
 
-  test("health keeps a task running until all concurrent runs finish", async () => {
+  test("a task rejects a second run while its first run is active", async () => {
     const completions: Array<(value: string) => void> = [];
     const healthEngine = new KnowledgeEngine({
       dataDir: join(dir, "concurrent-health"),
@@ -672,23 +672,24 @@ describe("Knowledge seam contract", () => {
     healthEngine.ensureSpace(SPACE);
     const task = healthEngine.tasks.create({ name: "并发任务", space: SPACE, topic: "并发" })!;
 
-    const first = healthEngine.runTask(task.id, { distill: false });
-    const second = healthEngine.runTask(task.id, { distill: false });
-    expect(completions).toHaveLength(2);
+    const first = healthEngine.startTaskRun(task.id, { distill: false });
+    expect(() => healthEngine.startTaskRun(task.id, { distill: false })).toThrow(
+      `task already running: ${task.id} (${first.run.id})`,
+    );
+    expect(completions).toHaveLength(1);
 
-    completions[0]!("第一次完成");
-    await first;
     let tasks = (await healthEngine.health()).details?.tasks as Array<Record<string, unknown>>;
     expect(tasks[0]?.running).toBe(true);
+    expect(tasks[0]?.activeRunId).toBe(first.run.id);
 
-    completions[1]!("第二次完成");
-    await second;
+    completions[0]!("第一次完成");
+    await first.completion;
     tasks = (await healthEngine.health()).details?.tasks as Array<Record<string, unknown>>;
     expect(tasks[0]?.running).toBe(false);
     healthEngine.close();
   });
 
-  test("health clears running state when task setup throws", async () => {
+  test("task setup failures become durable failed runs and clear running health", async () => {
     const healthEngine = new KnowledgeEngine({
       dataDir: join(dir, "setup-failure-health"),
       runProvider: async () => "unused",
@@ -699,9 +700,12 @@ describe("Knowledge seam contract", () => {
       throw new Error("agent store unavailable");
     };
 
-    await expect(healthEngine.runTask(task.id, { distill: false })).rejects.toThrow(
-      "agent store unavailable",
-    );
+    const report = await healthEngine.runTask(task.id, { distill: false });
+    expect(report.ok).toBe(false);
+    expect(healthEngine.getTaskRun(report.runId)).toEqual(expect.objectContaining({
+      status: "failed",
+      error: "Error: agent store unavailable",
+    }));
     const tasks = (await healthEngine.health()).details?.tasks as Array<Record<string, unknown>>;
     expect(tasks[0]?.running).toBe(false);
     healthEngine.close();
@@ -785,4 +789,157 @@ describe("Knowledge seam contract", () => {
     expect(calls).toBe(1);
     taskEngine.close();
   });
+
+  test("task runs expose an id immediately and persist their completed output", async () => {
+    let finishResearch: ((value: string) => void) | undefined;
+    const taskEngine = new KnowledgeEngine({
+      dataDir: dir,
+      runProvider: async () => new Promise<string>((resolve) => {
+        finishResearch = resolve;
+      }),
+    });
+    taskEngine.ensureSpace(SPACE);
+    const task = taskEngine.tasks.create({
+      name: "持久化运行",
+      space: SPACE,
+      topic: "记录执行结果",
+      distillOnRun: false,
+    })!;
+
+    const started = taskEngine.startTaskRun(task.id);
+    expect(started.run).toEqual(expect.objectContaining({
+      id: expect.stringMatching(/^run_/),
+      taskId: task.id,
+      status: "running",
+      trigger: "manual",
+    }));
+    expect(taskEngine.getTaskRun(started.run.id)?.status).toBe("running");
+
+    finishResearch?.("完整研究输出");
+    const report = await started.completion;
+    expect(report.runId).toBe(started.run.id);
+    expect(report.ok).toBe(true);
+    taskEngine.close();
+
+    const reopened = new KnowledgeEngine({ dataDir: dir, runProvider: async () => "" });
+    expect(reopened.getTaskRun(started.run.id)).toEqual(expect.objectContaining({
+      status: "succeeded",
+      output: "完整研究输出",
+      summary: "完整研究输出",
+      finishedAt: expect.any(Number),
+    }));
+    reopened.close();
+  });
+
+  test("a failed task run can be retried as a linked durable run", async () => {
+    let attempts = 0;
+    const prompts: string[] = [];
+    const taskEngine = new KnowledgeEngine({
+      dataDir: dir,
+      runProvider: async (_provider, input) => {
+        prompts.push(input.prompt);
+        attempts += 1;
+        if (attempts === 1) throw new Error("temporary provider failure");
+        return "重试后的研究结果";
+      },
+    });
+    taskEngine.ensureSpace(SPACE);
+    const task = taskEngine.tasks.create({
+      name: "可重试任务",
+      space: SPACE,
+      topic: "测试失败恢复",
+      distillOnRun: false,
+    })!;
+
+    const failed = await taskEngine.runTask(task.id);
+    expect(failed.ok).toBe(false);
+    expect(taskEngine.getTaskRun(failed.runId)).toEqual(expect.objectContaining({
+      status: "failed",
+      error: "Error: temporary provider failure",
+    }));
+
+    taskEngine.tasks.update(task.id, {
+      name: "已编辑任务",
+      topic: "编辑后的新主题",
+    });
+    const retried = taskEngine.retryTaskRun(failed.runId);
+    expect(retried.run).toEqual(expect.objectContaining({
+      taskId: task.id,
+      trigger: "retry",
+      retryOf: failed.runId,
+      status: "running",
+    }));
+    expect((await retried.completion).ok).toBe(true);
+    expect(taskEngine.listTaskRuns(task.id).map((run) => run.id)).toEqual([
+      retried.run.id,
+      failed.runId,
+    ]);
+    expect(prompts[1]).toContain("测试失败恢复");
+    expect(prompts[1]).not.toContain("编辑后的新主题");
+    taskEngine.close();
+  });
+
+  test("a failed run preserves provider output when capture fails afterwards", async () => {
+    const taskEngine = new KnowledgeEngine({
+      dataDir: dir,
+      runProvider: async () => "已经生成但尚未落库的输出",
+    });
+    taskEngine.ensureSpace(SPACE);
+    const task = taskEngine.tasks.create({
+      name: "落库失败",
+      space: SPACE,
+      topic: "保留输出",
+      distillOnRun: false,
+    })!;
+    taskEngine.remember = async () => {
+      throw new Error("raw store unavailable");
+    };
+
+    const report = await taskEngine.runTask(task.id);
+
+    expect(report.ok).toBe(false);
+    expect(taskEngine.getTaskRun(report.runId)).toEqual(expect.objectContaining({
+      status: "failed",
+      output: "已经生成但尚未落库的输出",
+      error: "Error: raw store unavailable",
+    }));
+    taskEngine.close();
+  });
+
+  test("recovered interrupted runs update the task's latest health", () => {
+    const recoveryDir = join(dir, "interrupted-task-health");
+    const first = new KnowledgeEngine({ dataDir: recoveryDir, runProvider: async () => "" });
+    first.ensureSpace(SPACE);
+    const task = first.tasks.create({
+      name: "中断任务",
+      space: SPACE,
+      topic: "恢复健康状态",
+      distillOnRun: false,
+    })!;
+    const interrupted = first.taskRuns.start({
+      task,
+      trigger: "scheduled",
+      distill: false,
+    });
+    first.close();
+
+    const secondary = new KnowledgeEngine({ dataDir: recoveryDir, runProvider: async () => "" });
+    expect(() => secondary.startTaskRun(task.id)).toThrow(interrupted.id);
+    secondary.close();
+
+    const reopened = new KnowledgeEngine({
+      dataDir: recoveryDir,
+      runProvider: async () => "",
+      recoverInterruptedTaskRuns: true,
+    });
+
+    expect(reopened.getTaskRun(interrupted.id)?.status).toBe("failed");
+    expect(reopened.tasks.get(task.id)).toEqual(expect.objectContaining({
+      lastStatus: "error",
+      lastError: "应用在任务完成前停止，运行已标记为失败",
+      lastRunAt: expect.any(Number),
+    }));
+    reopened.close();
+  });
+
 });

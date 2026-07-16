@@ -57,7 +57,7 @@ async function run(cfg: ReturnType<typeof config>, processLock: ProcessLock): Pr
     webPort: cfg.webPort,
   });
 
-  const engine = new KnowledgeEngine();
+  const engine = new KnowledgeEngine({ recoverInterruptedTaskRuns: true });
 
   // 1. feishu connector + orchestrator
   const connector = new FeishuConnector({ larkBin: runtimePaths.larkBin });

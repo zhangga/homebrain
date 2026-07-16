@@ -81,6 +81,7 @@ describe("TaskScheduler.tick", () => {
     expect(ran).toContain(t.id);
     expect(notified).toContain(t.id);
     expect(engine.tasks.get(t.id)?.lastStatus).toBe("ok");
+    expect(engine.listTaskRuns(t.id)[0]?.trigger).toBe("scheduled");
   });
 
   test("skips a disabled task and does not notify", async () => {
@@ -90,6 +91,36 @@ describe("TaskScheduler.tick", () => {
     const ran = await sched.tick("test", T10);
     expect(ran).not.toContain(t.id);
     expect(notified).toEqual([]);
+  });
+
+  test("skips a due task that is already running without degrading the loop", async () => {
+    engine.close();
+    let finish: ((value: string) => void) | undefined;
+    engine = new KnowledgeEngine({
+      dataDir: dir,
+      runProvider: async () => new Promise<string>((resolve) => {
+        finish = resolve;
+      }),
+    });
+    engine.ensureSpace(SPACE);
+    const task = engine.tasks.create({
+      name: "single-flight",
+      space: SPACE,
+      topic: "x",
+      distillOnRun: false,
+    })!;
+    const active = engine.startTaskRun(task.id, { trigger: "manual" });
+    const sched = new TaskScheduler(engine);
+
+    expect(await sched.tick("test", T10)).toEqual([]);
+    expect(sched.health()).toEqual(expect.objectContaining({
+      lastStatus: "ok",
+      lastError: undefined,
+    }));
+    expect(engine.listTaskRuns(task.id)).toHaveLength(1);
+
+    finish?.("完成");
+    await active.completion;
   });
 
   test("exposes whether the task scheduler loop is started", async () => {
