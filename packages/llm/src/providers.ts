@@ -106,6 +106,8 @@ export interface ProviderExecution {
   workdir?: string;
   /** Safe skill identifiers that the provider must load before acting. */
   skills: string[];
+  /** Explicitly allow the provider's native read-only web research tools. */
+  webSearch?: boolean;
 }
 
 /** Keep skill references identifier-only before interpolating them into prompts. */
@@ -167,11 +169,21 @@ const KNOWN: CliSpec[] = [
       if (!execution) {
         args.push("--allowedTools", "");
       } else if (execution.permission === "read-only") {
-        args.push("--tools", "Read,Glob,Grep", "--permission-mode", "dontAsk");
-      } else if (execution.permission === "write") {
         args.push(
           "--tools",
-          "Read,Glob,Grep,Edit,Write,NotebookEdit",
+          execution.webSearch
+            ? "Read,Glob,Grep,WebSearch,WebFetch"
+            : "Read,Glob,Grep",
+          "--permission-mode",
+          "dontAsk",
+        );
+      } else if (execution.permission === "write") {
+        const tools = execution.webSearch
+          ? "Read,Glob,Grep,Edit,Write,NotebookEdit,WebSearch,WebFetch"
+          : "Read,Glob,Grep,Edit,Write,NotebookEdit";
+        args.push(
+          "--tools",
+          tools,
           "--permission-mode",
           "acceptEdits",
         );
@@ -205,6 +217,7 @@ const KNOWN: CliSpec[] = [
       const args: string[] = [];
       if (reasoningEffort) args.push("-c", `model_reasoning_effort="${reasoningEffort}"`);
       if (execution) args.push("-c", 'approval_policy="never"');
+      if (execution?.webSearch) args.push("--search");
       const sandbox = sandboxForPermission(execution?.permission);
       args.push("exec", "--sandbox", sandbox);
       if (execution) args.push("--skip-git-repo-check");
@@ -371,6 +384,7 @@ function injectExecutionSkills(id: ProviderId, input: RunInput): RunInput {
         ? input.execution.workdir
         : undefined,
       skills,
+      webSearch: input.execution.webSearch === true,
     },
   };
   if (skills.length === 0) return prepared;
@@ -406,6 +420,12 @@ export async function runProvider(
   const spec = specById.get(id);
   if (!spec) throw new Error(`unknown provider: ${id}`);
   const prepared = injectExecutionSkills(id, input);
+  if (prepared.execution?.webSearch && prepared.execution.permission !== "read-only") {
+    throw new Error("web search requires read-only provider execution");
+  }
+  if (prepared.execution?.webSearch && id === "trae-cli") {
+    throw new Error("provider trae-cli does not support web search");
+  }
   const args = spec.buildRun(prepared);
   if (id === "codex" && brandedEnv(process.env, "CODEX_BIN")?.trim()) {
     args.unshift(...MANAGED_CODEX_AUTH_ARGS);

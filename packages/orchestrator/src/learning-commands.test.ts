@@ -19,6 +19,8 @@ describe("learning command parsing", () => {
     expect(parseLearningCommand("/learn add 1")).toEqual({ verb: "add", arg: "1" });
     expect(parseLearningCommand("/learn route Rust 异步"))
       .toEqual({ verb: "route", arg: "Rust 异步" });
+    expect(parseLearningCommand("/learn resources Rust 异步"))
+      .toEqual({ verb: "resources", arg: "Rust 异步" });
     expect(parseLearningCommand("/learn 暂停 1")).toEqual({ verb: "pause", arg: "1" });
     expect(parseLearningCommand("/learn resume 原则")).toEqual({ verb: "resume", arg: "原则" });
     expect(parseLearningCommand("/learn skip 1")).toEqual({ verb: "skip", arg: "1" });
@@ -172,6 +174,47 @@ describe("learning command handling", () => {
     expect(assessed).toContain("每天约 30 分钟");
     expect(assessed).toContain("1. 故障模型");
     expect(engine.learning.list()[0]?.profile?.status).toBe("active");
+  });
+
+  test("refreshes and lists verified online learning resources", async () => {
+    engine.close();
+    engine = new KnowledgeEngine({
+      dataDir: dir,
+      llm,
+      learningResearch: async () => ({
+        query: "Rust Waker official documentation",
+        resources: [{
+          title: "Async Book: Wakeups",
+          url: "https://rust-lang.github.io/async-book/02_execution/03_wakeups.html",
+          publisher: "Rust Project",
+          summary: "解释任务唤醒机制。",
+          relevance: "补足 Waker 与 executor 协作知识。",
+          kind: "documentation",
+        }],
+      }),
+    });
+    engine.ensureSpace("personal/ou_me", { chatId: "oc_p2p" });
+    engine.learning.createTopic({
+      name: "Rust 异步",
+      topic: "Rust 异步编程",
+      space: "personal/ou_me",
+      creatorId: "ou_me",
+      chatId: "oc_p2p",
+      route: [
+        { title: "Waker", objective: "理解任务唤醒" },
+        { title: "运行时", objective: "理解调度机制" },
+      ],
+    }, 1);
+
+    const response = await handleLearningCommand(
+      engine,
+      { verb: "resources", arg: "1" },
+      { space: "personal/ou_me", chatId: "oc_p2p", actorId: "ou_me" },
+    );
+
+    expect(response).toContain("已按「Rust Waker official documentation」");
+    expect(response).toContain("Async Book: Wakeups");
+    expect(response).toContain("https://rust-lang.github.io/");
   });
 
   test("scopes pause, resume, skip, and delete to the creator", async () => {

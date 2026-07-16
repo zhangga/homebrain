@@ -1180,6 +1180,17 @@ const LEARNING_STUDIO_STYLE = `
   .learning-studio .history-note p { color:var(--ink-soft); font-size:12px; margin:7px 0 0; white-space:pre-wrap; }
   .learning-studio .material-strip { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:22px; }
   .learning-studio .material-card { padding:8px 10px; border:1px solid var(--line); background:rgba(255,255,255,.48); border-radius:3px 11px 11px 11px; font-size:11px; }
+  .learning-studio .online-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; margin-bottom:22px; }
+  .learning-studio .online-card {
+    display:block; padding:15px 16px; border:1px solid rgba(15,92,77,.19);
+    background:linear-gradient(145deg,rgba(220,235,227,.72),rgba(255,255,255,.5));
+    border-radius:4px 16px 16px 16px; color:var(--ink); transition:transform .18s ease,box-shadow .18s ease;
+  }
+  .learning-studio .online-card:hover { transform:translateY(-2px); text-decoration:none; box-shadow:0 9px 22px rgba(15,92,77,.1); }
+  .learning-studio .online-meta { display:flex; justify-content:space-between; gap:8px; color:var(--forest); font-size:9px; font-weight:800; letter-spacing:.08em; text-transform:uppercase; }
+  .learning-studio .online-card h4 { margin:8px 0 5px; font-family:"Songti SC","STSong",serif; font-size:16px; }
+  .learning-studio .online-card p { margin:0; color:var(--ink-soft); font-size:11px; line-height:1.55; }
+  .learning-studio .research-query { color:var(--ink-soft); font-size:11px; margin:-5px 0 12px; }
   .learning-studio details.plan-settings { margin-top:22px; border-top:1px solid var(--line); padding-top:16px; }
   .learning-studio details.plan-settings summary { cursor:pointer; color:var(--ink-soft); font-size:12px; font-weight:800; }
   .learning-studio .settings-sheet { margin-top:14px; padding:16px; border:1px solid var(--line); background:rgba(255,255,255,.45); border-radius:4px 14px 14px 14px; }
@@ -1198,6 +1209,7 @@ const LEARNING_STUDIO_STYLE = `
     .learning-studio .ribbon-stat:nth-child(4) { border-top:1px solid var(--line); }
     .learning-studio .map-body { padding:20px 18px 24px; }
     .learning-studio .profile-grid { grid-template-columns:1fr; }
+    .learning-studio .online-grid { grid-template-columns:1fr; }
     .learning-studio .profile-card.level { grid-row:auto; }
     .learning-studio .settings-facts { grid-template-columns:1fr; }
   }
@@ -1222,6 +1234,17 @@ function learningStepLabel(status: LearningPlan["route"][number]["status"]): str
   if (status === "completed") return "✓";
   if (status === "skipped") return "—";
   return "·";
+}
+
+function learningResourceKindLabel(
+  kind: NonNullable<LearningPlan["onlineResources"]>[number]["kind"],
+): string {
+  if (kind === "documentation") return "官方文档";
+  if (kind === "course") return "课程";
+  if (kind === "paper") return "论文";
+  if (kind === "video") return "视频";
+  if (kind === "reference") return "参考资料";
+  return "文章";
 }
 
 export function learningView(
@@ -1367,6 +1390,28 @@ export function learningView(
                       <strong>${material.title}</strong><br />${fmtTime(material.createdAt)}
                     </div>`)
                   : html`<div class="material-card">暂无用户材料 · 扩展知识会标注为模型一般知识</div>`}</div>
+              </section>`
+            : ""}
+          ${selected.mode === "topic"
+            ? html`<section>
+                <h3 class="section-label">联网推荐资料</h3>
+                ${selected.resourceResearchQuery
+                  ? html`<p class="research-query">路线 v${selected.resourceResearchVersion} · 检索方向：${selected.resourceResearchQuery}</p>`
+                  : ""}
+                ${(selected.onlineResources?.length ?? 0) > 0
+                  ? html`<div class="online-grid">${selected.onlineResources!.map((resource) =>
+                      html`<a
+                        class="online-card"
+                        href="${resource.url}"
+                        target="_blank"
+                        rel="noreferrer noopener"
+                      >
+                        <div class="online-meta"><span>${resource.publisher}</span><span>${learningResourceKindLabel(resource.kind)}</span></div>
+                        <h4>${resource.title}</h4>
+                        <p>${resource.relevance}</p>
+                      </a>`
+                    )}</div>`
+                  : html`<div class="material-card">下一课前会按当前知识缺口自动联网检索；失败时会诚实降级，不会伪造链接。</div>`}
               </section>`
             : ""}
           <section>

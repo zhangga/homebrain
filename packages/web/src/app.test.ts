@@ -2086,6 +2086,17 @@ describe("management backend (read-write)", () => {
       nextFocus: "区分唤醒通知和实际 poll",
       completedAt: 6,
     });
+    engine.learning.replaceOnlineResources(plan.id, 2, {
+      query: "Rust Waker official documentation",
+      resources: [{
+        title: "Async Book: Wakeups",
+        url: "https://rust-lang.github.io/async-book/02_execution/03_wakeups.html",
+        publisher: "Rust Project",
+        summary: "解释任务唤醒机制。",
+        relevance: "补足 Waker 与 executor 协作知识。",
+        kind: "documentation",
+      }],
+    }, 7);
 
     const body = await (await app.request(`/learning/${encodeURIComponent(plan.id)}`)).text();
     expect(body).toContain("learning-map");
@@ -2100,6 +2111,10 @@ describe("management backend (read-write)", () => {
     expect(body).toContain("Waker");
     expect(body).toContain("理解运行时");
     expect(body).toContain("下一课重点：区分唤醒通知和实际 poll");
+    expect(body).toContain("联网推荐资料");
+    expect(body).toContain("Async Book: Wakeups");
+    expect(body).toContain("https://rust-lang.github.io/async-book/02_execution/03_wakeups.html");
+    expect(body).toContain('rel="noreferrer noopener"');
 
     const updated = await app.request(`/learning/${encodeURIComponent(plan.id)}`, {
       method: "POST",

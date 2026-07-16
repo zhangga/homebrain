@@ -321,6 +321,17 @@ describe("space data governance", () => {
       ],
       adjustment: "从故障模型开始。",
     }, 101)!;
+    source.learning.replaceOnlineResources(plan.id, 2, {
+      query: "distributed systems failure model university course",
+      resources: [{
+        title: "Distributed Systems Course",
+        url: "https://pdos.csail.mit.edu/6.824/",
+        publisher: "MIT",
+        summary: "分布式系统课程与实验资料。",
+        relevance: "用于建立故障模型和共识算法的实践基础。",
+        kind: "course",
+      }],
+    }, 101.5);
     const session = source.learning.prepareSession(plan.id, {
       startOffset: 0,
       endOffset: 1,
@@ -346,11 +357,24 @@ describe("space data governance", () => {
         dailyMinutes: 30,
         gaps: ["故障模型"],
       }),
+      resourceResearchVersion: 2,
+      resourceResearchQuery: "distributed systems failure model university course",
+      onlineResources: [
+        expect.objectContaining({
+          title: "Distributed Systems Course",
+          url: "https://pdos.csail.mit.edu/6.824/",
+          publisher: "MIT",
+        }),
+      ],
     }));
     expect(parsed.learning.sessions[0]).toEqual(expect.objectContaining({
       followUpCount: 1,
       lastFollowUpAt: 104,
     }));
+
+    const unsafe = JSON.parse(JSON.stringify(archive));
+    unsafe.learning.plans[0].onlineResources[0].url = "javascript:alert(1)";
+    expect(() => parseSpaceArchive(unsafe)).toThrow("onlineResources");
   });
 
   test("accepts version 4 governance archives with no task run history", async () => {

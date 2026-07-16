@@ -118,6 +118,14 @@ describe("provider detection", () => {
       );
       expect(
         await runProvider("claude", {
+          prompt: "research",
+          execution: { permission: "read-only", skills: [], webSearch: true },
+        }, 500),
+      ).toBe(
+        "-p research --bare --tools Read,Glob,Grep,WebSearch,WebFetch --permission-mode dontAsk",
+      );
+      expect(
+        await runProvider("claude", {
           prompt: "edit",
           execution: { permission: "write", skills: [] },
         }, 500),
@@ -141,6 +149,14 @@ describe("provider detection", () => {
         '-c cli_auth_credentials_store="keyring" -c approval_policy="never" exec --sandbox workspace-write --skip-git-repo-check edit',
       );
       expect(
+        await runProvider("codex", {
+          prompt: "research",
+          execution: { permission: "read-only", skills: [], webSearch: true },
+        }, 500),
+      ).toBe(
+        '-c cli_auth_credentials_store="keyring" -c approval_policy="never" --search exec --sandbox read-only --skip-git-repo-check research',
+      );
+      expect(
         await runProvider("trae-cli", {
           prompt: "admin",
           execution: { permission: "full", skills: [] },
@@ -148,6 +164,14 @@ describe("provider detection", () => {
       ).toBe(
         "exec --sandbox danger-full-access admin",
       );
+      await expect(runProvider("trae-cli", {
+        prompt: "research",
+        execution: { permission: "read-only", skills: [], webSearch: true },
+      }, 500)).rejects.toThrow("does not support web search");
+      await expect(runProvider("codex", {
+        prompt: "unsafe research",
+        execution: { permission: "write", skills: [], webSearch: true },
+      }, 500)).rejects.toThrow("requires read-only");
       expect(
         await runProvider("claude", {
           prompt: "invalid",

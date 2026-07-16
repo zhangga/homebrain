@@ -14,6 +14,7 @@ function topicGuide(sourceSection = "暂无用户材料"): string {
     "## 今日目标\n理解当前知识点",
     `## 来源材料\n${sourceSection}`,
     "## 扩展知识\n以下来自模型一般知识，未经外部检索验证。",
+    "## 推荐资料\n本次未获得可验证的联网资料。",
     "## 实践任务\n用自己的话解释概念",
     "## 思考题\n这个概念解决了什么问题？",
   ].join("\n\n");
@@ -290,6 +291,7 @@ describe("guided learning engine", () => {
       "## 今日目标\n理解 Future",
       "## 来源材料\n[材料1] Future 需要 poll",
       "## 扩展知识\n以下来自模型一般知识，未经外部检索验证。",
+      "## 推荐资料\n本次未获得可验证的联网资料。",
       "## 实践任务\n解释 poll",
       "## 思考题\n为什么 Future 是惰性的？",
     ].join("\n\n"));
@@ -308,6 +310,98 @@ describe("guided learning engine", () => {
     expect(prompt).toContain("## 来源材料");
     expect(prompt).toContain("## 扩展知识");
     expect(engine.learning.get(plan.id)?.routeIndex).toBe(0);
+  });
+
+  test("researches verified online resources before preparing a topic lesson", async () => {
+    engine.close();
+    const requests: string[] = [];
+    engine = new KnowledgeEngine({
+      dataDir: dir,
+      llm,
+      learningResearch: async (request) => {
+        requests.push(`${request.stepTitle}:${request.gaps.join(",")}`);
+        return {
+          query: "Rust Async Book Waker",
+          resources: [{
+            title: "Async Book: Wakeups",
+            url: "https://rust-lang.github.io/async-book/02_execution/03_wakeups.html",
+            publisher: "Rust Project",
+            summary: "解释 Waker 如何通知 executor 重新轮询任务。",
+            relevance: "直接补足 Waker 与调度器协作的知识缺口。",
+            kind: "documentation",
+          }],
+        };
+      },
+    });
+    engine.ensureSpace(SPACE, { chatId: "oc_p2p" });
+    llm.queueJSON({
+      name: "Rust 异步",
+      steps: [
+        { title: "Waker", objective: "理解任务唤醒机制" },
+        { title: "运行时", objective: "理解运行时" },
+      ],
+    });
+    const plan = await engine.createTopicLearningPlan({
+      space: SPACE,
+      chatId: "oc_p2p",
+      creatorId: "ou_me",
+      topic: "Rust 异步编程",
+    });
+    llm.queueText([
+      "## 今日目标\n理解 Waker",
+      "## 来源材料\n暂无用户材料",
+      "## 扩展知识\n以下来自模型一般知识，未经外部检索验证。",
+      "## 推荐资料\n[联网资料1] Rust Async Book：https://rust-lang.github.io/async-book/02_execution/03_wakeups.html。",
+      "## 实践任务\n画出唤醒流程",
+      "## 思考题\n唤醒是否等于立即 poll？",
+    ].join("\n\n"));
+
+    const session = await engine.prepareLearningSession(plan.id, NOW + 1);
+    const researched = engine.learning.get(plan.id)!;
+
+    expect(requests).toEqual(["Waker:"]);
+    expect(researched.onlineResources).toEqual([
+      expect.objectContaining({
+        title: "Async Book: Wakeups",
+        routeVersion: 1,
+      }),
+    ]);
+    expect(session.guide).toContain("[联网资料1]");
+    expect(llm.calls.at(-1)?.opts.prompt).toContain("## 已核验联网资料");
+    expect(llm.calls.at(-1)?.opts.prompt).toContain(
+      "https://rust-lang.github.io/async-book/02_execution/03_wakeups.html",
+    );
+  });
+
+  test("continues with an honest offline lesson when web research fails", async () => {
+    engine.close();
+    engine = new KnowledgeEngine({
+      dataDir: dir,
+      llm,
+      learningResearch: async () => {
+        throw new Error("search unavailable");
+      },
+    });
+    engine.ensureSpace(SPACE, { chatId: "oc_p2p" });
+    llm.queueJSON({
+      name: "数据库事务",
+      steps: [
+        { title: "隔离级别", objective: "理解并发异常" },
+        { title: "MVCC", objective: "理解版本可见性" },
+      ],
+    });
+    const plan = await engine.createTopicLearningPlan({
+      space: SPACE,
+      chatId: "oc_p2p",
+      creatorId: "ou_me",
+      topic: "数据库事务",
+    });
+    llm.queueText(topicGuide());
+
+    const session = await engine.prepareLearningSession(plan.id, NOW + 1);
+
+    expect(session.guide).toContain("本次未获得可验证的联网资料");
+    expect(engine.learning.get(plan.id)?.onlineResources).toEqual([]);
   });
 
   test("rejects a topic lesson that fabricates a material citation or external link", async () => {
@@ -334,6 +428,7 @@ describe("guided learning engine", () => {
       "## 今日目标\n理解 Future",
       "## 来源材料\n[材料9] 声称 Future 会自动运行",
       "## 扩展知识\n模型一般知识，未经外部检索验证：https://invented.example/future",
+      "## 推荐资料\n本次未获得可验证的联网资料。",
       "## 实践任务\n解释 poll",
       "## 思考题\nFuture 如何推进？",
     ].join("\n\n"));

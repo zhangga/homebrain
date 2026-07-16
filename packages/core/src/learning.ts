@@ -13,6 +13,11 @@ import {
 import { randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
 import { isSpaceId, type SpaceId } from "@homeagent/shared";
+import {
+  normalizeLearningResource,
+  type LearningResource,
+  type LearningResourceInput,
+} from "./learning-research.ts";
 
 export type LearningPlanStatus = "active" | "paused" | "completed";
 export type LearningSessionStatus = "prepared" | "awaiting_reply" | "completed" | "skipped";
@@ -25,6 +30,7 @@ export const MAX_LEARNING_SOURCE_CHARACTERS = 2_000_000;
 export const MAX_LEARNING_MATERIALS = 24;
 export const MAX_LEARNING_ROUTE_STEPS = 12;
 export const MAX_LEARNING_PROFILE_ITEMS = 12;
+export const MAX_LEARNING_RESOURCES = 5;
 
 export interface LearningMaterial {
   title: string;
@@ -96,6 +102,10 @@ export interface LearningPlan {
   profile?: LearnerProfile;
   routeVersion?: number;
   lastRouteAdjustment?: string;
+  onlineResources?: LearningResource[];
+  resourceResearchVersion?: number;
+  resourceResearchAt?: number;
+  resourceResearchQuery?: string;
   sourceId: string;
   sourceLength: number;
   hour: number;
@@ -319,6 +329,40 @@ function validProfileInput(value: LearnerProfileInput): boolean {
       );
 }
 
+function normalizeStoredResource(value: unknown): LearningResource | undefined {
+  const input = normalizeLearningResource(value);
+  if (!input || !value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const resource = value as Partial<LearningResource>;
+  if (
+    typeof resource.id !== "string" || !resource.id
+    || !finite(resource.routeVersion) || !Number.isInteger(resource.routeVersion)
+    || resource.routeVersion < 1
+    || !finite(resource.recommendedAt)
+  ) return undefined;
+  return {
+    ...input,
+    id: resource.id,
+    routeVersion: resource.routeVersion,
+    recommendedAt: resource.recommendedAt,
+  };
+}
+
+function normalizedStoredResources(value: unknown): LearningResource[] | undefined {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.length > MAX_LEARNING_RESOURCES) return undefined;
+  const resources = value.map(normalizeStoredResource);
+  if (resources.some((resource) => resource === undefined)) return undefined;
+  const normalized = resources as LearningResource[];
+  if (new Set(normalized.map((resource) => resource.url)).size !== normalized.length) {
+    return undefined;
+  }
+  return normalized;
+}
+
+function validStoredResource(value: unknown): value is LearningResource {
+  return normalizeStoredResource(value) !== undefined;
+}
+
 function validMaterial(value: unknown, sourceLength: number): value is LearningMaterial {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const material = value as Partial<LearningMaterial>;
@@ -447,6 +491,10 @@ function normalizePlan(value: unknown): LearningPlan | undefined {
   const mode = original.mode ?? "reading";
   const updatedAt = finite(original.updatedAt) ? original.updatedAt : Date.now();
   const assessmentQuestions = normalizedTexts(original.assessmentQuestions, 6);
+  const onlineResources = mode === "topic"
+    ? normalizedStoredResources(original.onlineResources)
+    : undefined;
+  if (mode === "topic" && onlineResources === undefined) return undefined;
   const profile = mode === "topic"
     ? normalizeProfile(original.profile, updatedAt)
       ?? defaultTopicProfile(updatedAt, assessmentQuestions.length > 0 ? "assessing" : "active")
@@ -468,6 +516,17 @@ function normalizePlan(value: unknown): LearningPlan | undefined {
       : undefined,
     lastRouteAdjustment: mode === "topic" && typeof original.lastRouteAdjustment === "string"
       ? original.lastRouteAdjustment.trim() || undefined
+      : undefined,
+    onlineResources,
+    resourceResearchVersion: mode === "topic" && finite(original.resourceResearchVersion)
+      && Number.isInteger(original.resourceResearchVersion)
+      ? original.resourceResearchVersion
+      : undefined,
+    resourceResearchAt: mode === "topic" && finite(original.resourceResearchAt)
+      ? original.resourceResearchAt
+      : undefined,
+    resourceResearchQuery: mode === "topic" && typeof original.resourceResearchQuery === "string"
+      ? original.resourceResearchQuery.trim() || undefined
       : undefined,
   } as LearningPlan;
   return validPlan(candidate) ? candidate : undefined;
@@ -521,13 +580,49 @@ function validPlan(value: unknown): value is LearningPlan {
     && (plan.routeVersion === undefined
       || (finite(plan.routeVersion) && Number.isInteger(plan.routeVersion) && plan.routeVersion >= 1))
     && (plan.lastRouteAdjustment === undefined || typeof plan.lastRouteAdjustment === "string")
+    && (plan.onlineResources === undefined
+      || (
+        Array.isArray(plan.onlineResources)
+        && plan.onlineResources.length <= MAX_LEARNING_RESOURCES
+        && plan.onlineResources.every(validStoredResource)
+        && new Set(plan.onlineResources.map((resource) => resource.url)).size
+          === plan.onlineResources.length
+      ))
+    && (plan.resourceResearchVersion === undefined
+      || (
+        finite(plan.resourceResearchVersion)
+        && Number.isInteger(plan.resourceResearchVersion)
+        && plan.resourceResearchVersion >= 1
+        && plan.resourceResearchVersion === plan.routeVersion
+      ))
+    && (plan.resourceResearchAt === undefined || finite(plan.resourceResearchAt))
+    && (plan.resourceResearchQuery === undefined
+      || (typeof plan.resourceResearchQuery === "string" && Boolean(plan.resourceResearchQuery.trim())))
+    && (
+      (plan.onlineResources?.length ?? 0) === 0
+        ? plan.resourceResearchVersion === undefined
+          && plan.resourceResearchAt === undefined
+          && plan.resourceResearchQuery === undefined
+        : plan.resourceResearchVersion !== undefined
+          && plan.resourceResearchAt !== undefined
+          && plan.resourceResearchQuery !== undefined
+          && plan.onlineResources!.every(
+            (resource) => resource.routeVersion === plan.resourceResearchVersion,
+          )
+    )
     && (plan.mode === "reading"
       ? plan.profile === undefined
         && plan.assessmentQuestions === undefined
         && plan.assessmentAnswers === undefined
         && plan.routeVersion === undefined
         && plan.lastRouteAdjustment === undefined
-      : plan.profile !== undefined && plan.routeVersion !== undefined)
+        && plan.onlineResources === undefined
+        && plan.resourceResearchVersion === undefined
+        && plan.resourceResearchAt === undefined
+        && plan.resourceResearchQuery === undefined
+      : plan.profile !== undefined
+        && plan.routeVersion !== undefined
+        && plan.onlineResources !== undefined)
     && validRouteState(plan)
     && typeof plan.sourceId === "string" && plan.sourceId.length > 0
     && finite(plan.sourceLength) && Number.isInteger(plan.sourceLength) && plan.sourceLength > 0
@@ -597,6 +692,7 @@ function clonePlan(plan: LearningPlan): LearningPlan {
     ...plan,
     route: plan.route.map((step) => ({ ...step })),
     assessmentQuestions: plan.assessmentQuestions ? [...plan.assessmentQuestions] : undefined,
+    onlineResources: plan.onlineResources?.map((resource) => ({ ...resource })),
     profile: plan.profile
       ? {
           ...plan.profile,
@@ -871,6 +967,7 @@ export class LearningPlanStore {
       lastRouteAdjustment: assessmentQuestions.length > 0
         ? "等待完成入学诊断后生成个性化路线"
         : "使用初始主题路线",
+      onlineResources: [],
       sourceId: source.id,
       sourceLength: source.content.length,
       hour: normalizeHour(input.hour),
@@ -946,6 +1043,50 @@ export class LearningPlanStore {
     return updatedPlan;
   }
 
+  replaceOnlineResources(
+    planId: string,
+    expectedRouteVersion: number,
+    input: { query: string; resources: LearningResourceInput[] },
+    at = Date.now(),
+  ): LearningPlan | undefined {
+    const plan = this.plans.get(planId);
+    const query = input.query.trim();
+    const resources = input.resources.map(normalizeLearningResource);
+    if (
+      !plan
+      || plan.mode !== "topic"
+      || plan.profile?.status !== "active"
+      || plan.routeVersion !== expectedRouteVersion
+      || !Number.isInteger(expectedRouteVersion)
+      || expectedRouteVersion < 1
+      || !query
+      || query.length > 300
+      || !finite(at)
+      || input.resources.length < 1
+      || input.resources.length > MAX_LEARNING_RESOURCES
+      || resources.some((resource) => resource === undefined)
+    ) return undefined;
+    const normalized = resources as LearningResourceInput[];
+    if (new Set(normalized.map((resource) => resource.url)).size !== normalized.length) {
+      return undefined;
+    }
+    const candidatePlans = cloneMap(this.plans, clonePlan);
+    const updated = candidatePlans.get(planId)!;
+    updated.onlineResources = normalized.map((resource) => ({
+      ...resource,
+      id: `learn_resource_${randomUUID()}`,
+      routeVersion: expectedRouteVersion,
+      recommendedAt: at,
+    }));
+    updated.resourceResearchVersion = expectedRouteVersion;
+    updated.resourceResearchAt = at;
+    updated.resourceResearchQuery = query;
+    updated.updatedAt = at;
+    this.persist(candidatePlans, this.sources, this.sessions);
+    this.plans = candidatePlans;
+    return clonePlan(updated);
+  }
+
   completeAssessment(
     planId: string,
     actorId: string,
@@ -978,6 +1119,10 @@ export class LearningPlanStore {
     updated.profile = activeProfile(input.profile, 1, at);
     updated.routeVersion = (updated.routeVersion ?? 1) + 1;
     updated.lastRouteAdjustment = adjustment;
+    updated.onlineResources = [];
+    updated.resourceResearchVersion = undefined;
+    updated.resourceResearchAt = undefined;
+    updated.resourceResearchQuery = undefined;
     updated.adaptiveFocus = input.profile.gaps[0]?.trim() || adjustment;
     updated.status = "active";
     updated.updatedAt = at;
@@ -1383,6 +1528,10 @@ function adaptTopicPlan(
   );
   plan.lastRouteAdjustment = input.routeAdjustment.trim();
   plan.routeVersion = (plan.routeVersion ?? 1) + 1;
+  plan.onlineResources = [];
+  plan.resourceResearchVersion = undefined;
+  plan.resourceResearchAt = undefined;
+  plan.resourceResearchQuery = undefined;
 
   const preserveCount = session.mastery === "review"
     ? Math.min(plan.route.length, plan.routeIndex + 1)

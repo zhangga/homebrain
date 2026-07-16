@@ -4,7 +4,7 @@ import type { SpaceId } from "@homeagent/shared";
 import { LEARNING_HELP } from "./messages.ts";
 
 export interface LearningCommand {
-  verb: "list" | "new" | "topic" | "add" | "route"
+  verb: "list" | "new" | "topic" | "add" | "route" | "resources"
     | "pause" | "resume" | "skip" | "delete" | "help";
   arg: string;
 }
@@ -45,6 +45,10 @@ export function parseLearningCommand(text: string): LearningCommand | null {
     材料: "add",
     route: "route",
     路线: "route",
+    resources: "resources",
+    resource: "resources",
+    资料推荐: "resources",
+    联网资料: "resources",
     pause: "pause",
     暂停: "pause",
     resume: "resume",
@@ -178,7 +182,45 @@ export async function handleLearningCommand(
       ),
       target.lastRouteAdjustment ? `\n路线调整：${target.lastRouteAdjustment}` : "",
       target.adaptiveFocus ? `\n下一课重点：${target.adaptiveFocus}` : "",
+      target.onlineResources?.length
+        ? `\n当前联网资料：${target.onlineResources.length} 份（路线 v${target.resourceResearchVersion}）`
+        : "",
     ].filter(Boolean).join("\n");
+  }
+  if (command.verb === "resources") {
+    if (target.mode !== "topic") return `学习计划「${target.name}」是材料阅读计划，不需要联网资料推荐。`;
+    if (target.profile?.status === "assessing") {
+      return `请先完成「${target.name}」的入学诊断，再按你的真实水平联网推荐资料。`;
+    }
+    if (target.status !== "active") {
+      return `学习计划「${target.name}」当前是${statusLabel(target)}状态；恢复计划后再刷新联网资料。`;
+    }
+    const beforeAt = target.resourceResearchAt;
+    let refreshed: LearningPlan;
+    try {
+      refreshed = await engine.refreshLearningResources(target.id, Date.now(), true);
+    } catch (error) {
+      return `联网资料刷新失败：${String(error).replace(/^Error:\s*/u, "")}`;
+    }
+    const resources = refreshed.onlineResources ?? [];
+    if (resources.length === 0) {
+      return [
+        `这次没有为「${target.name}」获得可验证的联网资料。`,
+        "课程仍会使用用户材料和明确标注的模型一般知识继续进行；你可以稍后重试。",
+      ].join("\n");
+    }
+    const retained = refreshed.resourceResearchAt === beforeAt;
+    return [
+      retained
+        ? `本次联网刷新未产生新结果，以下保留「${target.name}」上次核验的资料：`
+        : `🔎 已按「${refreshed.resourceResearchQuery}」为「${target.name}」核验并推荐：`,
+      "",
+      ...resources.flatMap((resource, index) => [
+        `${index + 1}. ${resource.title} · ${resource.publisher}`,
+        `   ${resource.relevance}`,
+        `   ${resource.url}`,
+      ]),
+    ].join("\n");
   }
   if (command.verb === "add") {
     if (!context.sourceMessageId) {

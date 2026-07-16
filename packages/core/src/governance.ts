@@ -42,6 +42,10 @@ import type {
   LearningSource,
 } from "./learning.ts";
 import { MAX_LEARNING_SOURCE_CHARACTERS } from "./learning.ts";
+import {
+  normalizeLearningResource,
+  type LearningResource,
+} from "./learning-research.ts";
 import type { SpaceMeta } from "./types.ts";
 import { isGroupParticipationLevel } from "./group-participation.ts";
 import {
@@ -661,6 +665,38 @@ function parseLearnerProfile(
   };
 }
 
+function parseLearningResources(
+  value: unknown,
+  planIndex: number,
+  routeVersion: number,
+): LearningResource[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.length > 5) {
+    throw new Error(`learning.plans[${planIndex}].onlineResources is invalid`);
+  }
+  const resources = value.map((entry, resourceIndex) => {
+    const label = `learning.plans[${planIndex}].onlineResources[${resourceIndex}]`;
+    const item = record(entry, label);
+    const normalized = normalizeLearningResource(item);
+    const resourceRouteVersion = finiteNumber(item.routeVersion, `${label}.routeVersion`);
+    if (
+      !normalized
+      || !Number.isInteger(resourceRouteVersion)
+      || resourceRouteVersion !== routeVersion
+    ) throw new Error(`${label} is invalid`);
+    return {
+      ...normalized,
+      id: nonemptyText(item.id, `${label}.id`),
+      routeVersion: resourceRouteVersion,
+      recommendedAt: finiteNumber(item.recommendedAt, `${label}.recommendedAt`),
+    };
+  });
+  if (new Set(resources.map((resource) => resource.url)).size !== resources.length) {
+    throw new Error(`learning.plans[${planIndex}].onlineResources is invalid`);
+  }
+  return resources;
+}
+
 function parseLearningPlan(
   value: unknown,
   index: number,
@@ -766,6 +802,37 @@ function parseLearningPlan(
     routeVersion !== undefined
     && (!Number.isInteger(routeVersion) || routeVersion < 1)
   ) throw new Error(`learning.plans[${index}].routeVersion is invalid`);
+  const onlineResources = mode === "topic"
+    ? parseLearningResources(item.onlineResources, index, routeVersion!)
+    : undefined;
+  const resourceResearchVersion = mode === "topic" && item.resourceResearchVersion !== undefined
+    ? finiteNumber(
+        item.resourceResearchVersion,
+        `learning.plans[${index}].resourceResearchVersion`,
+      )
+    : undefined;
+  const resourceResearchAt = mode === "topic" && item.resourceResearchAt !== undefined
+    ? finiteNumber(item.resourceResearchAt, `learning.plans[${index}].resourceResearchAt`)
+    : undefined;
+  const resourceResearchQuery = mode === "topic"
+    ? optionalText(
+        item.resourceResearchQuery,
+        `learning.plans[${index}].resourceResearchQuery`,
+      )
+    : undefined;
+  if (
+    onlineResources !== undefined
+    && (
+      onlineResources.length === 0
+        ? resourceResearchVersion !== undefined
+          || resourceResearchAt !== undefined
+          || resourceResearchQuery !== undefined
+        : !Number.isInteger(resourceResearchVersion)
+          || resourceResearchVersion !== routeVersion
+          || resourceResearchAt === undefined
+          || !resourceResearchQuery?.trim()
+    )
+  ) throw new Error(`learning.plans[${index}].resourceResearch is invalid`);
   return {
     id: nonemptyText(item.id, `learning.plans[${index}].id`),
     name: nonemptyText(item.name, `learning.plans[${index}].name`),
@@ -793,6 +860,10 @@ function parseLearningPlan(
           `learning.plans[${index}].lastRouteAdjustment`,
         )
       : undefined,
+    onlineResources,
+    resourceResearchVersion,
+    resourceResearchAt,
+    resourceResearchQuery,
     sourceId: nonemptyText(item.sourceId, `learning.plans[${index}].sourceId`),
     sourceLength,
     hour,

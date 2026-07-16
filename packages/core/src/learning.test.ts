@@ -477,6 +477,93 @@ describe("LearningPlanStore", () => {
     ]);
   });
 
+  test("binds online recommendations to the current route version", () => {
+    const store = new LearningPlanStore(dir);
+    const plan = store.createTopic({
+      name: "学习 Rust",
+      topic: "Rust 异步编程",
+      space: "personal/ou_me",
+      creatorId: "ou_me",
+      chatId: "oc_p2p",
+      route: [
+        { title: "Future", objective: "理解 Future" },
+        { title: "运行时", objective: "理解运行时" },
+      ],
+    }, NOW);
+    const researched = store.replaceOnlineResources(plan.id, 1, {
+      query: "Rust Future official documentation",
+      resources: [{
+        title: "Async Book",
+        url: "https://rust-lang.github.io/async-book/?utm_source=test",
+        publisher: "Rust Project",
+        summary: "Rust 官方异步编程教程。",
+        relevance: "适合建立 Future 与运行时心智模型。",
+        kind: "documentation",
+      }],
+    }, NOW + 1)!;
+
+    expect(researched.onlineResources).toEqual([
+      expect.objectContaining({
+        title: "Async Book",
+        url: "https://rust-lang.github.io/async-book/",
+        routeVersion: 1,
+      }),
+    ]);
+    expect(researched.resourceResearchQuery).toContain("Future");
+
+    const session = store.prepareSession(plan.id, {
+      startOffset: 0,
+      endOffset: 1,
+      routeStepId: plan.route[0]!.id,
+      sectionTitle: "Future",
+      excerpt: "暂无用户材料",
+      guide: "理解 Future",
+      preparedAt: NOW + 2,
+    })!;
+    store.markDelivered(session.id, NOW + 3);
+    store.completeSession(session.id, {
+      learnerReply: "Future 需要被 poll",
+      feedback: "判断正确",
+      mastery: "ready",
+      nextFocus: "理解 Waker",
+      adaptive: {
+        profile: {
+          level: "intermediate",
+          levelRationale: "能够解释 Future 的推进机制",
+          goals: ["理解异步运行时"],
+          strengths: ["Future 心智模型"],
+          gaps: ["Waker"],
+          preferences: ["代码实验"],
+          pace: "steady",
+          dailyMinutes: 30,
+          evidence: ["说明 Future 需要被 poll"],
+        },
+        routeAdjustment: "转入 Waker。",
+        upcomingSteps: [
+          { title: "Waker", objective: "理解任务唤醒" },
+          { title: "运行时", objective: "理解调度机制" },
+        ],
+      },
+      completedAt: NOW + 4,
+    });
+
+    const revised = store.get(plan.id)!;
+    expect(revised.routeVersion).toBe(2);
+    expect(revised.onlineResources).toEqual([]);
+    expect(revised.resourceResearchVersion).toBeUndefined();
+    expect(store.replaceOnlineResources(plan.id, 1, {
+      query: "stale",
+      resources: [{
+        title: "Stale",
+        url: "https://example.com/stale",
+        publisher: "Example",
+        summary: "旧路线资料。",
+        relevance: "已经过期。",
+        kind: "article",
+      }],
+    }, NOW + 5)).toBeUndefined();
+  });
+
   test("keeps a prepared lesson retryable until delivery succeeds", () => {
     const store = new LearningPlanStore(dir);
     const plan = createPlan(store);
