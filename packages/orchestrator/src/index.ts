@@ -1,6 +1,7 @@
 export * from "./attribution.ts";
 export * from "./gateway.ts";
 export * from "./conversation-interpreter.ts";
+export * from "./group-participation.ts";
 export * from "./format.ts";
 export * from "./messages.ts";
 export * from "./task-commands.ts";

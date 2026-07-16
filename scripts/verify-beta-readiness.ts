@@ -9,6 +9,7 @@ const REQUIRED_FILES = [
   ".github/workflows/ci.yml",
   ".github/workflows/release-macos.yml",
   "docs/beta-release-runbook.md",
+  "quality/evaluation-cases.json",
 ] as const;
 
 const SIGNING_ENVIRONMENT = [
@@ -109,6 +110,7 @@ export async function verifyBetaReadiness(
     for (const argv of [
       ["bun", "test"],
       ["bun", "run", "typecheck"],
+      ["bun", "run", "evaluate:quality"],
       ["bun", "run", "verify:crash-recovery"],
     ]) {
       await mustRun(runner, argv, repoRoot);

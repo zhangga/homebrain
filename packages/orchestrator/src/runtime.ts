@@ -19,10 +19,12 @@
  * per-space serialization still applies underneath.
  */
 import type { SpaceId } from "@homeagent/shared";
-import { Serializer, logger } from "@homeagent/shared";
+import { Serializer, logger, type SerializerSnapshot } from "@homeagent/shared";
+import { isProviderTimeoutError } from "@homeagent/llm";
 import {
   resolveGroupParticipationLevel,
   usesLegacyRespondAll,
+  type AnswerOutcome,
   type KnowledgeEngine,
   type LlmClient,
 } from "@homeagent/core";
@@ -69,6 +71,7 @@ const REMINDER_CONFIRMATION_TTL_MS = 15 * 60_000;
 const GROUP_PARTICIPATION_TIMEOUT_MS = 30_000;
 const MAX_VISION_IMAGES = 4;
 const MAX_VISION_BYTES = 20 * 1024 * 1024;
+const RECENT_ANSWER_SAMPLE_SIZE = 50;
 
 interface PendingReminderConfirmation {
   draft: ReminderDraft;
@@ -79,6 +82,50 @@ interface PendingReminderConfirmation {
 interface ConversationContext {
   text: string;
   images: DownloadedAttachment[];
+}
+
+interface RuntimeTimingMetrics {
+  succeeded: number;
+  failed: number;
+  timedOut: number;
+  totalLatencyMs: number;
+  maxLatencyMs: number;
+}
+
+export interface OrchestratorHealth {
+  queue: SerializerSnapshot;
+  events: {
+    total: number;
+    completed: number;
+    failed: number;
+    averageLatencyMs: number;
+    maxLatencyMs: number;
+  };
+  answers: {
+    total: number;
+    succeeded: number;
+    failed: number;
+    timedOut: number;
+    averageLatencyMs: number;
+    maxLatencyMs: number;
+    recent: {
+      sampleSize: number;
+      succeeded: number;
+      failed: number;
+      timedOut: number;
+      failureRate: number;
+      errorRate: number;
+      timeoutRate: number;
+    };
+  };
+  proactiveParticipation: {
+    evaluated: number;
+    responded: number;
+    skipped: number;
+    model: number;
+    guard: number;
+    fallback: number;
+  };
 }
 
 function reminderControlText(text: string): string {
@@ -147,6 +194,29 @@ export class Orchestrator {
   private docFetcher?: (urlOrToken: string) => Promise<string | null>;
   private attachmentDownloader?: (messageId: string) => Promise<DownloadedAttachment[]>;
   private attachmentExtractor: (attachment: DownloadedAttachment) => Promise<string | null>;
+  private eventMetrics = {
+    total: 0,
+    completed: 0,
+    failed: 0,
+    totalLatencyMs: 0,
+    maxLatencyMs: 0,
+  };
+  private answerMetrics: RuntimeTimingMetrics = {
+    succeeded: 0,
+    failed: 0,
+    timedOut: 0,
+    totalLatencyMs: 0,
+    maxLatencyMs: 0,
+  };
+  private participationMetrics = {
+    evaluated: 0,
+    responded: 0,
+    skipped: 0,
+    model: 0,
+    guard: 0,
+    fallback: 0,
+  };
+  private recentAnswerOutcomes: AnswerOutcome[] = [];
 
   constructor(opts: RuntimeOptions) {
     this.engine = opts.engine;
@@ -170,7 +240,87 @@ export class Orchestrator {
 
   /** Process one event. Exposed for tests; connectors call it via start(). */
   enqueue(event: InboundEvent): Promise<void> {
-    return this.serializer.run("main", () => this.handle(event));
+    this.eventMetrics.total += 1;
+    return this.serializer.run("main", async () => {
+      const startedAt = Date.now();
+      try {
+        await this.handle(event);
+        this.eventMetrics.completed += 1;
+      } catch (err) {
+        this.eventMetrics.failed += 1;
+        throw err;
+      } finally {
+        const latencyMs = Math.max(0, Date.now() - startedAt);
+        this.eventMetrics.totalLatencyMs += latencyMs;
+        this.eventMetrics.maxLatencyMs = Math.max(this.eventMetrics.maxLatencyMs, latencyMs);
+      }
+    });
+  }
+
+  health(): OrchestratorHealth {
+    const settledEvents = this.eventMetrics.completed + this.eventMetrics.failed;
+    const settledAnswers =
+      this.answerMetrics.succeeded + this.answerMetrics.failed + this.answerMetrics.timedOut;
+    const recentSucceeded = this.recentAnswerOutcomes.filter(
+      (outcome) => outcome === "succeeded",
+    ).length;
+    const recentFailed = this.recentAnswerOutcomes.filter(
+      (outcome) => outcome === "failed",
+    ).length;
+    const recentTimedOut = this.recentAnswerOutcomes.filter(
+      (outcome) => outcome === "timed_out",
+    ).length;
+    const recentSampleSize = this.recentAnswerOutcomes.length;
+    return {
+      queue: this.serializer.snapshot("main"),
+      events: {
+        total: this.eventMetrics.total,
+        completed: this.eventMetrics.completed,
+        failed: this.eventMetrics.failed,
+        averageLatencyMs: settledEvents === 0
+          ? 0
+          : Math.round(this.eventMetrics.totalLatencyMs / settledEvents),
+        maxLatencyMs: this.eventMetrics.maxLatencyMs,
+      },
+      answers: {
+        total: settledAnswers,
+        succeeded: this.answerMetrics.succeeded,
+        failed: this.answerMetrics.failed,
+        timedOut: this.answerMetrics.timedOut,
+        averageLatencyMs: settledAnswers === 0
+          ? 0
+          : Math.round(this.answerMetrics.totalLatencyMs / settledAnswers),
+        maxLatencyMs: this.answerMetrics.maxLatencyMs,
+        recent: {
+          sampleSize: recentSampleSize,
+          succeeded: recentSucceeded,
+          failed: recentFailed,
+          timedOut: recentTimedOut,
+          failureRate: recentSampleSize === 0
+            ? 0
+            : (recentFailed + recentTimedOut) / recentSampleSize,
+          errorRate: recentSampleSize === 0 ? 0 : recentFailed / recentSampleSize,
+          timeoutRate: recentSampleSize === 0 ? 0 : recentTimedOut / recentSampleSize,
+        },
+      },
+      proactiveParticipation: { ...this.participationMetrics },
+    };
+  }
+
+  private recordAnswerOutcome(
+    outcome: AnswerOutcome,
+    startedAt: number,
+  ): void {
+    const latencyMs = Math.max(0, Date.now() - startedAt);
+    this.answerMetrics.totalLatencyMs += latencyMs;
+    this.answerMetrics.maxLatencyMs = Math.max(this.answerMetrics.maxLatencyMs, latencyMs);
+    if (outcome === "succeeded") this.answerMetrics.succeeded += 1;
+    else if (outcome === "timed_out") this.answerMetrics.timedOut += 1;
+    else this.answerMetrics.failed += 1;
+    this.recentAnswerOutcomes.push(outcome);
+    if (this.recentAnswerOutcomes.length > RECENT_ANSWER_SAMPLE_SIZE) {
+      this.recentAnswerOutcomes.shift();
+    }
   }
 
   private markSeen(id: string): boolean {
@@ -365,6 +515,10 @@ export class Orchestrator {
         msg.text,
         participationLevel,
       );
+      this.participationMetrics.evaluated += 1;
+      this.participationMetrics[participation.source] += 1;
+      if (participation.respond) this.participationMetrics.responded += 1;
+      else this.participationMetrics.skipped += 1;
       if (participation.respond) {
         proactiveParticipation = true;
         decision = {
@@ -491,35 +645,49 @@ export class Orchestrator {
     writeSpace: SpaceId,
     userText = normalizeConversationText(msg.text),
   ): Promise<void> {
-    // The engine picks the LLM client for the write space (its agent's CLI, or
-    // the global default CLI). We still pass model/instruction as ask options so
-    // the persona reaches synthesis; provider routing is the engine's job.
-    const agent = this.engine.agentForSpace(writeSpace);
-    let context: ConversationContext = { text: userText, images: [] };
-    let res;
+    const answerStartedAt = Date.now();
+    let outcome: AnswerOutcome | undefined;
     try {
-      context = await this.withReplyContext(msg, userText);
-      res = await this.engine.ask(readSpaces, context.text, {
-        model: agent?.model || undefined,
-        instruction: agent?.instruction || undefined,
-        images: context.images.map((image) => ({ path: image.localPath })),
-      });
+      // The engine picks the LLM client for the write space (its agent's CLI, or
+      // the global default CLI). We still pass model/instruction as ask options so
+      // the persona reaches synthesis; provider routing is the engine's job.
+      const agent = this.engine.agentForSpace(writeSpace);
+      let context: ConversationContext = { text: userText, images: [] };
+      let res;
+      try {
+        context = await this.withReplyContext(msg, userText);
+        res = await this.engine.ask(readSpaces, context.text, {
+          model: agent?.model || undefined,
+          instruction: agent?.instruction || undefined,
+          images: context.images.map((image) => ({ path: image.localPath })),
+        });
+      } catch (err) {
+        // No runnable provider (unset agent + no usable default CLI), or the CLI
+        // failed to answer. Tell the user to configure, rather than fail silently.
+        log.warn("ask failed; prompting to configure a provider", {
+          space: writeSpace,
+          err: String(err),
+        });
+        outcome = isProviderTimeoutError(err) ? "timed_out" : "failed";
+        await this.send(msg, providerNotice(err));
+        return;
+      } finally {
+        this.cleanupDownloads(context.images, msg.messageId);
+      }
+      // Cold-start honesty (Q3): if general and the KB is essentially empty, add a
+      // gentle nudge to feed knowledge.
+      let text = formatAnswer(res);
+      if (res.source === "general" && (await this.isColdStart(readSpaces))) {
+        text = `${text}\n\n${coldStartNote()}`;
+      }
+      await this.send(msg, text);
+      outcome = "succeeded";
     } catch (err) {
-      // No runnable provider (unset agent + no usable default CLI), or the CLI
-      // failed to answer. Tell the user to configure, rather than fail silently.
-      log.warn("ask failed; prompting to configure a provider", { space: writeSpace, err: String(err) });
-      await this.send(msg, providerNotice(err));
-      return;
+      outcome ??= isProviderTimeoutError(err) ? "timed_out" : "failed";
+      throw err;
     } finally {
-      this.cleanupDownloads(context.images, msg.messageId);
+      if (outcome) this.recordAnswerOutcome(outcome, answerStartedAt);
     }
-    // Cold-start honesty (Q3): if general and the KB is essentially empty, add a
-    // gentle nudge to feed knowledge.
-    let text = formatAnswer(res);
-    if (res.source === "general" && (await this.isColdStart(readSpaces))) {
-      text = `${text}\n\n${coldStartNote()}`;
-    }
-    await this.send(msg, text);
   }
 
   private async withReplyContext(

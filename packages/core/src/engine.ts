@@ -22,6 +22,7 @@ import { Serializer, canonicalModelId, config, logger } from "@homeagent/shared"
 import {
   isCliProvider,
   isCodexReasoningEffortSupported,
+  isProviderTimeoutError,
   runProvider as runLocalProvider,
   type ProviderExecution,
   type ProviderId,
@@ -81,6 +82,13 @@ import {
   nextLearningSegment,
   type LearningSegment,
 } from "./learning-content.ts";
+import {
+  QualityStore,
+  type AnswerFeedback,
+  type AnswerFeedbackKind,
+  type AnswerTrace,
+  type QualitySnapshot,
+} from "./quality.ts";
 import {
   LEARNING_RESEARCH_SCHEMA,
   learningResearchPrompt,
@@ -841,6 +849,7 @@ export class KnowledgeEngine implements Knowledge {
   readonly taskRuns: TaskRunStore;
   readonly reminders: ReminderStore;
   readonly learning: LearningPlanStore;
+  readonly quality: QualityStore;
   readonly serializer: Serializer;
   private dataDir: string;
   private llm?: LlmClient;
@@ -865,6 +874,7 @@ export class KnowledgeEngine implements Knowledge {
     this.reconcileTaskRunHealth();
     this.reminders = new ReminderStore(this.dataDir);
     this.learning = new LearningPlanStore(this.dataDir);
+    this.quality = new QualityStore(this.dataDir);
     this.serializer = opts.serializer ?? new Serializer();
     this.llm = opts.llm;
     this.learningResearch = opts.learningResearch;
@@ -2485,7 +2495,60 @@ export class KnowledgeEngine implements Knowledge {
     const stores = spaces.filter((s) => this.registry.has(s)).map((s) => this.registry.store(s));
     const primary = spaces[0] ?? stores[0]?.space;
     const client = primary ? this.llmClientForSpace(primary) : this.llmClientForSpace(spaces[0]!);
-    return askImpl(stores, question, opts, { client });
+    const startedAt = Date.now();
+    try {
+      const result = await askImpl(stores, question, opts, { client });
+      try {
+        const trace = this.quality.recordTrace({
+          spaces,
+          question,
+          outcome: "succeeded",
+          source: result.source,
+          answer: result.answer,
+          citations: result.citations,
+          latencyMs: Date.now() - startedAt,
+          createdAt: startedAt,
+        });
+        return { ...result, traceId: trace.id };
+      } catch (err) {
+        log.warn("answer quality trace persistence failed", { err: String(err) });
+        return result;
+      }
+    } catch (err) {
+      try {
+        const message = String(err);
+        this.quality.recordTrace({
+          spaces,
+          question,
+          outcome: isProviderTimeoutError(err) ? "timed_out" : "failed",
+          citations: [],
+          latencyMs: Date.now() - startedAt,
+          error: message,
+          createdAt: startedAt,
+        });
+      } catch (traceError) {
+        log.warn("failed answer quality trace persistence failed", { err: String(traceError) });
+      }
+      throw err;
+    }
+  }
+
+  answerTrace(id: string): AnswerTrace | undefined {
+    return this.quality.trace(id);
+  }
+
+  recordAnswerFeedback(
+    traceId: string,
+    space: SpaceId,
+    kind: AnswerFeedbackKind,
+    note?: string,
+  ): AnswerFeedback | undefined {
+    if (!this.quality.traceBelongsToSpace(traceId, space)) return undefined;
+    return this.quality.recordFeedback(traceId, kind, note);
+  }
+
+  qualitySnapshot(): QualitySnapshot {
+    return this.quality.snapshot();
   }
 
   async search(spaces: SpaceId[], keyword: string, opts: SearchOptions = {}): Promise<Hit[]> {
@@ -2610,6 +2673,7 @@ export class KnowledgeEngine implements Knowledge {
             (plan) => this.learning.currentSession(plan.id)?.status === "awaiting_reply",
           ).length,
         },
+        quality: this.quality.snapshot(),
         spaces: spaceDetails,
       },
     };

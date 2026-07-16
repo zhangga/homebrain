@@ -464,3 +464,8 @@ export async function runProvider(
   if (code !== 0) throw new Error(`provider ${id} exited ${code}: ${providerFailureDetail(stdout, stderr)}`);
   return stdout.trim();
 }
+
+/** Normalize provider timeout detection across traces, metrics, and user notices. */
+export function isProviderTimeoutError(error: unknown): boolean {
+  return /timed?\s*out|timeout|超时/iu.test(String(error));
+}

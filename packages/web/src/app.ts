@@ -36,6 +36,7 @@ import {
 } from "@homeagent/llm";
 import {
   isGroupParticipationLevel,
+  isAnswerFeedbackKind,
   TaskAlreadyRunningError,
   type GroupParticipationLevel,
   type KnowledgeEngine,
@@ -1060,12 +1061,31 @@ export function createWebApp(opts: WebOptions): Hono {
   app.get("/spaces/:space/ask", async (c) => {
     const space = parseSpace(c.req.param("space"));
     if (!space || !engine.registry.has(space)) return c.notFound();
-    const q = c.req.query("q") ?? null;
+    let q = c.req.query("q") ?? null;
+    const traceId = c.req.query("traceId");
     // The engine routes to the space's agent CLI (or the default). We pass
     // model/instruction so the test box reflects what the group would get.
     const agent = engine.agentForSpace(space);
     let result = null;
-    if (q && q.trim()) {
+    let feedbackRecorded = false;
+    if (traceId) {
+      const trace = engine.answerTrace(traceId);
+      if (
+        !trace
+        || !trace.spaces.includes(space)
+        || trace.outcome !== "succeeded"
+        || !trace.source
+        || trace.answer === undefined
+      ) return c.notFound();
+      q = trace.question;
+      result = {
+        answer: trace.answer,
+        source: trace.source,
+        citations: trace.citations,
+        traceId: trace.id,
+      };
+      feedbackRecorded = engine.quality.feedbackFor(trace.id) !== undefined;
+    } else if (q && q.trim()) {
       try {
         result = await engine.ask([space], q, {
           model: agent?.model || undefined,
@@ -1083,10 +1103,36 @@ export function createWebApp(opts: WebOptions): Hono {
       await layout(
         `问答测试 · ${space}`,
         [{ label: "空间 / 知识", href: "/" }, { label: space, href: `/spaces/${encodeURIComponent(space)}` }, { label: "问答测试" }],
-        await askView(space, q, result),
+        await askView(
+          space,
+          q,
+          result,
+          c.req.query("ok") ?? undefined,
+          feedbackRecorded,
+        ),
         "spaces",
       ),
     );
+  });
+
+  app.post("/spaces/:space/ask/feedback", async (c) => {
+    const space = parseSpace(c.req.param("space"));
+    if (!space || !engine.registry.has(space)) return c.notFound();
+    const body = await c.req.parseBody();
+    const traceId = str(body, "traceId").trim();
+    const kind = str(body, "kind").trim();
+    if (!traceId || !isAnswerFeedbackKind(kind)) {
+      return c.text("Invalid answer feedback", 400);
+    }
+    const trace = engine.answerTrace(traceId);
+    if (!trace || !trace.spaces.includes(space)) return c.notFound();
+    const feedback = engine.recordAnswerFeedback(traceId, space, kind);
+    if (!feedback) return c.text("Feedback already recorded", 409);
+    const params = new URLSearchParams({
+      traceId,
+      ok: "感谢反馈，已记录到本机质量闭环",
+    });
+    return c.redirect(`/spaces/${encodeURIComponent(space)}/ask?${params.toString()}`);
   });
 
   app.post("/spaces/:space/dream", async (c) => {

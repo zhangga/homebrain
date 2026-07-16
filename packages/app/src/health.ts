@@ -6,6 +6,7 @@
 import { config, type ComponentHealth, type SystemHealthSnapshot } from "@homeagent/shared";
 import type { ConnectorHealth } from "@homeagent/connectors";
 import type { KnowledgeEngine } from "@homeagent/core";
+import type { OrchestratorHealth } from "@homeagent/orchestrator";
 import {
   detectProviders as detectLocalProviders,
   isCliProvider,
@@ -21,6 +22,7 @@ export interface SystemHealthSources {
   taskSchedulerHealth: () => RuntimeLoopHealth | undefined;
   reminderSchedulerHealth?: () => RuntimeLoopHealth | undefined;
   learningSchedulerHealth?: () => RuntimeLoopHealth | undefined;
+  runtimeHealth?: () => OrchestratorHealth;
   serviceHealth?: () => RuntimeServiceStatus;
   detectProviders?: () => Promise<DetectedProvider[]>;
   requiredProviderIds?: () => string[];
@@ -126,6 +128,59 @@ export function createSystemHealthReporter(
         summary: "知识存储检查失败",
         details: core.details,
       };
+    }
+
+    try {
+      const quality = sources.engine.qualitySnapshot();
+      const negativeFeedback = quality.feedback.unhelpful + quality.feedback.citationError;
+      const negativeRate = quality.feedback.total === 0
+        ? 0
+        : negativeFeedback / quality.feedback.total;
+      const degraded = quality.feedback.total >= 5 && negativeRate >= 0.3;
+      components.aiQuality = {
+        status: degraded ? "degraded" : "ok",
+        summary: quality.feedback.total === 0
+          ? `${quality.answers.total} 次回答，暂无人工反馈`
+          : `${quality.feedback.total} 条反馈，${quality.feedback.helpful} 条有帮助，${negativeFeedback} 条需改进`,
+        details: {
+          ...quality,
+          negativeFeedbackRate: negativeRate,
+        },
+      };
+    } catch (err) {
+      components.aiQuality = {
+        status: "degraded",
+        summary: "AI 质量反馈状态检查失败",
+        details: { error: String(err) },
+      };
+    }
+
+    if (sources.runtimeHealth) {
+      try {
+        const runtime = sources.runtimeHealth();
+        const answerFailureRate = runtime.answers.recent.failureRate;
+        const answerErrorRate = runtime.answers.recent.errorRate;
+        const answerTimeoutRate = runtime.answers.recent.timeoutRate;
+        const degraded =
+          runtime.queue.pending >= 10
+          || (runtime.answers.recent.sampleSize >= 5 && answerFailureRate >= 0.2);
+        components.aiRuntime = {
+          status: degraded ? "degraded" : "ok",
+          summary: `${runtime.answers.succeeded}/${runtime.answers.total} 次回答成功，${runtime.answers.timedOut} 次超时，队列积压 ${runtime.queue.pending}`,
+          details: {
+            ...runtime,
+            answerFailureRate,
+            answerErrorRate,
+            answerTimeoutRate,
+          },
+        };
+      } catch (err) {
+        components.aiRuntime = {
+          status: "degraded",
+          summary: "AI 运行指标检查失败",
+          details: { error: String(err) },
+        };
+      }
     }
 
     let connector: ConnectorHealth;

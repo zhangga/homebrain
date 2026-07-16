@@ -6,6 +6,7 @@
  *   - coldStartNote (Q3): the honest nudge appended when answering from general
  *     knowledge while the space's knowledge base is still empty.
  */
+import { isProviderTimeoutError } from "@homeagent/llm";
 
 export const GROUP_ADDED_NOTICE = [
   "大家好，我是 homeagent 🧠。",
@@ -38,7 +39,7 @@ export function providerNotice(error: unknown): string {
   if (/does not support image inputs|不支持图片输入/i.test(message)) {
     return UNSUPPORTED_IMAGE_NOTICE;
   }
-  return /timed?\s*out|timeout|超时/i.test(message) ? PROVIDER_TIMEOUT_NOTICE : NO_PROVIDER_NOTICE;
+  return isProviderTimeoutError(error) ? PROVIDER_TIMEOUT_NOTICE : NO_PROVIDER_NOTICE;
 }
 
 /** Usage help for the /task chat commands. */

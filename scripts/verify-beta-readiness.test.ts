@@ -15,6 +15,7 @@ const required = [
   ".github/workflows/ci.yml",
   ".github/workflows/release-macos.yml",
   "docs/beta-release-runbook.md",
+  "quality/evaluation-cases.json",
 ];
 
 const roots: string[] = [];
@@ -53,12 +54,18 @@ describe("beta readiness verification", () => {
       ["git", "status", "--porcelain"],
       ["bun", "test"],
       ["bun", "run", "typecheck"],
+      ["bun", "run", "evaluate:quality"],
       ["bun", "run", "verify:crash-recovery"],
     ]);
     expect(report).toEqual({
       scope: "local-preflight",
       version: "0.1.0-beta.1",
-      commands: ["bun test", "bun run typecheck", "bun run verify:crash-recovery"],
+      commands: [
+        "bun test",
+        "bun run typecheck",
+        "bun run evaluate:quality",
+        "bun run verify:crash-recovery",
+      ],
       localChecksPassed: true,
       appSmokeTested: false,
       signingEnvironmentChecked: false,

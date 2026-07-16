@@ -30,6 +30,7 @@ import type {
   QuarantineRecord,
 } from "@homeagent/core";
 import {
+  ANSWER_FEEDBACK_KINDS,
   AGENT_PERMISSIONS,
   resolveGroupParticipationLevel,
   MAX_TASK_NOTIFICATION_ATTEMPTS,
@@ -46,6 +47,11 @@ import {
 } from "./feishu-provisioning-view.ts";
 import { safeLarkVerificationUrl } from "./verification-url.ts";
 
+const ANSWER_FEEDBACK_LABELS = {
+  helpful: "有帮助",
+  unhelpful: "没帮助",
+  citation_error: "引用有误",
+} as const satisfies Record<(typeof ANSWER_FEEDBACK_KINDS)[number], string>;
 const SINGLETON = new Set(["index", "overview", "log", "glossary"]);
 const GROUP_PARTICIPATION_LABELS = {
   reserved: "稳重",
@@ -367,6 +373,8 @@ export function askView(
   space: SpaceId,
   question: string | null,
   result: AskResult | null,
+  flashMsg?: string,
+  feedbackRecorded = false,
 ): HtmlEscapedString | Promise<HtmlEscapedString> {
   const enc = encodeURIComponent(space);
   let answer: HtmlEscapedString | Promise<HtmlEscapedString> | string = "";
@@ -379,13 +387,31 @@ export function askView(
           (c) => html`<a href="/spaces/${enc}/pages/${encodeURIComponent(c.slug)}">${c.title}</a> `,
         )}</div>`
       : "";
+    const feedback = result.traceId
+      ? feedbackRecorded
+        ? html`<div class="muted" style="margin-top:12px">本回答的反馈已记录。</div>`
+        : html`<div style="margin-top:12px">
+          <div class="muted">这个回答有帮助吗？反馈只用于本机质量改进。</div>
+          <div class="actions" style="margin-top:8px">
+            ${ANSWER_FEEDBACK_KINDS.map((kind) => html`
+              <form method="post" action="/spaces/${enc}/ask/feedback">
+                <input type="hidden" name="traceId" value="${result.traceId}" />
+                <input type="hidden" name="kind" value="${kind}" />
+                <button type="submit" class="secondary">${ANSWER_FEEDBACK_LABELS[kind]}</button>
+              </form>
+            `)}
+          </div>
+        </div>`
+      : "";
     answer = html`<div class="card">
       <div>${badge}</div>
       <div class="contentbox" style="margin-top:10px">${result.answer}</div>
       ${cites}
+      ${feedback}
     </div>`;
   }
   return html`<h1>问答测试 · ${space}</h1>
+    ${flash(flashMsg)}
     <form method="get" action="/spaces/${enc}/ask" class="actions">
       <input type="text" name="q" placeholder="问一个问题…" value="${question ?? ""}" />
       <button type="submit">提问</button>
@@ -420,6 +446,8 @@ export function healthView(
     tasks: "任务执行",
     reminders: "提醒",
     learning: "学习计划",
+    aiQuality: "AI 质量反馈",
+    aiRuntime: "AI 运行指标",
     dreamScheduler: "Dream Cycle 调度器",
     taskScheduler: "任务调度器",
     reminderScheduler: "提醒调度器",

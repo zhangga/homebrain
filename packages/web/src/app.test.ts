@@ -914,6 +914,84 @@ describe("web backend (read-only)", () => {
     const body = await res.text();
     expect(body).toContain("后端由 Alice 负责");
     expect(body).toContain("知识库"); // source badge
+    expect(body).toContain('value="helpful"');
+    expect(body).toContain('value="unhelpful"');
+    expect(body).toContain('value="citation_error"');
+  });
+
+  test("all ask feedback kinds are recorded and return to the rated answer", async () => {
+    fake.onJSON((call) => {
+      const props = (call.schema as { properties?: Record<string, unknown> }).properties ?? {};
+      if ("relevant" in props) return { slugs: ["entities/alice"], relevant: true };
+      return {
+        answer: "后端由 Alice 负责。",
+        grounded: true,
+        usedSlugs: ["entities/alice"],
+        gaps: [],
+      };
+    });
+    for (const kind of ["helpful", "unhelpful", "citation_error"] as const) {
+      const question = `谁负责后端？${kind}`;
+      const ask = await app.request(
+        `/spaces/${encodeURIComponent(SPACE)}/ask?q=${encodeURIComponent(question)}`,
+      );
+      const body = await ask.text();
+      const traceId = body.match(/name="traceId" value="([^"]+)"/)?.[1];
+      expect(traceId).toStartWith("answer_");
+      const callsAfterAsk = fake.calls.length;
+
+      const response = await app.request(`/spaces/${encodeURIComponent(SPACE)}/ask/feedback`, {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({ traceId: traceId!, kind }),
+      });
+      expect(response.status).toBe(302);
+      const location = response.headers.get("location")!;
+      expect(location).toContain(`traceId=${encodeURIComponent(traceId!)}`);
+      expect(engine.quality.feedbackFor(traceId!)).toEqual(
+        expect.objectContaining({ kind }),
+      );
+
+      const returned = await app.request(location);
+      const returnedBody = await returned.text();
+      expect(returnedBody).toContain("后端由 Alice 负责");
+      expect(returnedBody).toContain("本回答的反馈已记录");
+      expect(fake.calls.length).toBe(callsAfterAsk);
+    }
+  });
+
+  test("ask feedback rejects invalid, unknown, and cross-space traces", async () => {
+    const invalid = await app.request(`/spaces/${encodeURIComponent(SPACE)}/ask/feedback`, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ traceId: "answer_missing", kind: "invalid" }),
+    });
+    expect(invalid.status).toBe(400);
+
+    const unknown = await app.request(`/spaces/${encodeURIComponent(SPACE)}/ask/feedback`, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ traceId: "answer_missing", kind: "helpful" }),
+    });
+    expect(unknown.status).toBe(404);
+
+    const trace = engine.quality.recordTrace({
+      spaces: [SPACE],
+      question: "cross space",
+      outcome: "succeeded",
+      source: "general",
+      answer: "answer",
+      citations: [],
+      latencyMs: 1,
+    });
+    const other = "team/oc_other" as const;
+    engine.ensureSpace(other);
+    const crossSpace = await app.request(`/spaces/${encodeURIComponent(other)}/ask/feedback`, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ traceId: trace.id, kind: "helpful" }),
+    });
+    expect(crossSpace.status).toBe(404);
   });
 
   test("dream POST triggers a cycle and redirects", async () => {

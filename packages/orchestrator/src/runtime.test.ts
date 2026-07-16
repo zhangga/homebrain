@@ -132,6 +132,89 @@ afterEach(async () => {
 });
 
 describe("orchestrator trunk (cli connector, no feishu)", () => {
+  test("health reports answer, proactive participation, and queue metrics without content", async () => {
+    await engine.upsertPage(
+      "team/oc_team",
+      {
+        slug: "entities/alice",
+        type: "entity",
+        title: "Alice",
+        summary: "Alice 负责后端服务",
+        aliases: [],
+        tags: [],
+        sources: [],
+        links: [],
+        content: "Alice 负责后端服务。",
+        updatedAt: Date.now(),
+        contentHash: "health",
+      },
+    );
+    const originalAsk = engine.ask.bind(engine);
+    engine.ask = async (spaces, question, opts) => {
+      await Bun.sleep(5);
+      return originalAsk(spaces, question, opts);
+    };
+    await orch.start();
+    await connector.sendGroup("@agent 谁负责后端服务？", true);
+    await connector.sendGroup("Alice 今天更新了后端服务。", false);
+
+    const health = orch.health();
+    expect(health.answers).toEqual(expect.objectContaining({
+      total: 1,
+      succeeded: 1,
+      failed: 0,
+      recent: expect.objectContaining({ sampleSize: 1, failureRate: 0 }),
+    }));
+    expect(health.answers.averageLatencyMs).toBeGreaterThanOrEqual(5);
+    expect(health.answers.maxLatencyMs).toBeGreaterThanOrEqual(5);
+    expect(health.proactiveParticipation).toEqual(expect.objectContaining({
+      evaluated: 1,
+      skipped: 1,
+      model: 1,
+    }));
+    expect(health.queue).toEqual(expect.objectContaining({
+      key: "main",
+      pending: 0,
+      completed: 2,
+    }));
+    expect(JSON.stringify(health)).not.toContain("Alice 今天更新了后端服务");
+    expect(JSON.stringify(health)).not.toContain("oc_team");
+  });
+
+  test("health counts an answer provider failure", async () => {
+    const failing = new FakeLlm();
+    failing.onJSON((call) => {
+      const props = (call.schema as { properties?: Record<string, unknown> }).properties ?? {};
+      if ("relevant" in props) return { slugs: ["entities/alice"], relevant: true };
+      throw new Error("provider failed");
+    });
+    engine.close();
+    engine = new KnowledgeEngine({ dataDir: dir, llm: failing });
+    await engine.upsertPage("team/oc_team", {
+      slug: "entities/alice",
+      type: "entity",
+      title: "Alice",
+      summary: "Alice 负责后端服务",
+      aliases: [],
+      tags: [],
+      sources: [],
+      links: [],
+      content: "Alice 负责后端服务。",
+      updatedAt: Date.now(),
+      contentHash: "health-failure",
+    });
+    orch = new Orchestrator({ engine, connector, llm: failing });
+    await orch.start();
+    await connector.sendGroup("@agent 谁负责后端服务？", true);
+
+    expect(orch.health().answers).toEqual(expect.objectContaining({
+      total: 1,
+      succeeded: 0,
+      failed: 1,
+      recent: expect.objectContaining({ sampleSize: 1, failureRate: 1 }),
+    }));
+  });
+
   test("bot added creates team space and sends one-time notice", async () => {
     await orch.start();
     await connector.sendBotAdded();
@@ -191,11 +274,19 @@ describe("orchestrator trunk (cli connector, no feishu)", () => {
     await orch.start();
     const sending = connector.sendGroup("Alice 今天更新了后端服务。", false);
     await classificationStarted;
+    const queued = connector.sendGroup("Bob 今天更新了客户端。", false);
+    await Promise.resolve();
+    expect(orch.health().queue).toEqual(expect.objectContaining({
+      queued: 1,
+      running: 1,
+      pending: 2,
+      maxPending: 2,
+    }));
     const capturedBeforeDecision = engine.registry.has("team/oc_team")
       ? engine.registry.store("team/oc_team").index().countRaw(true)
       : 0;
     releaseClassification();
-    await sending;
+    await Promise.all([sending, queued]);
 
     expect(capturedBeforeDecision).toBe(1);
     expect(connector.sent).toHaveLength(0);

@@ -1,0 +1,188 @@
+{
+  "retrieval": [
+    {
+      "id": "backend-owner",
+      "question": "谁负责后端服务？",
+      "pages": [
+        {
+          "slug": "entities/alice",
+          "type": "entity",
+          "title": "Alice",
+          "summary": "Alice 负责后端服务",
+          "aliases": ["后端负责人"],
+          "content": "Alice 负责后端服务，并主导服务端架构。"
+        }
+      ],
+      "routeSlugs": ["entities/alice"],
+      "relevant": true,
+      "answer": "后端服务由 Alice 负责。",
+      "usedSlugs": ["entities/alice"],
+      "expectedSource": "knowledge",
+      "expectedCitations": ["entities/alice"]
+    },
+    {
+      "id": "family-alias",
+      "question": "小贝儿是谁？",
+      "pages": [
+        {
+          "slug": "entities/zhang-mingxi",
+          "type": "entity",
+          "title": "张洺汐",
+          "summary": "小贝儿是张洺汐",
+          "aliases": ["小贝儿"],
+          "content": "小贝儿是张洺汐，是家庭成员。"
+        }
+      ],
+      "routeSlugs": ["entities/zhang-mingxi"],
+      "relevant": true,
+      "answer": "小贝儿是张洺汐。",
+      "usedSlugs": ["entities/zhang-mingxi"],
+      "expectedSource": "knowledge",
+      "expectedCitations": ["entities/zhang-mingxi"]
+    },
+    {
+      "id": "release-retry-policy",
+      "question": "release retry policy",
+      "pages": [
+        {
+          "slug": "concepts/release-retry-policy",
+          "type": "concept",
+          "title": "Release retry policy",
+          "summary": "Retry failed releases twice",
+          "aliases": ["deployment retry"],
+          "content": "The release retry policy allows two retries before escalation."
+        }
+      ],
+      "routeSlugs": ["concepts/release-retry-policy"],
+      "relevant": true,
+      "answer": "Failed releases may be retried twice before escalation.",
+      "usedSlugs": ["concepts/release-retry-policy"],
+      "expectedSource": "knowledge",
+      "expectedCitations": ["concepts/release-retry-policy"]
+    },
+    {
+      "id": "semantic-backend-paraphrase",
+      "question": "线上故障该找哪位？",
+      "pages": [
+        {
+          "slug": "entities/alice-semantic",
+          "type": "entity",
+          "title": "Alice",
+          "summary": "Alice 负责后端服务",
+          "aliases": [],
+          "content": "Alice 负责后端服务，并主导服务端架构。"
+        }
+      ],
+      "routeSlugs": ["entities/alice-semantic"],
+      "relevant": true,
+      "answer": "Alice 在负责后端服务。",
+      "usedSlugs": ["entities/alice-semantic"],
+      "expectedSource": "knowledge",
+      "expectedCitations": ["entities/alice-semantic"]
+    }
+  ],
+  "routing": [
+    {
+      "id": "explicit-memory",
+      "text": "请记住：发布前先灰度",
+      "expectedDisposition": "remember"
+    },
+    {
+      "id": "natural-question",
+      "text": "谁负责后端服务",
+      "expectedDisposition": "conversation"
+    },
+    {
+      "id": "short-greeting",
+      "text": "你好",
+      "expectedDisposition": "chitchat"
+    },
+    {
+      "id": "natural-request",
+      "text": "分析一下这个方案的风险",
+      "expectedDisposition": "conversation"
+    }
+  ],
+  "proactive": [
+    {
+      "id": "balanced-high-value",
+      "text": "谁负责后端服务？",
+      "level": "balanced",
+      "scores": {
+        "participationScore": 95,
+        "disruptionRisk": 10,
+        "reason": "明确的群体问题"
+      },
+      "expectedRespond": true,
+      "expectedSource": "model"
+    },
+    {
+      "id": "reserved-optional-comment",
+      "text": "这个方案也许可以补一点监控",
+      "level": "reserved",
+      "scores": {
+        "participationScore": 70,
+        "disruptionRisk": 20,
+        "reason": "可选补充"
+      },
+      "expectedRespond": false,
+      "expectedSource": "model"
+    },
+    {
+      "id": "addressed-to-human",
+      "text": "@Alice 你怎么看？",
+      "level": "active",
+      "scores": {
+        "participationScore": 100,
+        "disruptionRisk": 0,
+        "reason": "不会被使用"
+      },
+      "expectedRespond": false,
+      "expectedSource": "guard"
+    },
+    {
+      "id": "fallback-obvious-question",
+      "text": "小贝儿是谁？",
+      "level": "balanced",
+      "modelFailure": true,
+      "expectedRespond": true,
+      "expectedSource": "fallback"
+    }
+  ],
+  "learning": [
+    {
+      "id": "valid-topic-route",
+      "topic": "Rust 异步",
+      "route": [
+        {
+          "title": "Future 基础",
+          "objective": "理解 Future 的惰性求值和轮询模型"
+        },
+        {
+          "title": "运行时与任务",
+          "objective": "理解运行时如何调度异步任务"
+        },
+        {
+          "title": "错误与取消",
+          "objective": "掌握超时、取消和错误传播"
+        }
+      ],
+      "expectedAccepted": true
+    },
+    {
+      "id": "reject-empty-objective",
+      "topic": "系统设计",
+      "route": [
+        {
+          "title": "边界",
+          "objective": ""
+        },
+        {
+          "title": "权衡",
+          "objective": "比较一致性与可用性的权衡"
+        }
+      ],
+      "expectedAccepted": false
+    }
+  ]
+}

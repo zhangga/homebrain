@@ -131,6 +131,186 @@ describe("system health reporter", () => {
     engine.close();
   });
 
+  test("AI runtime health distinguishes normal, backlog, and recent answer failures", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "hb-health-ai-runtime-"));
+    dirs.push(dir);
+    const engine = new KnowledgeEngine({ dataDir: dir, runProvider: async () => "ok" });
+    const runtime = {
+      queue: {
+        key: "main",
+        queued: 0,
+        running: 0,
+        pending: 0,
+        maxPending: 0,
+        completed: 100,
+        failed: 0,
+        averageWaitMs: 30,
+        maxWaitMs: 120,
+        averageDurationMs: 500,
+        maxDurationMs: 2000,
+      },
+      events: {
+        total: 100,
+        completed: 100,
+        failed: 0,
+        averageLatencyMs: 500,
+        maxLatencyMs: 2000,
+      },
+      answers: {
+        total: 10,
+        succeeded: 10,
+        failed: 0,
+        timedOut: 0,
+        averageLatencyMs: 800,
+        maxLatencyMs: 2500,
+        recent: {
+          sampleSize: 10,
+          succeeded: 10,
+          failed: 0,
+          timedOut: 0,
+          failureRate: 0,
+          errorRate: 0,
+          timeoutRate: 0,
+        },
+      },
+      proactiveParticipation: {
+        evaluated: 20,
+        responded: 4,
+        skipped: 16,
+        model: 18,
+        guard: 1,
+        fallback: 1,
+      },
+    };
+    const reportHealth = createSystemHealthReporter({
+      engine,
+      connectorHealth: () => ({
+        name: "feishu",
+        ready: true,
+        consumers: [
+          { key: "im.message.receive_v1", state: "ready", attempts: 0 },
+          { key: "im.chat.member.bot.added_v1", state: "ready", attempts: 0 },
+        ],
+      }),
+      dreamSchedulerHealth: () => loopHealth,
+      taskSchedulerHealth: () => loopHealth,
+      runtimeHealth: () => runtime,
+      detectProviders: async () => [
+        { id: "codex", name: "Codex", bin: "codex", available: true, detail: "1.0" },
+      ],
+      requiredProviderIds: () => ["codex"],
+    });
+
+    const normal = await reportHealth();
+    expect(normal.ready).toBe(true);
+    expect(normal.components.aiRuntime).toEqual(expect.objectContaining({
+      status: "ok",
+      details: expect.objectContaining({ answerFailureRate: 0 }),
+    }));
+
+    Object.assign(runtime.queue, {
+      queued: 11,
+      running: 1,
+      pending: 12,
+      maxPending: 18,
+      averageWaitMs: 300,
+      maxWaitMs: 1200,
+    });
+    const backlog = await reportHealth();
+    expect(backlog.ready).toBe(true);
+    expect(backlog.status).toBe("degraded");
+    expect(backlog.components.aiRuntime).toEqual(expect.objectContaining({
+      status: "degraded",
+      details: expect.objectContaining({
+        queue: expect.objectContaining({ pending: 12 }),
+        answerFailureRate: 0,
+      }),
+    }));
+
+    Object.assign(runtime.queue, {
+      queued: 0,
+      running: 0,
+      pending: 0,
+    });
+    Object.assign(runtime.answers, {
+      succeeded: 7,
+      failed: 2,
+      timedOut: 1,
+      recent: {
+        sampleSize: 10,
+        succeeded: 7,
+        failed: 2,
+        timedOut: 1,
+        failureRate: 0.3,
+        errorRate: 0.2,
+        timeoutRate: 0.1,
+      },
+    });
+    const failures = await reportHealth();
+    expect(failures.ready).toBe(true);
+    expect(failures.status).toBe("degraded");
+    expect(failures.components.aiRuntime).toEqual(expect.objectContaining({
+      status: "degraded",
+      details: expect.objectContaining({
+        queue: expect.objectContaining({ pending: 0 }),
+        answerFailureRate: 0.3,
+        answerErrorRate: 0.2,
+        answerTimeoutRate: 0.1,
+      }),
+    }));
+    engine.close();
+  });
+
+  test("negative answer feedback degrades quality health without exposing answer content", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "hb-health-ai-quality-"));
+    dirs.push(dir);
+    const engine = new KnowledgeEngine({ dataDir: dir, runProvider: async () => "ok" });
+    for (let index = 0; index < 5; index += 1) {
+      const trace = engine.quality.recordTrace({
+        spaces: ["team/oc_health"],
+        question: `private question ${index}`,
+        outcome: "succeeded",
+        source: "general",
+        answer: `private answer ${index}`,
+        citations: [],
+        latencyMs: 10,
+      });
+      engine.quality.recordFeedback(
+        trace.id,
+        index < 2 ? "unhelpful" : index === 2 ? "citation_error" : "helpful",
+      );
+    }
+    const reportHealth = createSystemHealthReporter({
+      engine,
+      connectorHealth: () => ({
+        name: "feishu",
+        ready: true,
+        consumers: [
+          { key: "im.message.receive_v1", state: "ready", attempts: 0 },
+          { key: "im.chat.member.bot.added_v1", state: "ready", attempts: 0 },
+        ],
+      }),
+      dreamSchedulerHealth: () => loopHealth,
+      taskSchedulerHealth: () => loopHealth,
+      detectProviders: async () => [
+        { id: "codex", name: "Codex", bin: "codex", available: true, detail: "1.0" },
+      ],
+      requiredProviderIds: () => ["codex"],
+    });
+
+    const snapshot = await reportHealth();
+    expect(snapshot.ready).toBe(true);
+    expect(snapshot.components.aiQuality).toEqual(expect.objectContaining({
+      status: "degraded",
+      details: expect.objectContaining({
+        feedback: expect.objectContaining({ total: 5, helpful: 2 }),
+      }),
+    }));
+    expect(JSON.stringify(snapshot)).not.toContain("private question");
+    expect(JSON.stringify(snapshot)).not.toContain("private answer");
+    engine.close();
+  });
+
   test("quarantined distillations degrade knowledge health without blocking readiness", async () => {
     const dir = mkdtempSync(join(tmpdir(), "hb-health-quarantine-"));
     dirs.push(dir);

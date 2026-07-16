@@ -1215,3 +1215,72 @@ describe("Knowledge seam contract", () => {
   });
 
 });
+
+describe("answer quality tracing", () => {
+  test("records a successful grounded answer and returns its trace id", async () => {
+    engine.close();
+    const fake = new FakeLlm();
+    fake.onJSON((call) => {
+      const properties = (call.schema as { properties?: Record<string, unknown> }).properties ?? {};
+      if ("relevant" in properties) return { slugs: ["entities/alice"], relevant: true };
+      return {
+        answer: "Alice 负责后端。",
+        grounded: true,
+        usedSlugs: ["entities/alice"],
+        gaps: [],
+      };
+    });
+    engine = new KnowledgeEngine({ dataDir: dir, llm: fake });
+    await engine.upsertPage(SPACE, page("entities/alice", "Alice", "Alice 负责后端。"));
+
+    const result = await engine.ask([SPACE], "谁负责后端？");
+    expect(result.traceId).toStartWith("answer_");
+    expect(engine.answerTrace(result.traceId!)).toEqual(
+      expect.objectContaining({
+        spaces: [SPACE],
+        question: "谁负责后端？",
+        outcome: "succeeded",
+        source: "knowledge",
+        answer: "Alice 负责后端。",
+        citations: [{ slug: "entities/alice", title: "Alice" }],
+        latencyMs: expect.any(Number),
+      }),
+    );
+  });
+
+  test("records a failed answer and rethrows the original error", async () => {
+    engine.close();
+    const fake = new FakeLlm();
+    fake.onJSON((call) => {
+      const properties = (call.schema as { properties?: Record<string, unknown> }).properties ?? {};
+      if ("relevant" in properties) return { slugs: ["entities/alice"], relevant: true };
+      throw new Error("synthesis exploded");
+    });
+    engine = new KnowledgeEngine({ dataDir: dir, llm: fake });
+    await engine.upsertPage(SPACE, page("entities/alice", "Alice", "Alice 负责后端。"));
+
+    await expect(engine.ask([SPACE], "谁负责后端？")).rejects.toThrow("synthesis exploded");
+    expect(engine.qualitySnapshot().answers).toEqual(
+      expect.objectContaining({ total: 1, failed: 1, succeeded: 0 }),
+    );
+  });
+
+  test("records feedback only when the trace belongs to the requested space", async () => {
+    engine.close();
+    const fake = new FakeLlm().queueText("这不在知识库记录中，以下是我的一般性回答。");
+    engine = new KnowledgeEngine({ dataDir: dir, llm: fake });
+    const result = await engine.ask([SPACE], "一个没有知识库记录的问题");
+
+    expect(engine.recordAnswerFeedback(
+      result.traceId!,
+      SPACE,
+      "unhelpful",
+      "缺少关键细节",
+    )).toEqual(expect.objectContaining({ kind: "unhelpful" }));
+    expect(engine.recordAnswerFeedback(
+      result.traceId!,
+      "team/oc_other",
+      "helpful",
+    )).toBeUndefined();
+  });
+});

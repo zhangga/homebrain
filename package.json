@@ -16,6 +16,7 @@
     "smoke:macos": "bun run scripts/smoke-macos-bundle.ts",
     "verify:crash-recovery": "bun run scripts/verify-crash-recovery.ts",
     "verify:beta": "bun run scripts/verify-beta-readiness.ts",
+    "evaluate:quality": "bun run scripts/ai-quality-evaluation.ts",
     "soak": "bun run scripts/soak-runtime.ts"
   },
   "devDependencies": {

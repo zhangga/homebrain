@@ -121,6 +121,8 @@ export interface AskResult {
   answer: string;
   source: "knowledge" | "general";
   citations: Citation[];
+  /** Durable local quality trace used for explicit answer feedback. */
+  traceId?: string;
   /** notable gaps the knowledge base did not cover, if any */
   gaps?: string[];
 }

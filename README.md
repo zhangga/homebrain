@@ -107,6 +107,7 @@ HOMEAGENT_LIVE=1 bun test packages/llm/src/gateway.live.test.ts   # 真调网关
 HOMEAGENT_LIVE=1 bun test packages/core/src/dream.live.test.ts    # 真跑提炼
 HOMEAGENT_LIVE=1 bun test packages/core/src/ask.live.test.ts      # 真跑问答
 bunx tsc -p tsconfig.json --noEmit    # 类型检查
+bun run evaluate:quality              # 固定 AI 质量评测 + 检索策略建议
 bun run verify:crash-recovery         # SIGKILL 后知识/任务/提醒/学习恢复验收
 bun run verify:beta                   # 干净候选树的本地预检（不代替外部发布门禁）
 ```
@@ -222,7 +223,7 @@ bun run packages/app/src/repl.ts       # 启动横幅列出全部命令
   App ID / App Secret 手动接入作为高级选项。连接页展示消息监听汇总状态；每个群可指定 Agent、`Topic reply`、
   机器人活跃度（稳重 / 均衡 / 积极），并直接发送测试消息验证发送通道。对外共享状态按 App ID 独立记录，更换机器人后不会沿用
   旧机器人的验证结果。
-- **运行状态**：集中展示后台托管方式、PID、启动时间、两条飞书事件消费者的详细状态、必需 CLI、知识存储、任务、提醒、学习、Dream Cycle 与四个调度器；LaunchAgent 托管时可从页面安全重启。
+- **运行状态**：集中展示后台托管方式、PID、启动时间、两条飞书事件消费者的详细状态、必需 CLI、知识存储、任务、提醒、学习、Dream Cycle 与四个调度器；同时展示 AI 回答延迟、失败/超时、主动参与结果和事件队列积压。质量或积压告警会标为 degraded，但不会把仍可服务的实例误判为未就绪。LaunchAgent 托管时可从页面安全重启。
 - **数据治理**：按空间导出 `homeagent.space v6` JSON 完整备份（知识页、原始记录、人工治理审计、撤回标记、任务及运行历史、运行时限、通知状态、提醒、学习计划、主题路线、多来源材料及课程历史、空间元数据及关联 Agent），兼容恢复 v1/v2/v3/v4/v5/v6 备份，或永久删除整个空间；可按保留周期立即清理已提炼的过期消息。
 - **设置**：**默认 Provider + 默认 Model**（群未指定 Agent 时用它）、每日预算、提炼时刻、原始消息保留周期、端口。
 
@@ -236,6 +237,16 @@ bun run packages/app/src/repl.ts       # 启动横幅列出全部命令
 静默收录；明确 @ 其他成员时不插话。旧版已保存的“响应全部消息”配置继续保持原行为，直到重新保存三档活跃度。
 `Topic reply` 控制是否在话题内回复。
 群没指定 Agent 时用「设置」里的默认 CLI；若没有可用 CLI，机器人会提示去后台配置（不静默）。
+
+### AI 质量闭环
+
+- 每次 `ask()` 都会在本机 `data/quality/quality.json` 保存有上限的回答追踪，包括来源、引用、耗时和成功/失败结果；健康页只读取聚合指标，不展示问题、回答或错误正文。
+- 管理后台的问答测试页提供“有帮助 / 没帮助 / 引用有误”反馈。每个回答只接受一次反馈，反馈与回答追踪一起留在本机。
+- `bun run evaluate:quality` 离线运行固定评测集，覆盖检索与引用、对话路由、群聊主动参与和学习路线校验。命令会输出机器可读报告及检索建议：
+  - `keep_fts`：当前 FTS、路由和引用达到阈值；
+  - `consider_hybrid_retrieval`：路由和引用正常，但 FTS 覆盖率低于 85%，应实验 embedding + FTS 混合检索；
+  - `insufficient_data`：检索样本不足，暂不调整架构。
+- 评测已进入 CI 和 `verify:beta`。阶段二不引入个人空间隐藏或隐私策略，仍以家庭和团队协作为产品边界。
 
 ### 首次启动与飞书连接
 

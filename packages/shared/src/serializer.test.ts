@@ -71,4 +71,49 @@ describe("Serializer", () => {
     await s.drain("k");
     expect(done).toBe(true);
   });
+
+  test("reports queue backlog, wait time, duration, and outcomes", async () => {
+    let now = 100;
+    const s = new Serializer({ now: () => now });
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const first = s.run("k", async () => {
+      now = 130;
+      await gate;
+      now = 180;
+      return "first";
+    });
+    const second = s.run("k", async () => {
+      now = 210;
+      throw new Error("second failed");
+    });
+
+    await Promise.resolve();
+    expect(s.snapshot("k")).toEqual(expect.objectContaining({
+      queued: 1,
+      running: 1,
+      pending: 2,
+      maxPending: 2,
+      averageWaitMs: 0,
+    }));
+
+    release();
+    await expect(first).resolves.toBe("first");
+    await expect(second).rejects.toThrow("second failed");
+    expect(s.snapshot("k")).toEqual({
+      key: "k",
+      queued: 0,
+      running: 0,
+      pending: 0,
+      maxPending: 2,
+      completed: 1,
+      failed: 1,
+      averageWaitMs: 40,
+      maxWaitMs: 80,
+      averageDurationMs: 55,
+      maxDurationMs: 80,
+    });
+  });
 });

@@ -464,6 +464,25 @@ function normalizeRouteInput(
     .slice(0, max);
 }
 
+/** Validate and normalize a complete topic route without silently dropping bad steps. */
+export function normalizeTopicLearningRoute(
+  values: readonly { title: string; objective: string }[],
+): { title: string; objective: string }[] | undefined {
+  if (!Array.isArray(values)) return undefined;
+  const normalized = values.map((step) => ({
+    title: typeof step?.title === "string" ? step.title.trim() : "",
+    objective: typeof step?.objective === "string" ? step.objective.trim() : "",
+  }));
+  if (
+    normalized.length < 2
+    || normalized.length > MAX_LEARNING_ROUTE_STEPS
+    || normalized.some((step) =>
+      !step.title || step.title.length > 100 || !step.objective || step.objective.length > 500
+    )
+  ) return undefined;
+  return normalized;
+}
+
 function activeProfile(
   input: LearnerProfileInput,
   revision: number,
@@ -906,17 +925,11 @@ export class LearningPlanStore {
     const topic = input.topic.trim();
     const creatorId = input.creatorId.trim();
     const chatId = input.chatId.trim();
-    const routeInput = input.route.map((step) => ({
-      title: step.title.trim(),
-      objective: step.objective.trim(),
-    }));
+    const routeInput = normalizeTopicLearningRoute(input.route);
     const assessmentQuestions = normalizedTexts(input.assessmentQuestions, 6);
     if (
       !name || name.length > 100 || !topic || topic.length > 200 || !isSpaceId(input.space)
-      || !creatorId || !chatId || routeInput.length < 2 || routeInput.length > MAX_LEARNING_ROUTE_STEPS
-      || routeInput.some((step) =>
-        !step.title || step.title.length > 100 || !step.objective || step.objective.length > 500
-      )
+      || !creatorId || !chatId || !routeInput
       || (input.assessmentQuestions !== undefined && assessmentQuestions.length < 3)
     ) throw new Error("invalid topic learning plan input");
 
