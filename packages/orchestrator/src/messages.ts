@@ -46,7 +46,7 @@ export const TASK_HELP = [
 export const LEARNING_HELP = [
   "📚 学习命令：",
   "· `/learn` 或 `/learn list` — 查看我的学习计划",
-  "· `/learn topic <主题>` — 生成由浅入深的主题学习路线",
+  "· `/learn topic <主题>` — 先做入学诊断，再生成持续迭代的主题路线",
   "· `/learn new <名称>` — 回复附件、文章或飞书文档后创建材料阅读计划",
   "· `/learn add <名称或序号>` — 回复另一份材料，将它加入现有计划",
   "· `/learn route <名称或序号>` — 查看主题路线与下一课重点",

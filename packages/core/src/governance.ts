@@ -36,6 +36,7 @@ import {
 import type { Reminder } from "./reminders.ts";
 import type {
   LearningArchive,
+  LearnerProfile,
   LearningPlan,
   LearningSession,
   LearningSource,
@@ -592,6 +593,74 @@ function parseLearningSource(value: unknown, index: number, version: number): Le
   };
 }
 
+function parseLearnerProfile(
+  value: unknown,
+  planIndex: number,
+  fallbackAt: number,
+): LearnerProfile {
+  if (value === undefined) {
+    return {
+      status: "active",
+      level: "unknown",
+      levelRationale: "旧版计划尚未积累足够的水平判断证据",
+      goals: [],
+      strengths: [],
+      gaps: [],
+      preferences: [],
+      pace: "steady",
+      dailyMinutes: 25,
+      evidence: [],
+      revision: 0,
+      updatedAt: fallbackAt,
+    };
+  }
+  const label = `learning.plans[${planIndex}].profile`;
+  const item = record(value, label);
+  const status = text(item.status, `${label}.status`) as LearnerProfile["status"];
+  const level = text(item.level, `${label}.level`) as LearnerProfile["level"];
+  const pace = text(item.pace, `${label}.pace`) as LearnerProfile["pace"];
+  const dailyMinutes = finiteNumber(item.dailyMinutes, `${label}.dailyMinutes`);
+  const revision = finiteNumber(item.revision, `${label}.revision`);
+  const bounded = (key: "goals" | "strengths" | "gaps" | "preferences" | "evidence") => {
+    const parsed = strings(item[key], `${label}.${key}`);
+    if (parsed.length > (key === "evidence" ? 24 : 12) || parsed.some((entry) => !entry.trim())) {
+      throw new Error(`${label}.${key} is invalid`);
+    }
+    return parsed;
+  };
+  if (!["assessing", "active"].includes(status)) {
+    throw new Error(`${label}.status is invalid`);
+  }
+  if (!["unknown", "beginner", "intermediate", "advanced"].includes(level)) {
+    throw new Error(`${label}.level is invalid`);
+  }
+  if (!["gentle", "steady", "intensive"].includes(pace)) {
+    throw new Error(`${label}.pace is invalid`);
+  }
+  if (!Number.isInteger(dailyMinutes) || dailyMinutes < 10 || dailyMinutes > 90) {
+    throw new Error(`${label}.dailyMinutes is invalid`);
+  }
+  if (!Number.isInteger(revision) || revision < 0) {
+    throw new Error(`${label}.revision is invalid`);
+  }
+  return {
+    status,
+    level,
+    levelRationale: text(item.levelRationale, `${label}.levelRationale`),
+    goals: bounded("goals"),
+    strengths: bounded("strengths"),
+    gaps: bounded("gaps"),
+    preferences: bounded("preferences"),
+    pace,
+    dailyMinutes,
+    evidence: bounded("evidence"),
+    revision,
+    updatedAt: item.updatedAt === undefined
+      ? fallbackAt
+      : finiteNumber(item.updatedAt, `${label}.updatedAt`),
+  };
+}
+
 function parseLearningPlan(
   value: unknown,
   index: number,
@@ -674,6 +743,29 @@ function parseLearningPlan(
   if (!Number.isInteger(routeIndex) || routeIndex < 0 || routeIndex > route.length) {
     throw new Error(`learning.plans[${index}].routeIndex is invalid`);
   }
+  const assessmentQuestions = mode === "topic" && item.assessmentQuestions !== undefined
+    ? strings(item.assessmentQuestions, `learning.plans[${index}].assessmentQuestions`)
+    : mode === "topic" ? [] : undefined;
+  if (
+    assessmentQuestions !== undefined
+    && (
+      assessmentQuestions.length > 6
+      || assessmentQuestions.some((question) => !question.trim())
+    )
+  ) throw new Error(`learning.plans[${index}].assessmentQuestions is invalid`);
+  const profile = mode === "topic"
+    ? parseLearnerProfile(item.profile, index, finiteNumber(
+        item.updatedAt,
+        `learning.plans[${index}].updatedAt`,
+      ))
+    : undefined;
+  const routeVersion = mode === "topic" && item.routeVersion !== undefined
+    ? finiteNumber(item.routeVersion, `learning.plans[${index}].routeVersion`)
+    : mode === "topic" ? 1 : undefined;
+  if (
+    routeVersion !== undefined
+    && (!Number.isInteger(routeVersion) || routeVersion < 1)
+  ) throw new Error(`learning.plans[${index}].routeVersion is invalid`);
   return {
     id: nonemptyText(item.id, `learning.plans[${index}].id`),
     name: nonemptyText(item.name, `learning.plans[${index}].name`),
@@ -689,6 +781,18 @@ function parseLearningPlan(
     adaptiveFocus: version < ADAPTIVE_LEARNING_SPACE_ARCHIVE_VERSION
       ? undefined
       : optionalText(item.adaptiveFocus, `learning.plans[${index}].adaptiveFocus`),
+    assessmentQuestions,
+    assessmentAnswers: mode === "topic"
+      ? optionalText(item.assessmentAnswers, `learning.plans[${index}].assessmentAnswers`)
+      : undefined,
+    profile,
+    routeVersion,
+    lastRouteAdjustment: mode === "topic"
+      ? optionalText(
+          item.lastRouteAdjustment,
+          `learning.plans[${index}].lastRouteAdjustment`,
+        )
+      : undefined,
     sourceId: nonemptyText(item.sourceId, `learning.plans[${index}].sourceId`),
     sourceLength,
     hour,
@@ -753,10 +857,31 @@ function parseLearningSession(value: unknown, index: number, version: number): L
     nextFocus: version < ADAPTIVE_LEARNING_SPACE_ARCHIVE_VERSION
       ? undefined
       : optionalText(item.nextFocus, `learning.sessions[${index}].nextFocus`),
+    routeAdjustment: version < ADAPTIVE_LEARNING_SPACE_ARCHIVE_VERSION
+      ? undefined
+      : optionalText(
+          item.routeAdjustment,
+          `learning.sessions[${index}].routeAdjustment`,
+        ),
     preparedAt: finiteNumber(item.preparedAt, `learning.sessions[${index}].preparedAt`),
     deliveredAt: item.deliveredAt === undefined
       ? undefined
       : finiteNumber(item.deliveredAt, `learning.sessions[${index}].deliveredAt`),
+    lastFollowUpAt: item.lastFollowUpAt === undefined
+      ? undefined
+      : finiteNumber(item.lastFollowUpAt, `learning.sessions[${index}].lastFollowUpAt`),
+    followUpCount: item.followUpCount === undefined
+      ? undefined
+      : (() => {
+          const count = finiteNumber(
+            item.followUpCount,
+            `learning.sessions[${index}].followUpCount`,
+          );
+          if (!Number.isInteger(count) || count < 0) {
+            throw new Error(`learning.sessions[${index}].followUpCount is invalid`);
+          }
+          return count;
+        })(),
     completedAt: item.completedAt === undefined
       ? undefined
       : finiteNumber(item.completedAt, `learning.sessions[${index}].completedAt`),

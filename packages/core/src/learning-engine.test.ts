@@ -120,6 +120,69 @@ describe("guided learning engine", () => {
     expect(llm.calls.at(-1)?.opts.prompt).toContain("Rust 异步编程");
   });
 
+  test("diagnoses the learner before activating a customized topic route", async () => {
+    llm.queueJSON({
+      name: "分布式系统进阶",
+      assessmentQuestions: [
+        "你做过哪些分布式项目？",
+        "如何解释一致性与可用性的权衡？",
+        "每天可以投入多久？",
+      ],
+      steps: [
+        { title: "概念导览", objective: "建立分布式系统术语地图" },
+        { title: "一致性", objective: "理解一致性模型" },
+      ],
+    });
+    const plan = await engine.createTopicLearningPlan({
+      space: SPACE,
+      chatId: "oc_p2p",
+      creatorId: "ou_me",
+      topic: "分布式系统",
+    });
+
+    expect(plan.profile?.status).toBe("assessing");
+    expect(plan.assessmentQuestions).toHaveLength(3);
+    await expect(engine.prepareLearningSession(plan.id, NOW + 1))
+      .rejects.toThrow("assessment is incomplete");
+
+    llm.queueJSON({
+      level: "beginner",
+      levelRationale: "有后端经验，但尚不能解释一致性权衡",
+      goals: ["能设计高可用服务"],
+      strengths: ["熟悉单体后端开发"],
+      gaps: ["故障模型", "一致性模型"],
+      preferences: ["案例驱动", "动手实验"],
+      pace: "steady",
+      dailyMinutes: 30,
+      evidence: ["回答中没有给出分区发生时的取舍"],
+      adjustment: "跳过编程基础，从故障与一致性开始。",
+      steps: [
+        { title: "故障模型", objective: "理解节点和网络故障" },
+        { title: "一致性模型", objective: "比较不同一致性保证" },
+        { title: "共识", objective: "理解 Raft 的工程权衡" },
+      ],
+    });
+    const assessed = await engine.answerLearningAssessment(
+      plan.id,
+      "ou_me",
+      "做过普通后端；CAP 只记得三个词；每天 30 分钟。",
+      NOW + 2,
+    );
+
+    expect(assessed.profile).toEqual(expect.objectContaining({
+      status: "active",
+      level: "beginner",
+      dailyMinutes: 30,
+      gaps: ["故障模型", "一致性模型"],
+    }));
+    expect(assessed.route.map((step) => step.title)).toEqual([
+      "故障模型",
+      "一致性模型",
+      "共识",
+    ]);
+    expect(llm.calls.at(-1)?.opts.prompt).toContain("CAP 只记得三个词");
+  });
+
   test("adds a replied source to an owned topic plan", async () => {
     llm.queueJSON({
       name: "Rust 异步",
@@ -409,6 +472,20 @@ describe("guided learning engine", () => {
       feedback: "## 回应点评\n把 Future 和线程混淆了\n\n## 今日总结\n需要补强轮询模型",
       mastery: "review",
       nextFocus: "用状态机解释 Future 的 poll 过程",
+      level: "beginner",
+      levelRationale: "仍将 Future 误解为后台线程",
+      goals: ["掌握 Rust 异步编程"],
+      strengths: ["知道 Future 表示异步计算"],
+      gaps: ["惰性轮询", "Waker"],
+      preferences: ["状态机示例"],
+      pace: "steady",
+      dailyMinutes: 25,
+      evidence: ["回答称 Future 是后台线程"],
+      routeAdjustment: "保留当前步骤，并在运行时之前加入 Waker。",
+      upcomingSteps: [
+        { title: "Waker", objective: "理解任务唤醒机制" },
+        { title: "运行时", objective: "理解 executor" },
+      ],
     });
 
     const result = await engine.answerLearningSession(
@@ -425,6 +502,18 @@ describe("guided learning engine", () => {
     expect(result.plan).toEqual(expect.objectContaining({
       routeIndex: 0,
       adaptiveFocus: "用状态机解释 Future 的 poll 过程",
+      routeVersion: 2,
+      lastRouteAdjustment: "保留当前步骤，并在运行时之前加入 Waker。",
+    }));
+    expect(result.plan.route.map((step) => step.title)).toEqual([
+      "Future",
+      "Waker",
+      "运行时",
+    ]);
+    expect(result.plan.profile).toEqual(expect.objectContaining({
+      level: "beginner",
+      revision: 1,
+      gaps: ["惰性轮询", "Waker"],
     }));
     llm.queueText(topicGuide());
     await engine.prepareLearningSession(plan.id, NOW + 3);

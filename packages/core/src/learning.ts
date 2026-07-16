@@ -19,8 +19,12 @@ export type LearningSessionStatus = "prepared" | "awaiting_reply" | "completed" 
 export type LearningPlanMode = "reading" | "topic";
 export type LearningRouteStepStatus = "pending" | "active" | "completed" | "skipped";
 export type LearningMastery = "review" | "ready";
+export type LearnerLevel = "unknown" | "beginner" | "intermediate" | "advanced";
+export type LearningPace = "gentle" | "steady" | "intensive";
 export const MAX_LEARNING_SOURCE_CHARACTERS = 2_000_000;
 export const MAX_LEARNING_MATERIALS = 24;
+export const MAX_LEARNING_ROUTE_STEPS = 12;
+export const MAX_LEARNING_PROFILE_ITEMS = 12;
 
 export interface LearningMaterial {
   title: string;
@@ -49,6 +53,33 @@ export interface LearningRouteStep {
   attempts: number;
 }
 
+export interface LearnerProfile {
+  status: "assessing" | "active";
+  level: LearnerLevel;
+  levelRationale: string;
+  goals: string[];
+  strengths: string[];
+  gaps: string[];
+  preferences: string[];
+  pace: LearningPace;
+  dailyMinutes: number;
+  evidence: string[];
+  revision: number;
+  updatedAt: number;
+}
+
+export interface LearnerProfileInput {
+  level: Exclude<LearnerLevel, "unknown">;
+  levelRationale: string;
+  goals: string[];
+  strengths: string[];
+  gaps: string[];
+  preferences: string[];
+  pace: LearningPace;
+  dailyMinutes: number;
+  evidence: string[];
+}
+
 export interface LearningPlan {
   id: string;
   name: string;
@@ -60,6 +91,11 @@ export interface LearningPlan {
   route: LearningRouteStep[];
   routeIndex: number;
   adaptiveFocus?: string;
+  assessmentQuestions?: string[];
+  assessmentAnswers?: string;
+  profile?: LearnerProfile;
+  routeVersion?: number;
+  lastRouteAdjustment?: string;
   sourceId: string;
   sourceLength: number;
   hour: number;
@@ -92,6 +128,7 @@ export interface TopicLearningPlanInput {
   creatorId: string;
   chatId: string;
   route: { title: string; objective: string }[];
+  assessmentQuestions?: string[];
   hour?: number;
 }
 
@@ -100,6 +137,19 @@ export interface AddLearningMaterialInput {
   content: string;
   rawIds: string[];
   messageId: string;
+}
+
+export interface CompleteLearningAssessmentInput {
+  answers: string;
+  profile: LearnerProfileInput;
+  route: { title: string; objective: string }[];
+  adjustment: string;
+}
+
+export interface AdaptiveTopicUpdateInput {
+  profile: LearnerProfileInput;
+  routeAdjustment: string;
+  upcomingSteps: { title: string; objective: string }[];
 }
 
 export interface LearningSession {
@@ -117,8 +167,11 @@ export interface LearningSession {
   routeStepId?: string;
   mastery?: LearningMastery;
   nextFocus?: string;
+  routeAdjustment?: string;
   preparedAt: number;
   deliveredAt?: number;
+  lastFollowUpAt?: number;
+  followUpCount?: number;
   completedAt?: number;
 }
 
@@ -164,6 +217,106 @@ function normalizeHour(value: number | undefined): number {
 function normalizeDailyCharacters(value: number | undefined): number {
   if (!finite(value)) return 3000;
   return Math.max(500, Math.min(8000, Math.trunc(value)));
+}
+
+function normalizeDailyMinutes(value: number | undefined): number {
+  if (!finite(value)) return 25;
+  return Math.max(10, Math.min(90, Math.trunc(value)));
+}
+
+function normalizedTexts(values: unknown, limit = MAX_LEARNING_PROFILE_ITEMS): string[] {
+  if (!Array.isArray(values)) return [];
+  return [...new Set(
+    values
+      .filter((value): value is string => typeof value === "string")
+      .map((value) => value.trim())
+      .filter(Boolean),
+  )].slice(0, limit);
+}
+
+function defaultTopicProfile(now: number, status: LearnerProfile["status"]): LearnerProfile {
+  return {
+    status,
+    level: "unknown",
+    levelRationale: status === "assessing"
+      ? "等待学习者完成入学诊断"
+      : "旧版计划尚未积累足够的水平判断证据",
+    goals: [],
+    strengths: [],
+    gaps: [],
+    preferences: [],
+    pace: "steady",
+    dailyMinutes: 25,
+    evidence: [],
+    revision: 0,
+    updatedAt: now,
+  };
+}
+
+function normalizeProfile(value: unknown, fallbackAt: number): LearnerProfile | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const profile = value as Partial<LearnerProfile>;
+  if (
+    !["assessing", "active"].includes(profile.status ?? "")
+    || !["unknown", "beginner", "intermediate", "advanced"].includes(profile.level ?? "")
+    || typeof profile.levelRationale !== "string"
+    || !["gentle", "steady", "intensive"].includes(profile.pace ?? "")
+    || !finite(profile.revision) || !Number.isInteger(profile.revision) || profile.revision < 0
+  ) return undefined;
+  return {
+    status: profile.status!,
+    level: profile.level!,
+    levelRationale: profile.levelRationale.trim(),
+    goals: normalizedTexts(profile.goals),
+    strengths: normalizedTexts(profile.strengths),
+    gaps: normalizedTexts(profile.gaps),
+    preferences: normalizedTexts(profile.preferences),
+    pace: profile.pace!,
+    dailyMinutes: normalizeDailyMinutes(profile.dailyMinutes),
+    evidence: normalizedTexts(profile.evidence, 24),
+    revision: profile.revision,
+    updatedAt: finite(profile.updatedAt) ? profile.updatedAt : fallbackAt,
+  };
+}
+
+function validProfile(value: unknown): value is LearnerProfile {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const profile = value as Partial<LearnerProfile>;
+  const validTexts = (items: unknown, limit: number): items is string[] =>
+    Array.isArray(items)
+    && items.length <= limit
+    && items.every((item) => typeof item === "string" && Boolean(item.trim()));
+  return ["assessing", "active"].includes(profile.status ?? "")
+    && ["unknown", "beginner", "intermediate", "advanced"].includes(profile.level ?? "")
+    && typeof profile.levelRationale === "string"
+    && Boolean(profile.levelRationale.trim())
+    && validTexts(profile.goals, MAX_LEARNING_PROFILE_ITEMS)
+    && validTexts(profile.strengths, MAX_LEARNING_PROFILE_ITEMS)
+    && validTexts(profile.gaps, MAX_LEARNING_PROFILE_ITEMS)
+    && validTexts(profile.preferences, MAX_LEARNING_PROFILE_ITEMS)
+    && ["gentle", "steady", "intensive"].includes(profile.pace ?? "")
+    && finite(profile.dailyMinutes)
+    && Number.isInteger(profile.dailyMinutes)
+    && profile.dailyMinutes >= 10
+    && profile.dailyMinutes <= 90
+    && validTexts(profile.evidence, 24)
+    && finite(profile.revision)
+    && Number.isInteger(profile.revision)
+    && profile.revision >= 0
+    && finite(profile.updatedAt);
+}
+
+function validProfileInput(value: LearnerProfileInput): boolean {
+  return ["beginner", "intermediate", "advanced"].includes(value.level)
+    && Boolean(value.levelRationale.trim())
+    && ["gentle", "steady", "intensive"].includes(value.pace)
+    && finite(value.dailyMinutes)
+    && [value.goals, value.strengths, value.gaps, value.preferences, value.evidence]
+      .every((items) =>
+        Array.isArray(items)
+        && items.length <= MAX_LEARNING_PROFILE_ITEMS
+        && items.every((item) => typeof item === "string" && Boolean(item.trim()))
+      );
 }
 
 function validMaterial(value: unknown, sourceLength: number): value is LearningMaterial {
@@ -248,14 +401,74 @@ function validRouteStep(value: unknown): value is LearningRouteStep {
     && finite(step.attempts) && Number.isInteger(step.attempts) && step.attempts >= 0;
 }
 
+function normalizeRouteInput(
+  values: { title: string; objective: string }[],
+  max = MAX_LEARNING_ROUTE_STEPS,
+): { title: string; objective: string }[] {
+  if (!Array.isArray(values)) return [];
+  return values
+    .map((step) => ({
+      title: typeof step?.title === "string" ? step.title.trim() : "",
+      objective: typeof step?.objective === "string" ? step.objective.trim() : "",
+    }))
+    .filter((step) =>
+      Boolean(step.title)
+      && step.title.length <= 100
+      && Boolean(step.objective)
+      && step.objective.length <= 500
+    )
+    .slice(0, max);
+}
+
+function activeProfile(
+  input: LearnerProfileInput,
+  revision: number,
+  updatedAt: number,
+): LearnerProfile {
+  return {
+    status: "active",
+    level: input.level,
+    levelRationale: input.levelRationale.trim(),
+    goals: normalizedTexts(input.goals),
+    strengths: normalizedTexts(input.strengths),
+    gaps: normalizedTexts(input.gaps),
+    preferences: normalizedTexts(input.preferences),
+    pace: input.pace,
+    dailyMinutes: normalizeDailyMinutes(input.dailyMinutes),
+    evidence: normalizedTexts(input.evidence, 24),
+    revision,
+    updatedAt,
+  };
+}
+
 function normalizePlan(value: unknown): LearningPlan | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
   const original = value as Partial<LearningPlan>;
+  const mode = original.mode ?? "reading";
+  const updatedAt = finite(original.updatedAt) ? original.updatedAt : Date.now();
+  const assessmentQuestions = normalizedTexts(original.assessmentQuestions, 6);
+  const profile = mode === "topic"
+    ? normalizeProfile(original.profile, updatedAt)
+      ?? defaultTopicProfile(updatedAt, assessmentQuestions.length > 0 ? "assessing" : "active")
+    : undefined;
   const candidate = {
     ...original,
-    mode: original.mode ?? "reading",
+    mode,
     route: original.route ?? [],
     routeIndex: original.routeIndex ?? 0,
+    assessmentQuestions: mode === "topic" ? assessmentQuestions : undefined,
+    assessmentAnswers: mode === "topic" && typeof original.assessmentAnswers === "string"
+      ? original.assessmentAnswers.trim() || undefined
+      : undefined,
+    profile,
+    routeVersion: mode === "topic"
+      ? finite(original.routeVersion) && Number.isInteger(original.routeVersion)
+        ? Math.max(1, original.routeVersion)
+        : 1
+      : undefined,
+    lastRouteAdjustment: mode === "topic" && typeof original.lastRouteAdjustment === "string"
+      ? original.lastRouteAdjustment.trim() || undefined
+      : undefined,
   } as LearningPlan;
   return validPlan(candidate) ? candidate : undefined;
 }
@@ -295,6 +508,26 @@ function validPlan(value: unknown): value is LearningPlan {
     && finite(plan.routeIndex) && Number.isInteger(plan.routeIndex)
     && plan.routeIndex >= 0 && plan.routeIndex <= plan.route.length
     && (plan.adaptiveFocus === undefined || typeof plan.adaptiveFocus === "string")
+    && (plan.assessmentQuestions === undefined
+      || (
+        Array.isArray(plan.assessmentQuestions)
+        && plan.assessmentQuestions.length <= 6
+        && plan.assessmentQuestions.every((question) =>
+          typeof question === "string" && Boolean(question.trim())
+        )
+      ))
+    && (plan.assessmentAnswers === undefined || typeof plan.assessmentAnswers === "string")
+    && (plan.profile === undefined || validProfile(plan.profile))
+    && (plan.routeVersion === undefined
+      || (finite(plan.routeVersion) && Number.isInteger(plan.routeVersion) && plan.routeVersion >= 1))
+    && (plan.lastRouteAdjustment === undefined || typeof plan.lastRouteAdjustment === "string")
+    && (plan.mode === "reading"
+      ? plan.profile === undefined
+        && plan.assessmentQuestions === undefined
+        && plan.assessmentAnswers === undefined
+        && plan.routeVersion === undefined
+        && plan.lastRouteAdjustment === undefined
+      : plan.profile !== undefined && plan.routeVersion !== undefined)
     && validRouteState(plan)
     && typeof plan.sourceId === "string" && plan.sourceId.length > 0
     && finite(plan.sourceLength) && Number.isInteger(plan.sourceLength) && plan.sourceLength > 0
@@ -328,8 +561,12 @@ function validSession(value: unknown): value is LearningSession {
     && (session.routeStepId === undefined || typeof session.routeStepId === "string")
     && (session.mastery === undefined || ["review", "ready"].includes(session.mastery))
     && (session.nextFocus === undefined || typeof session.nextFocus === "string")
+    && (session.routeAdjustment === undefined || typeof session.routeAdjustment === "string")
     && finite(session.preparedAt)
     && (session.deliveredAt === undefined || finite(session.deliveredAt))
+    && (session.lastFollowUpAt === undefined || finite(session.lastFollowUpAt))
+    && (session.followUpCount === undefined
+      || (finite(session.followUpCount) && Number.isInteger(session.followUpCount) && session.followUpCount >= 0))
     && (session.completedAt === undefined || finite(session.completedAt));
 }
 
@@ -338,7 +575,8 @@ function sessionFitsPlan(plan: LearningPlan, session: LearningSession): boolean 
   if (plan.mode === "reading") {
     return session.routeStepId === undefined
       && session.mastery === undefined
-      && session.nextFocus === undefined;
+      && session.nextFocus === undefined
+      && session.routeAdjustment === undefined;
   }
   const stepIndex = plan.route.findIndex((step) => step.id === session.routeStepId);
   if (
@@ -355,7 +593,21 @@ function sessionFitsPlan(plan: LearningPlan, session: LearningSession): boolean 
 }
 
 function clonePlan(plan: LearningPlan): LearningPlan {
-  return { ...plan, route: plan.route.map((step) => ({ ...step })) };
+  return {
+    ...plan,
+    route: plan.route.map((step) => ({ ...step })),
+    assessmentQuestions: plan.assessmentQuestions ? [...plan.assessmentQuestions] : undefined,
+    profile: plan.profile
+      ? {
+          ...plan.profile,
+          goals: [...plan.profile.goals],
+          strengths: [...plan.profile.strengths],
+          gaps: [...plan.profile.gaps],
+          preferences: [...plan.profile.preferences],
+          evidence: [...plan.profile.evidence],
+        }
+      : undefined,
+  };
 }
 
 function cloneSource(source: LearningSource): LearningSource {
@@ -562,12 +814,14 @@ export class LearningPlanStore {
       title: step.title.trim(),
       objective: step.objective.trim(),
     }));
+    const assessmentQuestions = normalizedTexts(input.assessmentQuestions, 6);
     if (
       !name || name.length > 100 || !topic || topic.length > 200 || !isSpaceId(input.space)
-      || !creatorId || !chatId || routeInput.length < 2 || routeInput.length > 12
+      || !creatorId || !chatId || routeInput.length < 2 || routeInput.length > MAX_LEARNING_ROUTE_STEPS
       || routeInput.some((step) =>
         !step.title || step.title.length > 100 || !step.objective || step.objective.length > 500
       )
+      || (input.assessmentQuestions !== undefined && assessmentQuestions.length < 3)
     ) throw new Error("invalid topic learning plan input");
 
     const route: LearningRouteStep[] = routeInput.map((step, index) => ({
@@ -608,6 +862,15 @@ export class LearningPlanStore {
       mode: "topic",
       route,
       routeIndex: 0,
+      assessmentQuestions,
+      profile: defaultTopicProfile(
+        now,
+        assessmentQuestions.length > 0 ? "assessing" : "active",
+      ),
+      routeVersion: 1,
+      lastRouteAdjustment: assessmentQuestions.length > 0
+        ? "等待完成入学诊断后生成个性化路线"
+        : "使用初始主题路线",
       sourceId: source.id,
       sourceLength: source.content.length,
       hour: normalizeHour(input.hour),
@@ -683,12 +946,55 @@ export class LearningPlanStore {
     return updatedPlan;
   }
 
+  completeAssessment(
+    planId: string,
+    actorId: string,
+    input: CompleteLearningAssessmentInput,
+    at = Date.now(),
+  ): LearningPlan | undefined {
+    const plan = this.plans.get(planId);
+    const answers = input.answers.trim();
+    const adjustment = input.adjustment.trim();
+    const routeInput = normalizeRouteInput(input.route);
+    if (
+      !plan || plan.mode !== "topic" || plan.creatorId !== actorId
+      || plan.profile?.status !== "assessing" || plan.currentSessionId !== undefined
+      || !answers || !adjustment || !finite(at)
+      || !validProfileInput(input.profile)
+      || routeInput.length < 2
+    ) return undefined;
+
+    const route: LearningRouteStep[] = routeInput.map((step, index) => ({
+      id: `learn_step_${randomUUID()}`,
+      ...step,
+      status: index === 0 ? "active" : "pending",
+      attempts: 0,
+    }));
+    const candidatePlans = cloneMap(this.plans, clonePlan);
+    const updated = candidatePlans.get(planId)!;
+    updated.route = route;
+    updated.routeIndex = 0;
+    updated.assessmentAnswers = answers;
+    updated.profile = activeProfile(input.profile, 1, at);
+    updated.routeVersion = (updated.routeVersion ?? 1) + 1;
+    updated.lastRouteAdjustment = adjustment;
+    updated.adaptiveFocus = input.profile.gaps[0]?.trim() || adjustment;
+    updated.status = "active";
+    updated.updatedAt = at;
+    this.persist(candidatePlans, this.sources, this.sessions);
+    this.plans = candidatePlans;
+    return clonePlan(updated);
+  }
+
   prepareSession(
     planId: string,
     input: PrepareLearningSessionInput,
   ): LearningSession | undefined {
     const plan = this.plans.get(planId);
-    if (!plan || plan.status !== "active") return undefined;
+    if (
+      !plan || plan.status !== "active"
+      || (plan.mode === "topic" && plan.profile?.status === "assessing")
+    ) return undefined;
     const current = this.currentSession(planId);
     if (current && ["prepared", "awaiting_reply"].includes(current.status)) return current;
     const sectionTitle = input.sectionTitle.trim();
@@ -746,6 +1052,21 @@ export class LearningPlanStore {
     return updatedSession;
   }
 
+  markFollowedUp(sessionId: string, followedUpAt = Date.now()): LearningSession | undefined {
+    const session = this.sessions.get(sessionId);
+    if (
+      !session || session.status !== "awaiting_reply" || !finite(followedUpAt)
+      || (session.deliveredAt !== undefined && followedUpAt < session.deliveredAt)
+    ) return undefined;
+    const candidateSessions = cloneMap(this.sessions, cloneSession);
+    const updatedSession = candidateSessions.get(sessionId)!;
+    updatedSession.lastFollowUpAt = followedUpAt;
+    updatedSession.followUpCount = (updatedSession.followUpCount ?? 0) + 1;
+    this.persist(this.plans, this.sources, candidateSessions);
+    this.sessions = candidateSessions;
+    return cloneSession(updatedSession);
+  }
+
   completeSession(
     sessionId: string,
     input: {
@@ -753,6 +1074,7 @@ export class LearningPlanStore {
       feedback: string;
       mastery?: LearningMastery;
       nextFocus?: string;
+      adaptive?: AdaptiveTopicUpdateInput;
       completedAt: number;
     },
   ): LearningSession | undefined {
@@ -767,6 +1089,13 @@ export class LearningPlanStore {
       || (plan.mode === "topic" && (
         !["review", "ready"].includes(input.mastery ?? "") || !nextFocus
       ))
+      || (input.adaptive !== undefined && (
+        plan.mode !== "topic"
+        || !validProfileInput(input.adaptive.profile)
+        || !input.adaptive.routeAdjustment.trim()
+        || normalizeRouteInput(input.adaptive.upcomingSteps).length
+          !== input.adaptive.upcomingSteps.length
+      ))
     ) return undefined;
 
     const candidatePlans = cloneMap(this.plans, clonePlan);
@@ -777,9 +1106,14 @@ export class LearningPlanStore {
     updatedSession.feedback = feedback;
     updatedSession.mastery = input.mastery;
     updatedSession.nextFocus = nextFocus;
+    updatedSession.routeAdjustment = input.adaptive?.routeAdjustment.trim();
     updatedSession.completedAt = input.completedAt;
     const updatedPlan = candidatePlans.get(updatedSession.planId)!;
+    const wasPaused = updatedPlan.status === "paused";
     advancePlan(updatedPlan, updatedSession, input.completedAt);
+    if (input.adaptive) {
+      adaptTopicPlan(updatedPlan, updatedSession, input.adaptive, input.completedAt, wasPaused);
+    }
     this.persist(candidatePlans, this.sources, candidateSessions);
     this.plans = candidatePlans;
     this.sessions = candidateSessions;
@@ -1030,4 +1364,46 @@ function advancePlan(plan: LearningPlan, session: LearningSession, completedAt: 
   plan.currentSessionId = undefined;
   plan.status = plan.cursor >= plan.sourceLength ? "completed" : wasPaused ? "paused" : "active";
   plan.updatedAt = completedAt;
+}
+
+function adaptTopicPlan(
+  plan: LearningPlan,
+  session: LearningSession,
+  input: AdaptiveTopicUpdateInput,
+  updatedAt: number,
+  wasPaused: boolean,
+): void {
+  if (plan.mode !== "topic" || !session.mastery) return;
+  const revision = (plan.profile?.revision ?? 0) + 1;
+  const previousEvidence = plan.profile?.evidence ?? [];
+  plan.profile = activeProfile(input.profile, revision, updatedAt);
+  plan.profile.evidence = normalizedTexts(
+    [...previousEvidence, ...plan.profile.evidence],
+    24,
+  );
+  plan.lastRouteAdjustment = input.routeAdjustment.trim();
+  plan.routeVersion = (plan.routeVersion ?? 1) + 1;
+
+  const preserveCount = session.mastery === "review"
+    ? Math.min(plan.route.length, plan.routeIndex + 1)
+    : plan.routeIndex;
+  const preserved = plan.route.slice(0, preserveCount);
+  const maxUpcoming = Math.max(0, MAX_LEARNING_ROUTE_STEPS - preserved.length);
+  const upcoming = normalizeRouteInput(input.upcomingSteps, maxUpcoming).map((step, index) => ({
+    id: `learn_step_${randomUUID()}`,
+    ...step,
+    status: session.mastery === "ready" && index === 0
+      ? "active" as const
+      : "pending" as const,
+    attempts: 0,
+  }));
+  plan.route = [...preserved, ...upcoming];
+  if (session.mastery === "review") {
+    plan.status = wasPaused ? "paused" : "active";
+  } else if (upcoming.length > 0) {
+    plan.status = wasPaused ? "paused" : "active";
+  } else {
+    plan.status = "completed";
+  }
+  plan.updatedAt = updatedAt;
 }

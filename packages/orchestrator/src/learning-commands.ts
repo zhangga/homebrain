@@ -82,6 +82,7 @@ function findPlan(plans: LearningPlan[], query: string): LearningPlan | undefine
 function statusLabel(plan: LearningPlan): string {
   if (plan.status === "paused") return "已暂停";
   if (plan.status === "completed") return "已完成";
+  if (plan.mode === "topic" && plan.profile?.status === "assessing") return "待诊断";
   return engineProgress(plan) === 100 ? "已完成" : "进行中";
 }
 
@@ -125,6 +126,15 @@ export async function handleLearningCommand(
         creatorId: context.actorId,
         topic,
       });
+      if (plan.profile?.status === "assessing" && plan.assessmentQuestions?.length) {
+        return [
+          `✅ 已创建主题学习计划「${plan.name}」。开始前，我想先了解你目前的基础和目标：`,
+          "",
+          ...plan.assessmentQuestions.map((question, index) => `${index + 1}. ${question}`),
+          "",
+          "请按编号回复，并以“学习回答：”开头。完成诊断后，我会重做路线并开始每日学习。",
+        ].join("\n");
+      }
       return `✅ 已创建主题学习计划「${plan.name}」，共 ${plan.route.length} 个步骤，默认每天 8:00 推送一课。发送 \`/learn route ${plan.name}\` 查看路线。`;
     } catch (error) {
       return `创建主题学习计划失败：${String(error).replace(/^Error:\s*/u, "")}`;
@@ -160,9 +170,13 @@ export async function handleLearningCommand(
     if (target.mode !== "topic") return `学习计划「${target.name}」是材料阅读计划，没有主题路线。`;
     return [
       `学习路线「${target.name}」：`,
+      target.profile?.status === "assessing"
+        ? "🧭 当前是初步路线，完成入学诊断后会按你的水平和目标重做。"
+        : "",
       ...target.route.map((step) =>
         `${routeStatusIcon(step.status)} ${step.title} — ${step.objective}${step.attempts > 0 ? `（已学习 ${step.attempts} 次）` : ""}`
       ),
+      target.lastRouteAdjustment ? `\n路线调整：${target.lastRouteAdjustment}` : "",
       target.adaptiveFocus ? `\n下一课重点：${target.adaptiveFocus}` : "",
     ].filter(Boolean).join("\n");
   }
@@ -209,11 +223,37 @@ export async function handleLearningAnswer(
   answer: string,
   context: Omit<LearningCommandContext, "sourceMessageId">,
 ): Promise<string> {
+  const assessing = ownedPlans(engine, context)
+    .filter((plan) => plan.mode === "topic" && plan.profile?.status === "assessing");
   const awaiting = ownedPlans(engine, context)
     .filter((plan) => engine.learning.currentSession(plan.id)?.status === "awaiting_reply");
-  if (awaiting.length === 0) return "当前没有等待你回答的学习课程。";
-  if (awaiting.length > 1) {
-    return `有多个课程正在等待回答，请先用 \`/learn skip <名称>\` 处理到只剩一个：${awaiting.map((plan) => plan.name).join("、")}`;
+  const candidates = [...assessing, ...awaiting];
+  if (candidates.length === 0) return "当前没有等待你回答的学习课程或入学诊断。";
+  if (candidates.length > 1) {
+    return `有多个学习计划正在等待回答，请先处理到只剩一个：${candidates.map((plan) => plan.name).join("、")}`;
+  }
+  if (assessing.length === 1) {
+    const assessed = await engine.answerLearningAssessment(
+      assessing[0]!.id,
+      context.actorId,
+      answer,
+    );
+    const profile = assessed.profile!;
+    return [
+      `🧭 已完成「${assessed.name}」入学诊断，并按你的回答重做学习路线。`,
+      "",
+      `当前判断：${levelLabel(profile.level)} — ${profile.levelRationale}`,
+      `建议节奏：${paceLabel(profile.pace)}，每天约 ${profile.dailyMinutes} 分钟`,
+      profile.goals.length > 0 ? `学习目标：${profile.goals.join("；")}` : "",
+      profile.strengths.length > 0 ? `知识优势：${profile.strengths.join("；")}` : "",
+      profile.gaps.length > 0 ? `优先补齐：${profile.gaps.join("；")}` : "",
+      assessed.lastRouteAdjustment ? `路线调整：${assessed.lastRouteAdjustment}` : "",
+      "",
+      "定制路线：",
+      ...assessed.route.map((step, index) => `${index + 1}. ${step.title} — ${step.objective}`),
+      "",
+      `下一课将在每天 ${assessed.hour}:00 推送；你也可以发送 \`/learn route ${assessed.name}\` 随时查看变化。`,
+    ].filter(Boolean).join("\n");
   }
   const target = awaiting[0]!;
   const result = await engine.answerLearningSession(target.id, context.actorId, answer);
@@ -225,4 +265,17 @@ export async function handleLearningAnswer(
       ? `\n\n🔁 下一课将继续当前步骤，重点补强：${result.session.nextFocus}`
       : "";
   return `✅ 已记录「${target.name}」第 ${result.session.sequence} 课。\n\n${result.feedback}${completion}`;
+}
+
+function levelLabel(level: NonNullable<LearningPlan["profile"]>["level"]): string {
+  if (level === "advanced") return "进阶";
+  if (level === "intermediate") return "中阶";
+  if (level === "beginner") return "入门";
+  return "待观察";
+}
+
+function paceLabel(pace: NonNullable<LearningPlan["profile"]>["pace"]): string {
+  if (pace === "intensive") return "强化";
+  if (pace === "gentle") return "轻量";
+  return "稳步";
 }

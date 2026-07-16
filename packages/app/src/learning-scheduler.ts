@@ -19,6 +19,11 @@ export const DEFAULT_LEARNING_SCHEDULE: LearningScheduleConfig = {
 };
 
 export type LearningNotify = LearningDelivery;
+export type LearningFollowUpNotify = (
+  plan: LearningPlan,
+  session: LearningSession,
+  message: string,
+) => void | Promise<void>;
 
 export function shouldRunLearningPlan(
   plan: LearningPlan,
@@ -26,11 +31,24 @@ export function shouldRunLearningPlan(
   now: Date,
 ): boolean {
   if (plan.status !== "active") return false;
+  if (plan.mode === "topic" && plan.profile?.status === "assessing") return false;
   if (current?.status === "prepared") return true;
   if (current?.status === "awaiting_reply") return false;
   if (localHour(now) < plan.hour) return false;
   return plan.lastDeliveredAt === undefined
     || dayKey(new Date(plan.lastDeliveredAt)) !== dayKey(now);
+}
+
+export function shouldFollowUpLearningPlan(
+  plan: LearningPlan,
+  current: LearningSession | undefined,
+  now: Date,
+): boolean {
+  if (plan.status !== "active" || current?.status !== "awaiting_reply") return false;
+  if (current.deliveredAt === undefined || (current.followUpCount ?? 0) >= 3) return false;
+  if (now.getTime() - current.deliveredAt < 24 * 60 * 60 * 1000) return false;
+  return current.lastFollowUpAt === undefined
+    || dayKey(new Date(current.lastFollowUpAt)) !== dayKey(now);
 }
 
 export function learningNotification(
@@ -50,10 +68,26 @@ export function learningNotification(
   ].join("\n");
 }
 
+export function learningFollowUpNotification(
+  plan: LearningPlan,
+  session: LearningSession,
+): string {
+  const focus = session.nextFocus || plan.adaptiveFocus || session.sectionTitle;
+  return [
+    `🌿 「${plan.name}」还在等你，不用赶进度。`,
+    `当前停在：${session.sectionTitle}`,
+    `可以先用几句话说说你对“${focus}”的理解，我会根据你的回答调整后面的路线。`,
+    "",
+    "继续：回复并 @我，以“学习回答：”开头",
+    `暂时跳过：发送 \`/learn skip ${plan.name}\``,
+  ].join("\n");
+}
+
 export class LearningScheduler {
   private readonly engine: KnowledgeEngine;
   private readonly cfg: LearningScheduleConfig;
   private readonly notify?: LearningNotify;
+  private readonly followUp?: LearningFollowUpNotify;
   private timer?: ReturnType<typeof setInterval>;
   private running = false;
   private started = false;
@@ -66,11 +100,16 @@ export class LearningScheduler {
 
   constructor(
     engine: KnowledgeEngine,
-    opts: { cfg?: Partial<LearningScheduleConfig>; notify?: LearningNotify } = {},
+    opts: {
+      cfg?: Partial<LearningScheduleConfig>;
+      notify?: LearningNotify;
+      followUp?: LearningFollowUpNotify;
+    } = {},
   ) {
     this.engine = engine;
     this.cfg = { ...DEFAULT_LEARNING_SCHEDULE, ...opts.cfg };
     this.notify = opts.notify;
+    this.followUp = opts.followUp;
   }
 
   async start(): Promise<void> {
@@ -117,6 +156,25 @@ export class LearningScheduler {
     try {
       for (const plan of this.engine.learning.list()) {
         const current = this.engine.learning.currentSession(plan.id);
+        if (shouldFollowUpLearningPlan(plan, current, now)) {
+          try {
+            if (!this.followUp) throw new Error("learning follow-up transport is unavailable");
+            await this.followUp(
+              plan,
+              current!,
+              learningFollowUpNotification(plan, current!),
+            );
+            this.engine.learning.markFollowedUp(current!.id, now.getTime());
+            delivered.push(`follow-up:${plan.id}`);
+          } catch (error) {
+            errors.push(`follow-up ${plan.id}: ${String(error)}`);
+            log.error("scheduled learning follow-up failed", {
+              planId: plan.id,
+              err: String(error),
+            });
+          }
+          continue;
+        }
         if (!shouldRunLearningPlan(plan, current, now)) continue;
         try {
           const advanced = await this.engine.deliverLearningSession(

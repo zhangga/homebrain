@@ -88,6 +88,76 @@ describe("LearningPlanStore", () => {
     expect(new LearningPlanStore(dir).get(plan.id)).toEqual(plan);
   });
 
+  test("completes a topic assessment and atomically replaces the provisional route", () => {
+    const store = new LearningPlanStore(dir);
+    const plan = store.createTopic({
+      name: "分布式系统",
+      topic: "分布式系统",
+      space: "personal/ou_me",
+      creatorId: "ou_me",
+      chatId: "oc_p2p",
+      assessmentQuestions: [
+        "做过哪些相关项目？",
+        "如何理解一致性？",
+        "每天能投入多久？",
+      ],
+      route: [
+        { title: "概念导览", objective: "建立术语地图" },
+        { title: "一致性", objective: "理解一致性模型" },
+      ],
+    }, NOW);
+
+    expect(plan.profile).toEqual(expect.objectContaining({
+      status: "assessing",
+      level: "unknown",
+      revision: 0,
+    }));
+    expect(store.prepareSession(plan.id, {
+      startOffset: 0,
+      endOffset: 1,
+      routeStepId: plan.route[0]!.id,
+      sectionTitle: "概念导览",
+      excerpt: "暂无用户材料",
+      guide: "诊断前不应开课",
+      preparedAt: NOW + 1,
+    })).toBeUndefined();
+
+    const updated = store.completeAssessment(plan.id, "ou_me", {
+      answers: "做过单体服务；知道 CAP；每天 30 分钟。",
+      profile: {
+        level: "beginner",
+        levelRationale: "有工程经验，但缺少分布式一致性实践",
+        goals: ["能设计高可用服务"],
+        strengths: ["熟悉单体服务开发"],
+        gaps: ["一致性模型", "故障恢复"],
+        preferences: ["案例驱动"],
+        pace: "steady",
+        dailyMinutes: 30,
+        evidence: ["能够描述 CAP 的三个词，但无法解释权衡"],
+      },
+      route: [
+        { title: "故障模型", objective: "理解网络与节点故障" },
+        { title: "一致性模型", objective: "比较线性一致性与最终一致性" },
+        { title: "共识实践", objective: "理解 Raft 的工程取舍" },
+      ],
+      adjustment: "跳过通用编程基础，从故障模型开始。",
+    }, NOW + 2)!;
+
+    expect(updated.profile).toEqual(expect.objectContaining({
+      status: "active",
+      level: "beginner",
+      dailyMinutes: 30,
+      revision: 1,
+    }));
+    expect(updated.route.map((step) => [step.title, step.status])).toEqual([
+      ["故障模型", "active"],
+      ["一致性模型", "pending"],
+      ["共识实践", "pending"],
+    ]);
+    expect(updated.routeVersion).toBe(2);
+    expect(new LearningPlanStore(dir).get(plan.id)).toEqual(updated);
+  });
+
   test("rejects oversized topic route fields before persistence", () => {
     const store = new LearningPlanStore(dir);
 
@@ -261,6 +331,150 @@ describe("LearningPlanStore", () => {
       status: "completed",
     }));
     expect(learningProgress(store.get(plan.id)!)).toBe(100);
+  });
+
+  test("updates the learner profile and replaces only future route steps after feedback", () => {
+    const store = new LearningPlanStore(dir);
+    const plan = store.createTopic({
+      name: "学习 Rust",
+      topic: "Rust 异步编程",
+      space: "personal/ou_me",
+      creatorId: "ou_me",
+      chatId: "oc_p2p",
+      route: [
+        { title: "Future", objective: "理解 Future" },
+        { title: "运行时", objective: "理解运行时" },
+        { title: "并发实践", objective: "完成并发任务" },
+      ],
+    }, NOW);
+    const session = store.prepareSession(plan.id, {
+      startOffset: 0,
+      endOffset: 1,
+      routeStepId: plan.route[0]!.id,
+      sectionTitle: "Future",
+      excerpt: "暂无用户材料",
+      guide: "## 今日目标\n理解 Future",
+      preparedAt: NOW + 1,
+    })!;
+    store.markDelivered(session.id, NOW + 2);
+    store.completeSession(session.id, {
+      learnerReply: "Future 被 poll 才推进",
+      feedback: "已经掌握 Future 的核心机制",
+      mastery: "ready",
+      nextFocus: "理解唤醒机制",
+      adaptive: {
+        profile: {
+          level: "intermediate",
+          levelRationale: "能够准确解释惰性轮询",
+          goals: ["独立排查异步程序问题"],
+          strengths: ["Future 心智模型"],
+          gaps: ["Waker 与调度器协作"],
+          preferences: ["代码实验"],
+          pace: "intensive",
+          dailyMinutes: 45,
+          evidence: ["明确指出 Future 只有在 poll 时推进"],
+        },
+        routeAdjustment: "删除重复的 Future 入门内容，补入唤醒机制。",
+        upcomingSteps: [
+          { title: "Waker", objective: "理解任务如何被重新调度" },
+          { title: "运行时诊断", objective: "使用 tracing 排查阻塞" },
+        ],
+      },
+      completedAt: NOW + 3,
+    });
+
+    const updated = store.get(plan.id)!;
+    expect(updated.route[0]).toEqual(expect.objectContaining({
+      id: plan.route[0]!.id,
+      status: "completed",
+    }));
+    expect(updated.route.slice(1).map((step) => [step.title, step.status])).toEqual([
+      ["Waker", "active"],
+      ["运行时诊断", "pending"],
+    ]);
+    expect(updated.profile).toEqual(expect.objectContaining({
+      level: "intermediate",
+      revision: 1,
+      dailyMinutes: 45,
+    }));
+    expect(updated.lastRouteAdjustment).toContain("补入唤醒机制");
+    expect(updated.routeVersion).toBe(2);
+  });
+
+  test("preserves diagnosis evidence across later route revisions", () => {
+    const store = new LearningPlanStore(dir);
+    const plan = store.createTopic({
+      name: "学习数据库",
+      topic: "数据库事务",
+      space: "personal/ou_me",
+      creatorId: "ou_me",
+      chatId: "oc_p2p",
+      assessmentQuestions: [
+        "如何理解事务？",
+        "遇到过哪些并发异常？",
+        "希望解决什么实际问题？",
+      ],
+      route: [
+        { title: "事务基础", objective: "理解 ACID" },
+        { title: "隔离概览", objective: "认识常见并发现象" },
+      ],
+    }, NOW);
+    const assessed = store.completeAssessment(plan.id, "ou_me", {
+      answers: "知道 ACID，但没有处理过隔离级别问题。",
+      profile: {
+        level: "beginner",
+        levelRationale: "具备术语基础，缺少实践",
+        goals: ["能够定位事务异常"],
+        strengths: ["了解 ACID"],
+        gaps: ["隔离级别"],
+        preferences: ["案例驱动"],
+        pace: "steady",
+        dailyMinutes: 30,
+        evidence: ["诊断时能说出 ACID"],
+      },
+      route: [
+        { title: "隔离级别", objective: "理解常见并发现象" },
+        { title: "锁与版本", objective: "比较并发控制机制" },
+      ],
+      adjustment: "从隔离级别案例开始。",
+    }, NOW + 1)!;
+    const session = store.prepareSession(plan.id, {
+      startOffset: 0,
+      endOffset: 1,
+      routeStepId: assessed.route[0]!.id,
+      sectionTitle: "隔离级别",
+      excerpt: "暂无用户材料",
+      guide: "通过案例判断隔离问题",
+      preparedAt: NOW + 2,
+    })!;
+    store.markDelivered(session.id, NOW + 3);
+    store.completeSession(session.id, {
+      learnerReply: "这个例子属于不可重复读。",
+      feedback: "判断正确",
+      mastery: "ready",
+      nextFocus: "理解 MVCC",
+      adaptive: {
+        profile: {
+          level: "intermediate",
+          levelRationale: "能够识别典型隔离异常",
+          goals: ["能够定位事务异常"],
+          strengths: ["识别不可重复读"],
+          gaps: ["MVCC"],
+          preferences: ["案例驱动"],
+          pace: "steady",
+          dailyMinutes: 30,
+          evidence: ["课程中正确识别不可重复读"],
+        },
+        routeAdjustment: "转入 MVCC。",
+        upcomingSteps: [{ title: "MVCC", objective: "理解版本可见性" }],
+      },
+      completedAt: NOW + 4,
+    });
+
+    expect(store.get(plan.id)?.profile?.evidence).toEqual([
+      "诊断时能说出 ACID",
+      "课程中正确识别不可重复读",
+    ]);
   });
 
   test("keeps a prepared lesson retryable until delivery succeeds", () => {
@@ -470,6 +684,33 @@ describe("LearningPlanStore", () => {
     expect(() => target.restore(archive)).toThrow("current session");
     expect(target.list()).toEqual([]);
     expect(source.get(first.id)).toBeDefined();
+  });
+
+  test("rejects topic archives with out-of-range learner profile fields", () => {
+    const source = new LearningPlanStore(join(dir, "invalid-profile-source"));
+    const plan = source.createTopic({
+      name: "学习数据库",
+      topic: "数据库事务",
+      space: "personal/ou_me",
+      creatorId: "ou_me",
+      chatId: "oc_p2p",
+      route: [
+        { title: "事务基础", objective: "理解 ACID" },
+        { title: "隔离级别", objective: "理解并发异常" },
+      ],
+    }, NOW);
+    const archive = source.exportBySpace("personal/ou_me");
+    archive.plans[0] = {
+      ...archive.plans[0]!,
+      profile: {
+        ...plan.profile!,
+        dailyMinutes: 120,
+      },
+    };
+
+    const target = new LearningPlanStore(join(dir, "invalid-profile-target"));
+    expect(() => target.restore(archive)).toThrow("invalid or duplicate learning plan");
+    expect(target.list()).toEqual([]);
   });
 
   test("rejects topic archives whose sessions point at the wrong route step", () => {

@@ -10,7 +10,9 @@ import {
 } from "@homeagent/core";
 import {
   LearningScheduler,
+  learningFollowUpNotification,
   learningNotification,
+  shouldFollowUpLearningPlan,
   shouldRunLearningPlan,
 } from "./learning-scheduler.ts";
 
@@ -66,6 +68,56 @@ describe("shouldRunLearningPlan", () => {
     expect(shouldRunLearningPlan(plan(), session({ status: "prepared" }), NOW)).toBe(true);
     expect(shouldRunLearningPlan(plan(), session({ status: "awaiting_reply" }), NOW)).toBe(false);
     expect(shouldRunLearningPlan(plan({ status: "paused" }), undefined, NOW)).toBe(false);
+    expect(shouldRunLearningPlan(plan({
+      mode: "topic",
+      topic: "Rust",
+      route: [{
+        id: "step_1",
+        title: "诊断",
+        objective: "等待诊断",
+        status: "active",
+        attempts: 0,
+      }],
+      profile: {
+        status: "assessing",
+        level: "unknown",
+        levelRationale: "等待回答",
+        goals: [],
+        strengths: [],
+        gaps: [],
+        preferences: [],
+        pace: "steady",
+        dailyMinutes: 25,
+        evidence: [],
+        revision: 0,
+        updatedAt: 1,
+      },
+    }), undefined, NOW)).toBe(false);
+  });
+});
+
+describe("shouldFollowUpLearningPlan", () => {
+  test("follows up once per day after 24 hours and stops after three nudges", () => {
+    const deliveredAt = NOW.getTime() - 25 * 60 * 60 * 1000;
+    expect(shouldFollowUpLearningPlan(
+      plan(),
+      session({ status: "awaiting_reply", deliveredAt }),
+      NOW,
+    )).toBe(true);
+    expect(shouldFollowUpLearningPlan(
+      plan(),
+      session({
+        status: "awaiting_reply",
+        deliveredAt,
+        lastFollowUpAt: NOW.getTime() - 60 * 60 * 1000,
+      }),
+      NOW,
+    )).toBe(false);
+    expect(shouldFollowUpLearningPlan(
+      plan(),
+      session({ status: "awaiting_reply", deliveredAt, followUpCount: 3 }),
+      NOW,
+    )).toBe(false);
   });
 });
 
@@ -118,6 +170,44 @@ describe("LearningScheduler", () => {
       lastStatus: "error",
       lastError: expect.stringContaining("network unavailable"),
     }));
+  });
+
+  test("persists a friendly follow-up only after successful delivery", async () => {
+    const created = seedPlan(engine);
+    llm.queueText("## 今日目标\n理解第一章");
+    const scheduler = new LearningScheduler(engine, {
+      notify: async () => {},
+      followUp: async (_plan, _session, message) => {
+        expect(message).toContain("不用赶进度");
+        expect(message).toContain("学习回答：");
+      },
+    });
+    await scheduler.tick("deliver", NOW);
+    const current = engine.learning.currentSession(created.id)!;
+    const later = new Date(NOW.getTime() + 25 * 60 * 60 * 1000);
+
+    expect(await scheduler.tick("follow-up", later)).toEqual([`follow-up:${created.id}`]);
+    expect(engine.learning.currentSession(created.id)).toEqual(expect.objectContaining({
+      id: current.id,
+      followUpCount: 1,
+      lastFollowUpAt: later.getTime(),
+    }));
+    expect(await scheduler.tick("same-day", later)).toEqual([]);
+  });
+
+  test("keeps follow-up state retryable when notification delivery fails", async () => {
+    const created = seedPlan(engine);
+    llm.queueText("## 今日目标\n理解第一章");
+    const scheduler = new LearningScheduler(engine, {
+      notify: async () => {},
+      followUp: async () => { throw new Error("network unavailable"); },
+    });
+    await scheduler.tick("deliver", NOW);
+    const later = new Date(NOW.getTime() + 25 * 60 * 60 * 1000);
+
+    expect(await scheduler.tick("follow-up", later)).toEqual([]);
+    expect(engine.learning.currentSession(created.id)?.followUpCount).toBeUndefined();
+    expect(scheduler.health().lastError).toContain("network unavailable");
   });
 
   test("prevents deleting a space while a lesson is being delivered", async () => {
@@ -175,6 +265,16 @@ describe("LearningScheduler", () => {
     expect(message).toContain("当前步骤：Future");
     expect(message).toContain("## 参考材料\n[材料1：Async Book]");
     expect(message).not.toContain("## 今日原文");
+  });
+
+  test("renders a low-pressure follow-up with exact continuation controls", () => {
+    const message = learningFollowUpNotification(
+      plan({ adaptiveFocus: "理解 Future 的 poll" }),
+      session({ status: "awaiting_reply", sectionTitle: "Future" }),
+    );
+    expect(message).toContain("还在等你");
+    expect(message).toContain("理解 Future 的 poll");
+    expect(message).toContain("/learn skip 读原则");
   });
 });
 

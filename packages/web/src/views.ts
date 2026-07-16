@@ -1050,6 +1050,180 @@ const LEARNING_SESSION_LABELS: Record<LearningSession["status"], string> = {
   skipped: "已跳过",
 };
 
+const LEARNING_STUDIO_STYLE = `
+  .learning-studio {
+    --paper:#f4efe3; --paper-deep:#e9dfca; --ink:#172b2a; --ink-soft:#52615d;
+    --forest:#0f5c4d; --forest-soft:#dcebe3; --amber:#d8832f; --amber-soft:#f7e5c8;
+    --coral:#bc5746; --line:rgba(23,43,42,.16);
+    color:var(--ink); font-family:"Avenir Next","PingFang SC","Microsoft YaHei",sans-serif;
+  }
+  .learning-studio * { box-sizing:border-box; }
+  .learning-studio .studio-title {
+    font-family:"Songti SC","STSong",Georgia,serif; font-size:32px; letter-spacing:-.04em;
+    margin:0; color:var(--ink);
+  }
+  .learning-studio .studio-kicker {
+    color:var(--amber); font-size:11px; font-weight:800; letter-spacing:.18em;
+    text-transform:uppercase; margin-bottom:7px;
+  }
+  .learning-studio .studio-subtitle { color:var(--ink-soft); max-width:700px; margin:7px 0 22px; }
+  .learning-studio .learning-layout {
+    display:grid; grid-template-columns:220px minmax(0,1fr); gap:20px; align-items:start;
+  }
+  .learning-studio .plan-index { position:sticky; top:18px; }
+  .learning-studio .plan-tab {
+    display:block; color:var(--ink); padding:13px 14px; margin-bottom:9px;
+    border:1px solid var(--line); border-radius:4px 15px 15px 4px; background:rgba(255,255,255,.62);
+    box-shadow:0 5px 20px rgba(47,52,43,.05); transition:transform .18s ease, border-color .18s ease;
+  }
+  .learning-studio .plan-tab:hover { transform:translateX(3px); text-decoration:none; border-color:var(--amber); }
+  .learning-studio .plan-tab.active { background:var(--ink); color:#fff8e9; border-color:var(--ink); }
+  .learning-studio .plan-tab strong { display:block; font-family:"Songti SC","STSong",Georgia,serif; font-size:15px; }
+  .learning-studio .plan-tab small { display:block; opacity:.7; font-size:11px; margin-top:4px; line-height:1.45; }
+  .learning-studio .learning-map {
+    position:relative; overflow:hidden; border:1px solid var(--line); border-radius:22px 5px 22px 5px;
+    background:
+      radial-gradient(circle at 86% 6%, rgba(216,131,47,.16), transparent 25%),
+      linear-gradient(rgba(255,255,255,.52), rgba(255,255,255,.52)),
+      repeating-linear-gradient(0deg, transparent 0 27px, rgba(23,43,42,.035) 28px),
+      var(--paper);
+    box-shadow:0 18px 45px rgba(54,55,43,.12);
+    animation:learning-arrive .45s ease both;
+  }
+  .learning-studio .learning-map:before {
+    content:""; position:absolute; width:150px; height:150px; border:1px solid rgba(15,92,77,.14);
+    border-radius:50%; right:-58px; top:92px; box-shadow:0 0 0 22px rgba(15,92,77,.035),0 0 0 44px rgba(15,92,77,.025);
+  }
+  @keyframes learning-arrive { from { opacity:0; transform:translateY(8px); } to { opacity:1; transform:none; } }
+  .learning-studio .map-hero { display:grid; grid-template-columns:1fr auto; gap:24px; padding:28px 28px 24px; position:relative; }
+  .learning-studio .map-eyebrow { display:flex; flex-wrap:wrap; gap:7px; margin-bottom:10px; }
+  .learning-studio .map-pill {
+    display:inline-flex; align-items:center; gap:5px; border:1px solid var(--line); border-radius:999px;
+    padding:4px 9px; color:var(--ink-soft); background:rgba(255,255,255,.5); font-size:11px; font-weight:700;
+  }
+  .learning-studio .map-pill.live { background:var(--forest-soft); color:var(--forest); border-color:rgba(15,92,77,.18); }
+  .learning-studio .map-name {
+    font-family:"Songti SC","STSong",Georgia,serif; font-size:30px; line-height:1.12; margin:0 0 9px;
+    max-width:560px; letter-spacing:-.035em;
+  }
+  .learning-studio .map-topic { color:var(--ink-soft); margin:0; max-width:570px; }
+  .learning-studio .progress-dial {
+    --progress:0; width:112px; height:112px; border-radius:50%; display:grid; place-items:center;
+    background:conic-gradient(var(--amber) calc(var(--progress) * 3.6deg), rgba(23,43,42,.1) 0);
+    position:relative; box-shadow:inset 0 0 0 1px rgba(23,43,42,.08);
+  }
+  .learning-studio .progress-dial:before { content:""; position:absolute; inset:9px; border-radius:50%; background:var(--paper); }
+  .learning-studio .progress-value { position:relative; text-align:center; font-family:"Songti SC","STSong",serif; font-size:25px; line-height:1; }
+  .learning-studio .progress-value small { display:block; margin-top:5px; font:700 9px/1 "Avenir Next","PingFang SC",sans-serif; letter-spacing:.12em; color:var(--ink-soft); }
+  .learning-studio .map-ribbon {
+    display:grid; grid-template-columns:repeat(4,1fr); border-top:1px solid var(--line); border-bottom:1px solid var(--line);
+    background:rgba(255,255,255,.35);
+  }
+  .learning-studio .ribbon-stat { padding:14px 17px; min-width:0; }
+  .learning-studio .ribbon-stat + .ribbon-stat { border-left:1px solid var(--line); }
+  .learning-studio .ribbon-stat span { display:block; color:var(--ink-soft); font-size:10px; letter-spacing:.08em; }
+  .learning-studio .ribbon-stat strong { display:block; margin-top:3px; font-size:13px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .learning-studio .map-body { padding:24px 28px 30px; position:relative; }
+  .learning-studio .section-label {
+    display:flex; align-items:center; gap:9px; margin:0 0 13px; font:800 11px/1 "Avenir Next","PingFang SC",sans-serif;
+    color:var(--forest); letter-spacing:.14em; text-transform:uppercase;
+  }
+  .learning-studio .section-label:after { content:""; height:1px; flex:1; background:var(--line); }
+  .learning-studio .assessment-card {
+    padding:20px; border:1px dashed var(--amber); background:var(--amber-soft); border-radius:4px 18px 18px 18px; margin-bottom:22px;
+  }
+  .learning-studio .assessment-card h3 { margin:0 0 7px; font-family:"Songti SC","STSong",serif; font-size:20px; }
+  .learning-studio .question-list { margin:12px 0 0; padding-left:22px; }
+  .learning-studio .question-list li { margin:7px 0; }
+  .learning-studio .profile-grid { display:grid; grid-template-columns:1.12fr .88fr; gap:12px; margin-bottom:24px; }
+  .learning-studio .profile-card {
+    padding:17px 18px; border:1px solid var(--line); background:rgba(255,255,255,.52); border-radius:4px 15px 15px 15px;
+  }
+  .learning-studio .profile-card.level { grid-row:span 2; background:var(--ink); color:#fff8e9; }
+  .learning-studio .profile-card h3 { font-family:"Songti SC","STSong",serif; font-size:18px; margin:0 0 8px; }
+  .learning-studio .profile-card p { margin:0; font-size:13px; color:inherit; opacity:.82; }
+  .learning-studio .profile-level { font-family:"Songti SC","STSong",serif; font-size:36px; margin:7px 0 8px; color:#f3c071; }
+  .learning-studio .profile-meta { margin-top:15px; display:flex; gap:8px; flex-wrap:wrap; }
+  .learning-studio .profile-meta span { padding:4px 8px; border:1px solid rgba(255,255,255,.2); border-radius:999px; font-size:11px; }
+  .learning-studio .chip-cloud { display:flex; flex-wrap:wrap; gap:6px; }
+  .learning-studio .knowledge-chip { padding:4px 8px; border-radius:999px; font-size:11px; background:var(--forest-soft); color:var(--forest); }
+  .learning-studio .knowledge-chip.gap { background:#f4d9d2; color:#8b3f35; }
+  .learning-studio .route-note {
+    border-left:4px solid var(--amber); padding:12px 14px; background:rgba(247,229,200,.74); margin-bottom:18px; font-size:13px;
+  }
+  .learning-studio .route-note strong { display:block; color:#8a511c; margin-bottom:3px; }
+  .learning-studio .route-trail { position:relative; margin:0 0 25px; }
+  .learning-studio .route-step { display:grid; grid-template-columns:32px 1fr auto; gap:12px; position:relative; padding:0 0 18px; }
+  .learning-studio .route-step:not(:last-child):before {
+    content:""; position:absolute; left:15px; top:31px; bottom:0; width:1px; background:var(--line);
+  }
+  .learning-studio .step-marker {
+    width:32px; height:32px; border-radius:50%; display:grid; place-items:center; z-index:1;
+    border:1px solid var(--line); background:var(--paper); color:var(--ink-soft); font-size:11px; font-weight:800;
+  }
+  .learning-studio .route-step.active .step-marker { background:var(--amber); color:#fff; border-color:var(--amber); box-shadow:0 0 0 5px rgba(216,131,47,.12); }
+  .learning-studio .route-step.completed .step-marker { background:var(--forest); color:#fff; border-color:var(--forest); }
+  .learning-studio .step-copy { padding-top:3px; }
+  .learning-studio .step-copy strong { display:block; font-family:"Songti SC","STSong",serif; font-size:16px; }
+  .learning-studio .step-copy p { margin:3px 0 0; color:var(--ink-soft); font-size:12px; }
+  .learning-studio .step-attempts { color:var(--ink-soft); font-size:10px; padding-top:7px; white-space:nowrap; }
+  .learning-studio .current-card {
+    display:grid; grid-template-columns:1fr auto; gap:16px; border:1px solid rgba(15,92,77,.2);
+    background:linear-gradient(135deg,rgba(220,235,227,.84),rgba(255,255,255,.48)); padding:17px 18px; border-radius:4px 18px 18px 18px; margin-bottom:23px;
+  }
+  .learning-studio .current-card h3 { font-family:"Songti SC","STSong",serif; margin:0 0 4px; font-size:18px; }
+  .learning-studio .current-card p { margin:0; color:var(--ink-soft); font-size:12px; }
+  .learning-studio .follow-count { align-self:center; color:var(--forest); font-size:11px; font-weight:800; }
+  .learning-studio .history-stack { display:grid; gap:9px; }
+  .learning-studio .history-note { border:1px solid var(--line); background:rgba(255,255,255,.5); padding:13px 15px; border-radius:4px 13px 13px 13px; }
+  .learning-studio .history-head { display:flex; justify-content:space-between; gap:10px; font-size:12px; }
+  .learning-studio .history-note p { color:var(--ink-soft); font-size:12px; margin:7px 0 0; white-space:pre-wrap; }
+  .learning-studio .material-strip { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:22px; }
+  .learning-studio .material-card { padding:8px 10px; border:1px solid var(--line); background:rgba(255,255,255,.48); border-radius:3px 11px 11px 11px; font-size:11px; }
+  .learning-studio details.plan-settings { margin-top:22px; border-top:1px solid var(--line); padding-top:16px; }
+  .learning-studio details.plan-settings summary { cursor:pointer; color:var(--ink-soft); font-size:12px; font-weight:800; }
+  .learning-studio .settings-sheet { margin-top:14px; padding:16px; border:1px solid var(--line); background:rgba(255,255,255,.45); border-radius:4px 14px 14px 14px; }
+  .learning-studio .settings-facts { display:grid; grid-template-columns:repeat(3,1fr); gap:9px; margin-bottom:13px; color:var(--ink-soft); font-size:11px; }
+  .learning-studio .empty-map { border:1px dashed var(--line); background:var(--paper); padding:34px; border-radius:4px 20px 20px 20px; text-align:center; }
+  @media (max-width:850px) {
+    .learning-studio .learning-layout { grid-template-columns:1fr; }
+    .learning-studio .plan-index { position:static; display:flex; overflow:auto; gap:8px; padding-bottom:4px; }
+    .learning-studio .plan-tab { min-width:190px; margin:0; }
+  }
+  @media (max-width:620px) {
+    .learning-studio .map-hero { grid-template-columns:1fr; padding:22px 19px 18px; }
+    .learning-studio .progress-dial { width:92px; height:92px; }
+    .learning-studio .map-ribbon { grid-template-columns:1fr 1fr; }
+    .learning-studio .ribbon-stat:nth-child(3) { border-left:0; border-top:1px solid var(--line); }
+    .learning-studio .ribbon-stat:nth-child(4) { border-top:1px solid var(--line); }
+    .learning-studio .map-body { padding:20px 18px 24px; }
+    .learning-studio .profile-grid { grid-template-columns:1fr; }
+    .learning-studio .profile-card.level { grid-row:auto; }
+    .learning-studio .settings-facts { grid-template-columns:1fr; }
+  }
+`;
+
+function learnerLevelLabel(plan: LearningPlan): string {
+  const level = plan.profile?.level;
+  if (level === "advanced") return "进阶";
+  if (level === "intermediate") return "中阶";
+  if (level === "beginner") return "入门";
+  return plan.profile?.status === "assessing" ? "待诊断" : "待观察";
+}
+
+function learnerPaceLabel(plan: LearningPlan): string {
+  if (plan.profile?.pace === "intensive") return "强化推进";
+  if (plan.profile?.pace === "gentle") return "轻量积累";
+  return "稳步学习";
+}
+
+function learningStepLabel(status: LearningPlan["route"][number]["status"]): string {
+  if (status === "active") return "当前";
+  if (status === "completed") return "✓";
+  if (status === "skipped") return "—";
+  return "·";
+}
+
 export function learningView(
   plans: LearningPlan[],
   selected: LearningPlan | null,
@@ -1063,9 +1237,9 @@ export function learningView(
     const sourceTitle = plan.mode === "topic"
       ? `${planSource?.materials.length ?? 0} 份材料`
       : planSource?.title ?? "来源已不可用";
-    return html`<a class="item ${selected?.id === plan.id ? "active" : ""}" href="/learning/${encodeURIComponent(plan.id)}">
-      <div class="name"><span class="dot" style="${plan.status === "active" ? "" : "background:#cbd5e1"}"></span>${plan.name}</div>
-      <div class="sub">${plan.mode === "topic" ? "主题学习" : "材料阅读"} · ${sourceTitle} · ${LEARNING_STATUS_LABELS[plan.status]} · ${progress}% · 每天 ${plan.hour}:00</div>
+    return html`<a class="plan-tab ${selected?.id === plan.id ? "active" : ""}" href="/learning/${encodeURIComponent(plan.id)}">
+      <strong>${plan.name}</strong>
+      <small>${plan.mode === "topic" ? learnerLevelLabel(plan) : "材料阅读"} · ${sourceTitle}<br />${LEARNING_STATUS_LABELS[plan.status]} · ${progress}% · ${plan.hour}:00</small>
     </a>`;
   });
   const source = selected ? sources[selected.id] : undefined;
@@ -1074,100 +1248,193 @@ export function learningView(
     : undefined;
   const sessionHistory = sessions.filter(
     (session) => session.status === "completed" || session.status === "skipped",
-  );
+  ).slice().reverse();
 
   const detail = selected
-    ? html`<div>
+    ? html`<article class="learning-map">
         ${flash(flashMsg)}
-        <form method="post" action="/learning/${encodeURIComponent(selected.id)}" class="stack card">
-          <h2 style="margin-top:0">${selected.name}</h2>
-          <div class="grid2">
-            <div class="field"><label>来源</label><div>${source?.title ?? "来源已不可用"}</div></div>
-            <div class="field"><label>类型</label><div>${selected.mode === "topic" ? "主题学习" : "材料阅读"}</div></div>
-            <div class="field"><label>状态</label><div>${LEARNING_STATUS_LABELS[selected.status]}</div></div>
-            ${selected.mode === "topic"
-              ? html`<div class="field"><label>主题</label><div>${selected.topic}</div></div>`
-              : ""}
-            <div class="field"><label>空间</label><div>${selected.space}</div></div>
-            <div class="field"><label>创建者</label><div>${selected.creatorId}</div></div>
-            <div class="field"><label>投递聊天</label><div>${selected.chatId}</div></div>
-            <div class="field"><label>当前课程</label><div>${currentSession ? LEARNING_SESSION_LABELS[currentSession.status] : "无"}</div></div>
-            <div class="field">
-              <label>每天几点 <span class="hint">北京时间，0–23</span></label>
-              <input type="number" min="0" max="23" name="hour" value="${selected.hour}" required />
+        <header class="map-hero">
+          <div>
+            <div class="map-eyebrow">
+              <span class="map-pill live">${LEARNING_STATUS_LABELS[selected.status]}</span>
+              <span class="map-pill">${selected.mode === "topic" ? "自适应主题学习" : "材料带读"}</span>
+              ${selected.mode === "topic" ? html`<span class="map-pill">路线 v${selected.routeVersion ?? 1}</span>` : ""}
             </div>
-            ${selected.mode === "reading"
-              ? html`<div class="field">
-                  <label>每课字数 <span class="hint">500–8000 字</span></label>
-                  <input type="number" min="500" max="8000" name="dailyCharacters" value="${selected.dailyCharacters}" required />
-                </div>`
+            <h2 class="map-name">${selected.name}</h2>
+            <p class="map-topic">${selected.mode === "topic"
+              ? selected.topic
+              : `沿着「${source?.title ?? "来源已不可用"}」逐段阅读、思考和反馈。`}</p>
+          </div>
+          <div class="progress-dial" style="--progress:${learningProgress(selected)}">
+            <div class="progress-value">${learningProgress(selected)}%<small>LEARNING</small></div>
+          </div>
+        </header>
+        <div class="map-ribbon">
+          <div class="ribbon-stat"><span>当前判断</span><strong>${selected.mode === "topic" ? learnerLevelLabel(selected) : "原文驱动"}</strong></div>
+          <div class="ribbon-stat"><span>每日节奏</span><strong>${selected.mode === "topic" ? `${selected.profile?.dailyMinutes ?? 25} 分钟` : `${selected.dailyCharacters} 字`}</strong></div>
+          <div class="ribbon-stat"><span>推送时间</span><strong>每天 ${selected.hour}:00</strong></div>
+          <div class="ribbon-stat"><span>当前课程</span><strong>${currentSession ? LEARNING_SESSION_LABELS[currentSession.status] : "等待下一课"}</strong></div>
+        </div>
+        <div class="map-body">
+          ${selected.mode === "topic" && selected.profile?.status === "assessing"
+            ? html`<section class="assessment-card">
+                <div class="studio-kicker">Before the route</div>
+                <h3>先画出你的知识地形</h3>
+                <p>当前路线只是草图。完成这些问题后，Agent 会根据你的经验、目标和时间重新设计路径。</p>
+                <ol class="question-list">
+                  ${(selected.assessmentQuestions ?? []).map((question) => html`<li>${question}</li>`)}
+                </ol>
+                <p><code>学习回答：1. … 2. … 3. …</code></p>
+              </section>`
+            : ""}
+          ${selected.mode === "topic" && selected.profile?.status === "active"
+            ? html`<section>
+                <h3 class="section-label">学习者画像</h3>
+                <div class="profile-grid">
+                  <div class="profile-card level">
+                    <div class="studio-kicker">Current reading</div>
+                    <div class="profile-level">${learnerLevelLabel(selected)}</div>
+                    <h3>当前判断</h3>
+                    <p>${selected.profile.levelRationale}</p>
+                    <div class="profile-meta">
+                      <span>${learnerPaceLabel(selected)}</span>
+                      <span>${selected.profile.dailyMinutes} 分钟 / 天</span>
+                      <span>画像 v${selected.profile.revision}</span>
+                    </div>
+                  </div>
+                  <div class="profile-card">
+                    <h3>知识优势</h3>
+                    <div class="chip-cloud">${selected.profile.strengths.length > 0
+                      ? selected.profile.strengths.map((item) => html`<span class="knowledge-chip">${item}</span>`)
+                      : html`<span class="muted">继续从回答中寻找证据</span>`}</div>
+                  </div>
+                  <div class="profile-card">
+                    <h3>待补齐</h3>
+                    <div class="chip-cloud">${selected.profile.gaps.length > 0
+                      ? selected.profile.gaps.map((item) => html`<span class="knowledge-chip gap">${item}</span>`)
+                      : html`<span class="muted">暂未发现关键缺口</span>`}</div>
+                  </div>
+                  <div class="profile-card">
+                    <h3>目标与偏好</h3>
+                    <p>${selected.profile.goals.join("；") || "目标继续澄清中"}</p>
+                    <div class="chip-cloud" style="margin-top:9px">${selected.profile.preferences.map((item) =>
+                      html`<span class="knowledge-chip">${item}</span>`
+                    )}</div>
+                  </div>
+                  <div class="profile-card">
+                    <h3>最近证据</h3>
+                    <p>${selected.profile.evidence.slice(-3).join("；") || "等待第一份学习回答"}</p>
+                  </div>
+                </div>
+              </section>`
+            : ""}
+          ${currentSession
+            ? html`<section>
+                <h3 class="section-label">现在停在哪里</h3>
+                <div class="current-card">
+                  <div>
+                    <h3>${currentSession.sectionTitle}</h3>
+                    <p>${LEARNING_SESSION_LABELS[currentSession.status]}${selected.adaptiveFocus ? ` · 下一课重点：${selected.adaptiveFocus}` : ""}</p>
+                  </div>
+                  <div class="follow-count">${currentSession.followUpCount
+                    ? `已友好跟进 ${currentSession.followUpCount} 次`
+                    : "等待你的反馈"}</div>
+                </div>
+              </section>`
+            : selected.adaptiveFocus
+              ? html`<div class="route-note"><strong>下一课重点：${selected.adaptiveFocus}</strong>课程会围绕这个缺口继续设计。</div>`
               : ""}
-          </div>
-          <div class="muted">${selected.mode === "topic"
-            ? `路线进度：${selected.routeIndex} / ${selected.route.length} 个步骤`
-            : `阅读进度：${selected.cursor} / ${selected.sourceLength} 字`}</div>
-          <div class="actions" style="margin-top:14px">
-            <button type="submit">保存设置</button>
-            ${selected.status === "active"
-              ? html`<button type="submit" class="secondary" formaction="/learning/${encodeURIComponent(selected.id)}/pause">暂停</button>`
-              : selected.status === "paused"
-                ? html`<button type="submit" class="secondary" formaction="/learning/${encodeURIComponent(selected.id)}/resume">恢复</button>`
-                : ""}
-            <button type="submit" class="danger" formaction="/learning/${encodeURIComponent(selected.id)}/delete" onclick="return confirm('删除该学习计划？')">删除</button>
-          </div>
-        </form>
-        ${selected.mode === "topic"
-          ? html`<h2>学习路线</h2>
-              ${selected.adaptiveFocus
-                ? html`<div class="flash">下一课重点：${selected.adaptiveFocus}</div>`
-                : ""}
-              <table>
-                <tr><th>状态</th><th>步骤</th><th>目标</th><th>学习次数</th></tr>
-                ${selected.route.map((step) => html`<tr>
-                  <td>${step.status === "active" ? "进行中" : step.status === "completed" ? "已掌握" : step.status === "skipped" ? "已跳过" : "待学习"}</td>
-                  <td>${step.title}</td>
-                  <td>${step.objective}</td>
-                  <td>${step.attempts}</td>
-                </tr>`)}
-              </table>
-              <h2>学习材料</h2>
-              ${source && source.materials.length > 0
-                ? html`<table>
-                    <tr><th>材料</th><th>消息</th><th>加入时间</th></tr>
-                    ${source.materials.map((material) => html`<tr>
-                      <td>${material.title}</td>
-                      <td>${material.messageId}</td>
-                      <td>${fmtTime(material.createdAt)}</td>
-                    </tr>`)}
-                  </table>`
-                : html`<div class="empty">还没有用户材料；课程中的扩展知识会明确标记为模型一般知识。</div>`}`
-          : ""}
-        <h2>课程记录</h2>
-        ${sessionHistory.length > 0
-          ? html`<table>
-              <tr><th>课次</th><th>阅读范围</th><th>状态</th><th>时间</th></tr>
-              ${sessionHistory.map((session) => html`<tr>
-                <td>第 ${session.sequence} 课</td>
-                <td>${session.sectionTitle}${selected.mode === "reading"
-                  ? html`<div class="muted">${session.startOffset}–${session.endOffset} 字</div>`
-                  : ""}</td>
-                <td>${LEARNING_SESSION_LABELS[session.status]}</td>
-                <td>${fmtTime(session.completedAt ?? session.deliveredAt ?? session.preparedAt)}</td>
-              </tr>`)}
-            </table>`
-          : html`<div class="empty">还没有课程记录。</div>`}
-      </div>`
-    : html`<div class="card">
+          ${selected.mode === "topic"
+            ? html`<section>
+                <h3 class="section-label">个性化学习路线</h3>
+                ${selected.lastRouteAdjustment
+                  ? html`<div class="route-note"><strong>路线已迭代 v${selected.routeVersion ?? 1}</strong>${selected.lastRouteAdjustment}</div>`
+                  : ""}
+                <div class="route-trail">
+                  ${selected.route.map((step, index) => html`<div class="route-step ${step.status}">
+                    <div class="step-marker">${learningStepLabel(step.status)}</div>
+                    <div class="step-copy"><strong>${index + 1}. ${step.title}</strong><p>${step.objective}</p></div>
+                    <div class="step-attempts">${step.attempts > 0 ? `学习 ${step.attempts} 次` : "未开始"}</div>
+                  </div>`)}
+                </div>
+              </section>`
+            : ""}
+          ${selected.mode === "topic"
+            ? html`<section>
+                <h3 class="section-label">学习材料</h3>
+                <div class="material-strip">${source && source.materials.length > 0
+                  ? source.materials.map((material) => html`<div class="material-card">
+                      <strong>${material.title}</strong><br />${fmtTime(material.createdAt)}
+                    </div>`)
+                  : html`<div class="material-card">暂无用户材料 · 扩展知识会标注为模型一般知识</div>`}</div>
+              </section>`
+            : ""}
+          <section>
+            <h3 class="section-label">反馈轨迹</h3>
+            ${sessionHistory.length > 0
+              ? html`<div class="history-stack">${sessionHistory.slice(0, 6).map((session) => html`<div class="history-note">
+                  <div class="history-head">
+                    <strong>第 ${session.sequence} 课 · ${session.sectionTitle}</strong>
+                    <span>${LEARNING_SESSION_LABELS[session.status]} · ${fmtTime(session.completedAt ?? session.deliveredAt ?? session.preparedAt)}</span>
+                  </div>
+                  ${session.learnerReply ? html`<p><strong>学习回答：</strong>${session.learnerReply}</p>` : ""}
+                  ${session.feedback ? html`<p>${session.feedback.slice(0, 360)}</p>` : ""}
+                  ${session.routeAdjustment ? html`<p><strong>路线变化：</strong>${session.routeAdjustment}</p>` : ""}
+                </div>`)}</div>`
+              : html`<div class="material-card">还没有课程记录。第一份回答会成为画像和路线迭代的起点。</div>`}
+          </section>
+          <details class="plan-settings">
+            <summary>计划设置与管理信息</summary>
+            <form method="post" action="/learning/${encodeURIComponent(selected.id)}" class="settings-sheet">
+              <div class="settings-facts">
+                <span>来源：${source?.title ?? "来源已不可用"}</span>
+                <span>空间：${selected.space}</span>
+                <span>创建者：${selected.creatorId}</span>
+                <span>投递聊天：${selected.chatId}</span>
+                <span>类型：${selected.mode === "topic" ? "主题学习" : "材料阅读"}</span>
+                <span>状态：${LEARNING_STATUS_LABELS[selected.status]}</span>
+              </div>
+              <div class="grid2">
+                <div class="field">
+                  <label>每天几点 <span class="hint">北京时间，0–23</span></label>
+                  <input type="number" min="0" max="23" name="hour" value="${selected.hour}" required />
+                </div>
+                ${selected.mode === "reading"
+                  ? html`<div class="field">
+                      <label>每课字数 <span class="hint">500–8000 字</span></label>
+                      <input type="number" min="500" max="8000" name="dailyCharacters" value="${selected.dailyCharacters}" required />
+                    </div>`
+                  : ""}
+              </div>
+              <div class="actions">
+                <button type="submit">保存设置</button>
+                ${selected.status === "active"
+                  ? html`<button type="submit" class="secondary" formaction="/learning/${encodeURIComponent(selected.id)}/pause">暂停</button>`
+                  : selected.status === "paused"
+                    ? html`<button type="submit" class="secondary" formaction="/learning/${encodeURIComponent(selected.id)}/resume">恢复</button>`
+                    : ""}
+                <button type="submit" class="danger" formaction="/learning/${encodeURIComponent(selected.id)}/delete" onclick="return confirm('删除该学习计划？')">删除</button>
+              </div>
+            </form>
+          </details>
+        </div>
+      </article>`
+    : html`<div class="empty-map">
         ${flash(flashMsg)}
-        <h2 style="margin-top:0">在飞书里创建学习计划</h2>
-        <p class="muted">发送 <code>/learn topic &lt;主题&gt;</code> 创建主题路线；也可回复附件或飞书文档，发送 <code>/learn new &lt;名称&gt;</code> 创建材料阅读计划。</p>
+        <div class="studio-kicker">Start a trail</div>
+        <h2>在飞书里创建学习计划</h2>
+        <p>发送 <code>/learn topic &lt;主题&gt;</code> 创建带入学诊断的个性化路线；也可回复附件或飞书文档，发送 <code>/learn new &lt;名称&gt;</code> 创建材料阅读计划。</p>
       </div>`;
 
-  return html`<h1>学习计划</h1>
-    <p class="subtitle">Agent 可以按材料带读，也可以围绕主题生成路线、整合多份材料，并根据回答调整下一课重点。</p>
-    ${plans.length > 0
-      ? html`<div class="split"><div class="listcol">${listItems}</div>${detail}</div>`
-      : html`${flash(flashMsg)}<div class="empty">在飞书中发送 /learn topic &lt;主题&gt;，或回复一份材料后发送 /learn new &lt;名称&gt; 创建计划。</div>`}`;
+  return html`<style>${raw(LEARNING_STUDIO_STYLE)}</style>
+    <div class="learning-studio">
+      <div class="studio-kicker">Adaptive learning atlas</div>
+      <h1 class="studio-title">学习地图</h1>
+      <p class="studio-subtitle">从诊断开始，用每一次回答更新知识画像、学习节奏和后续路线。这里展示的不是静态课程表，而是一张持续生长的地图。</p>
+      ${plans.length > 0
+        ? html`<div class="learning-layout"><aside class="plan-index">${listItems}</aside>${detail}</div>`
+        : html`${flash(flashMsg)}<div class="empty-map">在飞书中发送 /learn topic &lt;主题&gt;，或回复一份材料后发送 /learn new &lt;名称&gt; 创建计划。</div>`}
+    </div>`;
 }
 
 // ---- Integrations (mew: Lark bot + Lark groups) ----------------------------

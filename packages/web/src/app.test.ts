@@ -2029,42 +2029,77 @@ describe("management backend (read-write)", () => {
       space: SPACE,
       creatorId: "ou_reader",
       chatId: "oc_web",
+      assessmentQuestions: [
+        "做过哪些异步项目？",
+        "如何解释 Future？",
+        "每天能投入多久？",
+      ],
       route: [
         { title: "Future", objective: "理解 Future" },
         { title: "运行时", objective: "理解运行时" },
       ],
     }, 1);
+    const assessingBody = await (await app.request(
+      `/learning/${encodeURIComponent(plan.id)}`,
+    )).text();
+    expect(assessingBody).toContain("先画出你的知识地形");
+    expect(assessingBody).toContain("做过哪些异步项目？");
+    const assessed = engine.learning.completeAssessment(plan.id, "ou_reader", {
+      answers: "写过简单 async/await；知道 Future 需要 poll；每天 40 分钟。",
+      profile: {
+        level: "intermediate",
+        levelRationale: "能解释 Future 的推进机制，但缺少运行时诊断经验",
+        goals: ["独立排查异步程序问题"],
+        strengths: ["Future 心智模型"],
+        gaps: ["Waker", "运行时诊断"],
+        preferences: ["代码实验"],
+        pace: "intensive",
+        dailyMinutes: 40,
+        evidence: ["明确说明 Future 需要 poll"],
+      },
+      route: [
+        { title: "Waker", objective: "理解任务唤醒机制" },
+        { title: "运行时", objective: "理解运行时调度" },
+      ],
+      adjustment: "跳过 Future 入门，直接补齐 Waker。",
+    }, 2)!;
     engine.learning.addMaterial(plan.id, "ou_reader", {
       title: "async-book.md",
       content: "Future 只有在 poll 时推进。",
       rawIds: ["raw_async"],
       messageId: "om_async",
-    }, 2);
+    }, 3);
     const session = engine.learning.prepareSession(plan.id, {
       startOffset: 0,
       endOffset: 1,
-      routeStepId: plan.route[0]!.id,
-      sectionTitle: "Future",
+      routeStepId: assessed.route[0]!.id,
+      sectionTitle: "Waker",
       excerpt: "[材料1：async-book.md]",
-      guide: "## 思考题\nFuture 如何推进？",
-      preparedAt: 3,
+      guide: "## 思考题\nWaker 如何触发重新调度？",
+      preparedAt: 4,
     })!;
-    engine.learning.markDelivered(session.id, 4);
+    engine.learning.markDelivered(session.id, 5);
     engine.learning.completeSession(session.id, {
-      learnerReply: "Future 是线程",
+      learnerReply: "Waker 会通知 executor 任务可以再次 poll",
       feedback: "需要补强",
       mastery: "review",
-      nextFocus: "区分 Future 与线程",
-      completedAt: 5,
+      nextFocus: "区分唤醒通知和实际 poll",
+      completedAt: 6,
     });
 
     const body = await (await app.request(`/learning/${encodeURIComponent(plan.id)}`)).text();
+    expect(body).toContain("learning-map");
+    expect(body).toContain("学习者画像");
+    expect(body).toContain("当前判断");
+    expect(body).toContain("知识优势");
+    expect(body).toContain("待补齐");
+    expect(body).toContain("路线已迭代");
     expect(body).toContain("主题学习");
     expect(body).toContain("Rust 异步编程");
     expect(body).toContain("async-book.md");
-    expect(body).toContain("Future");
+    expect(body).toContain("Waker");
     expect(body).toContain("理解运行时");
-    expect(body).toContain("下一课重点：区分 Future 与线程");
+    expect(body).toContain("下一课重点：区分唤醒通知和实际 poll");
 
     const updated = await app.request(`/learning/${encodeURIComponent(plan.id)}`, {
       method: "POST",

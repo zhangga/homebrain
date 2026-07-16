@@ -115,6 +115,65 @@ describe("learning command handling", () => {
     expect(engine.learning.source(engine.learning.list()[0]!.id)?.materials).toHaveLength(1);
   });
 
+  test("runs an入学诊断 before starting a personalized topic route", async () => {
+    const context = {
+      space: "personal/ou_me" as const,
+      chatId: "oc_p2p",
+      actorId: "ou_me",
+    };
+    llm.queueJSON({
+      name: "分布式系统",
+      assessmentQuestions: [
+        "做过哪些相关项目？",
+        "如何理解一致性？",
+        "每天能投入多久？",
+      ],
+      steps: [
+        { title: "概念导览", objective: "建立术语地图" },
+        { title: "一致性", objective: "理解一致性模型" },
+      ],
+    });
+
+    const created = await handleLearningCommand(
+      engine,
+      { verb: "topic", arg: "分布式系统" },
+      context,
+    );
+    expect(created).toContain("开始前，我想先了解你目前的基础和目标");
+    expect(created).toContain("1. 做过哪些相关项目？");
+    expect(created).toContain("学习回答：");
+    expect(await handleLearningCommand(engine, { verb: "route", arg: "1" }, context))
+      .toContain("当前是初步路线");
+
+    llm.queueJSON({
+      level: "beginner",
+      levelRationale: "有后端经验但缺少一致性实践",
+      goals: ["设计高可用服务"],
+      strengths: ["后端开发"],
+      gaps: ["故障模型", "一致性模型"],
+      preferences: ["案例驱动"],
+      pace: "steady",
+      dailyMinutes: 30,
+      evidence: ["只能说出 CAP 的名称"],
+      adjustment: "从故障模型开始。",
+      steps: [
+        { title: "故障模型", objective: "理解网络和节点故障" },
+        { title: "一致性模型", objective: "比较一致性保证" },
+      ],
+    });
+    const assessed = await handleLearningAnswer(
+      engine,
+      "做过普通后端；CAP 只记得名称；每天 30 分钟。",
+      context,
+    );
+
+    expect(assessed).toContain("已完成「分布式系统」入学诊断");
+    expect(assessed).toContain("当前判断：入门");
+    expect(assessed).toContain("每天约 30 分钟");
+    expect(assessed).toContain("1. 故障模型");
+    expect(engine.learning.list()[0]?.profile?.status).toBe("active");
+  });
+
   test("scopes pause, resume, skip, and delete to the creator", async () => {
     const plan = seedAwaitingPlan(engine, "ou_me");
     const owner = { space: "personal/ou_me" as const, chatId: "oc_p2p", actorId: "ou_me" };

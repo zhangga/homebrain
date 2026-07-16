@@ -165,6 +165,9 @@ async function run(cfg: ReturnType<typeof config>, processLock: ProcessLock): Pr
     notify: async (plan, _source, session) => {
       await connector.notice(plan.chatId, learningNotification(plan, session));
     },
+    followUp: async (plan, _session, message) => {
+      await connector.notice(plan.chatId, message);
+    },
   });
   await learningScheduler.start();
   log.info("learning scheduler started");

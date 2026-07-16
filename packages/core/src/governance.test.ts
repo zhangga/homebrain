@@ -287,6 +287,72 @@ describe("space data governance", () => {
     target.close();
   });
 
+  test("current archives preserve learner profiles, route revisions, and follow-up state", async () => {
+    const source = new KnowledgeEngine({ dataDir: tempDir("ha-profile-archive-source-") });
+    source.ensureSpace(SPACE, { chatId: "oc_governance" });
+    const plan = source.learning.createTopic({
+      name: "分布式系统",
+      topic: "分布式系统",
+      space: SPACE,
+      creatorId: "ou_owner",
+      chatId: "oc_governance",
+      assessmentQuestions: ["项目经验？", "如何理解一致性？", "每天投入多久？"],
+      route: [
+        { title: "导览", objective: "建立概念地图" },
+        { title: "一致性", objective: "理解一致性模型" },
+      ],
+    }, 100);
+    const assessed = source.learning.completeAssessment(plan.id, "ou_owner", {
+      answers: "后端经验；一致性基础薄弱；每天 30 分钟。",
+      profile: {
+        level: "beginner",
+        levelRationale: "有工程经验但缺少分布式基础",
+        goals: ["设计高可用服务"],
+        strengths: ["后端开发"],
+        gaps: ["故障模型"],
+        preferences: ["案例驱动"],
+        pace: "steady",
+        dailyMinutes: 30,
+        evidence: ["无法解释一致性权衡"],
+      },
+      route: [
+        { title: "故障模型", objective: "理解网络与节点故障" },
+        { title: "一致性", objective: "比较一致性保证" },
+      ],
+      adjustment: "从故障模型开始。",
+    }, 101)!;
+    const session = source.learning.prepareSession(plan.id, {
+      startOffset: 0,
+      endOffset: 1,
+      routeStepId: assessed.route[0]!.id,
+      sectionTitle: "故障模型",
+      excerpt: "暂无用户材料",
+      guide: "## 今日目标\n理解故障模型",
+      preparedAt: 102,
+    })!;
+    source.learning.markDelivered(session.id, 103);
+    source.learning.markFollowedUp(session.id, 104);
+
+    const archive = await source.exportSpace(SPACE);
+    source.close();
+    const parsed = parseSpaceArchive(JSON.parse(JSON.stringify(archive)));
+
+    expect(parsed.learning.plans[0]).toEqual(expect.objectContaining({
+      assessmentAnswers: expect.stringContaining("每天 30 分钟"),
+      routeVersion: 2,
+      lastRouteAdjustment: "从故障模型开始。",
+      profile: expect.objectContaining({
+        level: "beginner",
+        dailyMinutes: 30,
+        gaps: ["故障模型"],
+      }),
+    }));
+    expect(parsed.learning.sessions[0]).toEqual(expect.objectContaining({
+      followUpCount: 1,
+      lastFollowUpAt: 104,
+    }));
+  });
+
   test("accepts version 4 governance archives with no task run history", async () => {
     const engine = new KnowledgeEngine({ dataDir: tempDir("ha-v4-archive-") });
     engine.ensureSpace(SPACE);
