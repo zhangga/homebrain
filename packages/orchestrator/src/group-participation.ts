@@ -1,6 +1,6 @@
 import type { GroupParticipationLevel, LlmClient } from "@homeagent/core";
 import { config, logger } from "@homeagent/shared";
-import { prefilterQuestion } from "./intent.ts";
+import { prefilterQuestion } from "./conversation-interpreter.ts";
 
 const log = logger.child("group-participation");
 

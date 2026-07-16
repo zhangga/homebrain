@@ -38,6 +38,7 @@ const log = logger.child("feishu");
 const MESSAGE_KEY = "im.message.receive_v1";
 const BOT_ADDED_KEY = "im.chat.member.bot.added_v1";
 const READY_RE = /\[event\]\s+ready\b/;
+const MAX_REPLY_CONTEXT_CHARS = 20_000;
 
 export interface CancellableDeadline {
   elapsed: Promise<void>;
@@ -104,6 +105,81 @@ interface FetchedMessage {
   sender?: { id?: string };
   msg_type?: string;
   body?: { content?: string };
+}
+
+function renderFetchedMessage(message: FetchedMessage | undefined): string | undefined {
+  if (!message) return undefined;
+  const type = message.msg_type;
+  const content = message.body?.content;
+  if (type === "image") return "【图片：当前只获取到图片引用，尚无可分析的视觉内容】";
+  if (type === "audio") return "【音频：当前只获取到音频引用】";
+  if (type === "media") return "【视频：当前只获取到视频引用】";
+  if (!content) return type === "file" ? "【文件：当前只获取到文件引用】" : undefined;
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(content);
+  } catch {
+    return boundReplyContext(content);
+  }
+  if (typeof parsed !== "object" || parsed === null) return boundReplyContext(content);
+
+  const value = parsed as Record<string, unknown>;
+  if (typeof value.text === "string" && value.text.trim()) return boundReplyContext(value.text);
+  if (type === "file") {
+    const name = typeof value.file_name === "string" ? value.file_name.trim() : "";
+    return name ? `【文件：${name}】` : "【文件】";
+  }
+
+  const parts: string[] = [];
+  collectRichText(parsed, parts);
+  const rendered = parts.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+  return boundReplyContext(rendered || content);
+}
+
+function boundReplyContext(text: string): string | undefined {
+  const normalized = text.trim();
+  if (!normalized) return undefined;
+  if (normalized.length <= MAX_REPLY_CONTEXT_CHARS) return normalized;
+  return `${normalized.slice(0, MAX_REPLY_CONTEXT_CHARS)}\n【上下文已截断】`;
+}
+
+function collectRichText(value: unknown, parts: string[], depth = 0): void {
+  if (depth > 20 || parts.length > 1_000) return;
+  if (Array.isArray(value)) {
+    for (const item of value) collectRichText(item, parts, depth + 1);
+    return;
+  }
+  if (typeof value !== "object" || value === null) return;
+
+  const node = value as Record<string, unknown>;
+  const tag = typeof node.tag === "string" ? node.tag : undefined;
+  if (tag === "text" && typeof node.text === "string" && node.text.trim()) {
+    parts.push(node.text.trim());
+    return;
+  }
+  if (tag === "a") {
+    const label = typeof node.text === "string" ? node.text.trim() : "";
+    const href = typeof node.href === "string" ? node.href.trim() : "";
+    if (label || href) parts.push(label || href);
+    return;
+  }
+  if (tag === "at") {
+    const name = typeof node.user_name === "string" ? node.user_name.trim() : "";
+    if (name) parts.push(`@${name}`);
+    return;
+  }
+  if (tag === "img") {
+    parts.push("【图片：当前只获取到图片引用，尚无可分析的视觉内容】");
+    return;
+  }
+
+  if (typeof node.title === "string" && node.title.trim()) parts.push(node.title.trim());
+  if ("content" in node) collectRichText(node.content, parts, depth + 1);
+  for (const [key, child] of Object.entries(node)) {
+    if (key === "title" || key === "content" || key === "tag") continue;
+    if (/^[a-z]{2}_[A-Z]{2}$/.test(key)) collectRichText(child, parts, depth + 1);
+  }
 }
 
 export class FeishuConnector implements Connector {
@@ -414,10 +490,14 @@ export class FeishuConnector implements Connector {
       const targetId = current?.parent_id ?? current?.root_id;
       if (!targetId || targetId === messageId) return undefined;
       const target = await this.fetchMessage(targetId);
-      return {
+      const resolved: ReplyTarget = {
         messageId: targetId,
         senderId: target?.sender?.id,
       };
+      const text = renderFetchedMessage(target);
+      if (text) resolved.text = text;
+      if (target?.msg_type) resolved.messageType = target.msg_type;
+      return resolved;
     } catch (err) {
       log.warn("resolve reply target failed", { messageId, err: String(err) });
       return undefined;

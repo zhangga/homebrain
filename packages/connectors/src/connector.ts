@@ -69,6 +69,10 @@ export interface OutboundReply {
 export interface ReplyTarget {
   messageId: string;
   senderId?: string;
+  /** Human-readable source content when the connector can retrieve it. */
+  text?: string;
+  /** Native source message type, useful for honest attachment context. */
+  messageType?: string;
 }
 
 export type ConsumerState = "starting" | "ready" | "backoff" | "failed" | "stopped";

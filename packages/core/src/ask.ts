@@ -118,17 +118,17 @@ function routePrompt(catalog: LocatedPage[], question: string): string {
     return `- ${c.ref.slug}${aliases}：${c.ref.title}｜${c.ref.summary}`;
   });
   return [
-    "下面是知识库中可用页面的目录。请判断哪些页面与用户问题相关。",
+    "下面是知识库中可用页面的目录。请判断哪些页面与用户消息相关。",
     "",
     "## 目录",
     lines.join("\n"),
     "",
-    "## 用户问题",
+    "## 用户消息",
     question,
     "",
     "任务：",
-    "- 选出与问题直接相关的页面 slug（可多选；无相关页面则返回空数组）。",
-    "- relevant 表示知识库是否可能涵盖该问题。",
+    "- 选出与消息直接相关的页面 slug（可多选；无相关页面则返回空数组）。",
+    "- relevant 表示知识库是否可能帮助回应该消息。",
   ].join("\n");
 }
 
@@ -248,19 +248,20 @@ function synthPrompt(pages: { slug: string; page: Page }[], question: string): s
     .map((p) => `<page slug="${p.slug}" title="${p.page.title}">\n${p.page.content.trim()}\n</page>`)
     .join("\n\n");
   return [
-    "根据下列知识库页面回答用户问题。",
+    "根据下列知识库页面回应用户消息。",
     "",
     "## 知识库页面",
     blocks,
     "",
-    "## 用户问题",
+    "## 用户消息",
     question,
     "",
     "要求：",
     "- 只依据上面页面作答；引用信息处用 [[slug]] 标注来源。",
     "- 若页面确实支撑答案，grounded=true，并在 usedSlugs 列出用到的页面。",
-    "- 若页面无法回答，grounded=false，answer 可留空或说明缺口，并在 gaps 说明。",
-    "- 用用户提问的语言作答。",
+    "- 若页面无法回应，或用户意图、指代不清且材料不足，grounded=false，answer 可留空或说明缺口，并在 gaps 说明。",
+    "- 把输入视为自然对话，不要求它必须是语法上的问句。",
+    "- 用用户消息的语言作答。",
   ].join("\n");
 }
 
@@ -303,8 +304,13 @@ async function generalFallback(
 ): Promise<AskResult> {
   const r = await client.complete({
     system: withInstruction(
-      "你是团队/家庭知识助手。以下问题在知识库中没有相关记录，请用你的通用知识作答，" +
+      [
+        "你是自然、可靠的团队/家庭知识助手。请回应用户消息，不要把祈使句机械理解成系统控制命令。",
+        "知识库中没有足够的相关记录：如果可以用通用知识完成用户目标，请直接帮助用户，",
         "并在开头坦诚说明“这不在知识库记录中，以下是我的一般性回答”。",
+        "如果用户的意图或指代不清，不要编造缺失上下文；请只追问一个最关键、自然且容易回答的问题。",
+        "追问澄清时无需添加知识库免责声明。",
+      ].join(""),
       instruction,
     ),
     prompt: question,

@@ -2,10 +2,15 @@ import { describe, expect, test } from "bun:test";
 import type { InboundMessage } from "@homeagent/connectors";
 import { attribute } from "./attribution.ts";
 import { gate } from "./gateway.ts";
-import { classifyIntent, prefilterChitchat, prefilterQuestion } from "./intent.ts";
+import {
+  interpretConversation,
+  normalizeConversationText,
+  parseKnowledgeControl,
+  prefilterChitchat,
+  prefilterQuestion,
+} from "./conversation-interpreter.ts";
 import { formatAnswer } from "./format.ts";
 import type { AskResult } from "@homeagent/shared";
-import type { LlmClient } from "@homeagent/core";
 
 function msg(over: Partial<InboundMessage>): InboundMessage {
   return {
@@ -77,10 +82,12 @@ describe("chitchat prefilter", () => {
   test("substantive messages are not prefiltered", () => {
     expect(prefilterChitchat("谁负责后端服务？")).toBe(false);
     expect(prefilterChitchat("记住：发布流程是先灰度再全量")).toBe(false);
+    expect(prefilterChitchat("分析")).toBe(false);
+    expect(prefilterChitchat("总结")).toBe(false);
   });
 });
 
-describe("intent classification", () => {
+describe("conversation interpretation", () => {
   test("recognizes stable question forms without treating nearby statements as questions", () => {
     for (const text of [
       "谁负责后端",
@@ -105,39 +112,36 @@ describe("intent classification", () => {
     }
   });
 
-  test("recognizes a mentioned Chinese question without punctuation before resolving a model", async () => {
-    let resolved = false;
-    const result = await classifyIntent(() => {
-      resolved = true;
-      throw new Error("the obvious question should not need a model");
-    }, "@agent 小贝儿是谁");
-
-    expect(result).toEqual({ intent: "question", prefiltered: true });
-    expect(resolved).toBe(false);
+  test("normalizes leading mentions before interpreting the conversation", () => {
+    expect(normalizeConversationText("@agent @小助手 分析下这个晚餐")).toBe("分析下这个晚餐");
   });
 
-  test("removes a leading mention before model classification", async () => {
-    let prompt = "";
-    const client = {
-      async completeJSON(opts) {
-        prompt = String(opts.prompt);
-        return {
-          value: { intent: "remember" },
-          result: {
-            text: "",
-            model: "test",
-            inputTokens: 0,
-            outputTokens: 0,
-            costUsd: 0,
-          },
-        };
-      },
-    } as LlmClient;
+  test("defaults fuzzy requests and ordinary statements to conversation", () => {
+    for (const text of [
+      "@agent 分析下这个晚餐的用心程度",
+      "帮我看看这个",
+      "发布流程先灰度再全量",
+      "这个感觉不太对",
+    ]) {
+      expect(interpretConversation(text).disposition).toBe("conversation");
+    }
+  });
 
-    await classifyIntent(() => client, "@agent 发布流程先灰度再全量");
+  test("only explicit memory language is acknowledged without another model turn", () => {
+    expect(interpretConversation("记住：发布流程先灰度再全量").disposition).toBe("remember");
+    expect(interpretConversation("记住这个发布流程").disposition).toBe("remember");
+    expect(interpretConversation("@agent 张洺汐是男的，2018年生的，记住").disposition).toBe("remember");
+    expect(interpretConversation("你还记得发布流程吗").disposition).toBe("conversation");
+    expect(interpretConversation("记住了吗？").disposition).toBe("conversation");
+  });
 
-    expect(prompt).toContain("发布流程先灰度再全量");
-    expect(prompt).not.toContain("@agent");
+  test("parses narrow knowledge controls without hijacking related questions", () => {
+    expect(parseKnowledgeControl("重新提炼")).toBe("redistill");
+    expect(parseKnowledgeControl("@agent 帮我重新提炼一下知识")).toBe("redistill");
+    expect(parseKnowledgeControl("重新整理本空间知识")).toBe("redistill");
+    expect(parseKnowledgeControl("/dream")).toBe("redistill");
+    expect(parseKnowledgeControl("重新提炼有什么影响？")).toBeNull();
+    expect(parseKnowledgeControl("分析一下知识提炼结果")).toBeNull();
   });
 });
 

@@ -20,22 +20,13 @@ const cliOnlyRuntimes: Array<{
 }> = [];
 
 /**
- * One fake serves classification, routing, and synthesis by inspecting each
- * call's schema/prompt: classification schema has `intent`; routing has
- * `relevant`; synthesis has `grounded`.
+ * One fake serves participation, routing, and synthesis by inspecting each
+ * call's schema/prompt.
  */
 function makeFake(): FakeLlm {
   const f = new FakeLlm();
   f.onJSON((call: JSONOptions<unknown>) => {
     const props = (call.schema as { properties?: Record<string, unknown> }).properties ?? {};
-    if ("intent" in props) {
-      const prompt = String(call.prompt ?? "");
-      // classify by content, mimicking what haiku would return
-      if (/重新提炼|重新整理|别记|撤回/.test(prompt)) return { intent: "command" };
-      if (/[?？]/.test(prompt)) return { intent: "question" };
-      if (/记住|记下/.test(prompt)) return { intent: "remember" };
-      return { intent: "chitchat" };
-    }
     if ("participationScore" in props) {
       const prompt = String(call.prompt ?? "");
       return {
@@ -349,28 +340,74 @@ describe("orchestrator trunk (cli connector, no feishu)", () => {
     expect(connector.sent[0]!.inThread).toBe(true);
   });
 
-  test("a mentioned Chinese question without punctuation reaches ask when classification fails", async () => {
+  test("a natural-language analysis request reaches conversation without intent classification", async () => {
+    let asked = 0;
+    engine.ask = async () => {
+      asked += 1;
+      return {
+        answer: "这顿晚餐准备得很用心。",
+        source: "general",
+        citations: [],
+      };
+    };
+    const noClassificationExpected = {
+      async complete() {
+        throw new Error("unexpected text completion");
+      },
+      async completeJSON() {
+        throw new Error("ordinary conversation must not invoke an intent classifier");
+      },
+    } as LlmClient;
+    orch = new Orchestrator({ engine, connector, llm: noClassificationExpected });
+
+    await orch.start();
+    await connector.sendGroup("@agent 分析下这个晚餐的用心程度", true);
+
+    expect(asked).toBe(1);
+    expect(connector.sent).toHaveLength(1);
+    expect(connector.sent[0]!.markdown).toContain("这顿晚餐准备得很用心");
+    expect(connector.sent[0]!.markdown).not.toContain("目前支持");
+  });
+
+  test("a contextual request includes the replied message when asking the model", async () => {
+    const reactive = connector as CliConnector & Connector;
+    reactive.resolveReplyTarget = async () => ({
+      messageId: "om_dinner",
+      senderId: "ou_other",
+      text: "晚餐有三菜一汤，还专门做了对方喜欢的菜。",
+      messageType: "text",
+    });
+    let userMessage = "";
+    engine.ask = async (_spaces, question) => {
+      userMessage = question;
+      return {
+        answer: "从菜品数量和偏好照顾来看，准备得比较用心。",
+        source: "general",
+        citations: [],
+      };
+    };
+
+    await orch.start();
+    await connector.sendGroup("@agent 分析下这个晚餐的用心程度", true);
+
+    expect(userMessage).toContain("分析下这个晚餐的用心程度");
+    expect(userMessage).toContain("被回复的消息");
+    expect(userMessage).toContain("晚餐有三菜一汤");
+    expect(connector.sent[0]!.markdown).toContain("准备得比较用心");
+  });
+
+  test("a mentioned Chinese question without punctuation reaches ask directly", async () => {
     let asked = 0;
     engine.ask = async (spaces, question) => {
       asked += 1;
       expect(spaces).toEqual(["team/oc_team", "personal/ou_me"]);
-      expect(question).toBe("@agent 小贝儿是谁");
+      expect(question).toBe("小贝儿是谁");
       return {
         answer: "小贝儿是张洺汐。",
         source: "knowledge",
         citations: [{ slug: "entities/zhang-ming-xi", title: "张洺汐" }],
       };
     };
-    const failingClassifier = {
-      async complete() {
-        throw new Error("simulated classifier failure");
-      },
-      async completeJSON() {
-        throw new Error("simulated classifier failure");
-      },
-    } as LlmClient;
-    orch = new Orchestrator({ engine, connector, llm: failingClassifier });
-
     await orch.start();
     await connector.sendGroup("@agent 小贝儿是谁", true);
 
@@ -917,6 +954,7 @@ describe("orchestrator trunk (cli connector, no feishu)", () => {
     await orch.start();
     await connector.sendP2P("帮我重新提炼一下知识");
     expect(connector.sent[0]!.markdown).toContain("重新提炼");
+    expect(engine.registry.store("personal/ou_me").index().countRaw()).toBe(1);
   });
 
   test("duplicate eventId is dropped", async () => {
@@ -1243,9 +1281,9 @@ describe("orchestrator trunk (cli connector, no feishu)", () => {
 
   test("CLI-only runtime prefilters an obvious question and uses the space agent for answering", async () => {
     // No injected orchestrator llm: routing and synthesis use the space's
-    // CLI-backed client, while the stable question form skips classification.
+    // CLI-backed client without a separate intent-classification turn.
     let sawInstruction = false;
-    let sawCliClassification = false;
+    let sawLegacyIntentPrompt = false;
     const cliEngine = new KnowledgeEngine({
       dataDir: dir,
       runProvider: async (id, input) => {
@@ -1261,9 +1299,8 @@ describe("orchestrator trunk (cli connector, no feishu)", () => {
             gaps: [],
           });
         }
-        // intent classification (also JSON) -> a question
         if (/JSON Schema/.test(input.prompt) && /intent/.test(input.prompt)) {
-          sawCliClassification =
+          sawLegacyIntentPrompt =
             id === "codex" &&
             input.model === "gpt-5.6-sol" &&
             input.reasoningEffort === "high";
@@ -1299,17 +1336,17 @@ describe("orchestrator trunk (cli connector, no feishu)", () => {
     await cliOrch.start();
     await cliConnector.sendGroup("谁负责后端服务", true);
     expect(cliConnector.sent[0]!.markdown).toContain("Alice");
-    expect(sawCliClassification).toBe(false);
+    expect(sawLegacyIntentPrompt).toBe(false);
     expect(sawInstruction).toBe(true);
   });
 
-  test("CLI-only runtime classifies a natural-language distillation command through the space agent", async () => {
-    let sawCliClassification = false;
+  test("CLI-only runtime handles an explicit distillation control without model classification", async () => {
+    let sawLegacyIntentPrompt = false;
     const cliEngine = new KnowledgeEngine({
       dataDir: dir,
       runProvider: async (id, input) => {
         if (/JSON Schema/.test(input.prompt) && /intent/.test(input.prompt)) {
-          sawCliClassification = id === "codex";
+          sawLegacyIntentPrompt = id === "codex";
           return JSON.stringify({ intent: "command" });
         }
         if (/JSON Schema/.test(input.prompt) && /operations/.test(input.prompt)) {
@@ -1328,18 +1365,20 @@ describe("orchestrator trunk (cli connector, no feishu)", () => {
     await cliConnector.sendP2P("帮我重新提炼一下知识");
 
     expect(cliConnector.sent[0]!.markdown).toContain("开始重新提炼");
-    expect(sawCliClassification).toBe(true);
+    expect(sawLegacyIntentPrompt).toBe(false);
   });
 
-  test("CLI-only runtime classifies an ordinary statement as memory through the space agent", async () => {
-    let sawCliClassification = false;
+  test("CLI-only runtime lets the space agent respond naturally to an ordinary statement", async () => {
+    let sawLegacyIntentPrompt = false;
+    let sawConversation = false;
     const cliEngine = new KnowledgeEngine({
       dataDir: dir,
       runProvider: async (id, input) => {
         if (/JSON Schema/.test(input.prompt) && /intent/.test(input.prompt)) {
-          sawCliClassification = id === "codex";
+          sawLegacyIntentPrompt = id === "codex";
           return JSON.stringify({ intent: "remember" });
         }
+        sawConversation = id === "codex" && input.prompt.includes("发布流程先灰度再全量");
         return "ok";
       },
     });
@@ -1352,8 +1391,9 @@ describe("orchestrator trunk (cli connector, no feishu)", () => {
     await cliOrch.start();
     await cliConnector.sendP2P("发布流程先灰度再全量");
 
-    expect(cliConnector.sent[0]!.markdown).toContain("记下");
-    expect(sawCliClassification).toBe(true);
+    expect(cliConnector.sent[0]!.markdown).toContain("ok");
+    expect(sawLegacyIntentPrompt).toBe(false);
+    expect(sawConversation).toBe(true);
   });
 
   test("CLI-only runtime gives configuration guidance when no local provider can be resolved", async () => {

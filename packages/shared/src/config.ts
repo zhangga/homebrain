@@ -8,7 +8,7 @@
  * homeagent runtime uses local agent CLIs and does not need them.
  *
  * Model IDs are the gateway's real identifiers (verified against /v1/models):
- * haiku is used for cheap classification, the default (sonnet) for ask, and a
+ * haiku is used for cheap structured judgments, the default (sonnet) for ask, and a
  * heavy tier (opus) reserved for expensive distillation when warranted.
  */
 import { resolve, join } from "node:path";
@@ -21,7 +21,7 @@ export interface Config {
   dataDir: string;
   /** default model for ask/distill */
   model: string;
-  /** cheap model for intent classification and short judgments */
+  /** cheap model for short structured judgments */
   modelFast: string;
   /** heavy model reserved for complex synthesis (opt-in) */
   modelHeavy: string;

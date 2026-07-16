@@ -1,6 +1,6 @@
 export * from "./attribution.ts";
 export * from "./gateway.ts";
-export * from "./intent.ts";
+export * from "./conversation-interpreter.ts";
 export * from "./format.ts";
 export * from "./messages.ts";
 export * from "./task-commands.ts";

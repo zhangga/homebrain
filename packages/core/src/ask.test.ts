@@ -174,6 +174,23 @@ describe("ask pipeline", () => {
     expect(fake.calls.filter((c) => c.kind === "json").length).toBe(0);
   });
 
+  test("general conversation asks one natural clarification when the user's goal is unclear", async () => {
+    const fake = scriptedLlm({
+      routeSlugs: [],
+      relevant: false,
+      answer: "",
+      grounded: false,
+      generalText: "你希望我总结、分析，还是记录上面的内容？",
+    });
+
+    await ask([store], "帮我处理一下这个", {}, { client: fake });
+
+    const call = fake.calls.find((candidate) => candidate.kind === "complete");
+    expect(String(call?.opts.system)).toContain("意图或指代不清");
+    expect(String(call?.opts.system)).toContain("只追问一个");
+    expect(String(call?.opts.prompt)).toContain("帮我处理一下这个");
+  });
+
   test("knowledgeOnly never falls back to general", async () => {
     const fake = scriptedLlm({ routeSlugs: [], relevant: false, answer: "", grounded: false });
     const res = await ask([store], "x", { knowledgeOnly: true }, { client: fake });

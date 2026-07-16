@@ -602,6 +602,105 @@ describe("FeishuConnector outbound", () => {
     ]);
   });
 
+  test("includes readable source content when resolving a reply target", async () => {
+    const responses = [
+      JSON.stringify({
+        ok: true,
+        data: { items: [{ message_id: "om_reply", parent_id: "om_source" }] },
+      }),
+      JSON.stringify({
+        ok: true,
+        data: {
+          items: [
+            {
+              message_id: "om_source",
+              sender: { id: "ou_owner" },
+              msg_type: "text",
+              body: { content: JSON.stringify({ text: "晚餐有三菜一汤，是特意准备的。" }) },
+            },
+          ],
+        },
+      }),
+    ];
+    connector = new FeishuConnector({
+      spawner: new FakeSpawner(),
+      runCommand: async () => responses.shift()!,
+    });
+
+    expect(await connector.resolveReplyTarget("om_reply")).toEqual({
+      messageId: "om_source",
+      senderId: "ou_owner",
+      text: "晚餐有三菜一汤，是特意准备的。",
+      messageType: "text",
+    });
+  });
+
+  test("renders rich-text reply context without exposing raw Feishu JSON", async () => {
+    const responses = [
+      JSON.stringify({
+        ok: true,
+        data: { items: [{ message_id: "om_reply", root_id: "om_post" }] },
+      }),
+      JSON.stringify({
+        ok: true,
+        data: {
+          items: [
+            {
+              message_id: "om_post",
+              msg_type: "post",
+              body: {
+                content: JSON.stringify({
+                  zh_CN: {
+                    title: "今晚的晚餐",
+                    content: [[
+                      { tag: "text", text: "做了三菜一汤" },
+                      { tag: "img", image_key: "img_1" },
+                    ]],
+                  },
+                }),
+              },
+            },
+          ],
+        },
+      }),
+    ];
+    connector = new FeishuConnector({
+      spawner: new FakeSpawner(),
+      runCommand: async () => responses.shift()!,
+    });
+
+    expect((await connector.resolveReplyTarget("om_reply"))?.text).toBe(
+      "今晚的晚餐\n做了三菜一汤\n【图片：当前只获取到图片引用，尚无可分析的视觉内容】",
+    );
+  });
+
+  test("bounds fetched reply context before it reaches the answering model", async () => {
+    const responses = [
+      JSON.stringify({
+        ok: true,
+        data: { items: [{ message_id: "om_reply", parent_id: "om_large" }] },
+      }),
+      JSON.stringify({
+        ok: true,
+        data: {
+          items: [{
+            message_id: "om_large",
+            msg_type: "text",
+            body: { content: JSON.stringify({ text: "A".repeat(25_000) }) },
+          }],
+        },
+      }),
+    ];
+    connector = new FeishuConnector({
+      spawner: new FakeSpawner(),
+      runCommand: async () => responses.shift()!,
+    });
+
+    const text = (await connector.resolveReplyTarget("om_reply"))?.text ?? "";
+    expect(text.length).toBeLessThan(20_100);
+    expect(text).toEndWith("【上下文已截断】");
+  });
+
   test("falls back to root_id when a reply has no parent_id", async () => {
     const responses = [
       JSON.stringify({
