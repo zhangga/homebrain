@@ -110,10 +110,14 @@ export function createSystemHealthReporter(
         (sum, space) => sum + (typeof space.pendingRaw === "number" ? space.pendingRaw : 0),
         0,
       );
+      const quarantined = spaces.reduce(
+        (sum, space) => sum + (typeof space.quarantined === "number" ? space.quarantined : 0),
+        0,
+      );
       components.knowledge = {
-        status: core.ok ? "ok" : "down",
-        summary: `${core.spaces} 个空间，${pending} 条待提炼`,
-        details: core.details,
+        status: core.ok ? quarantined > 0 ? "degraded" : "ok" : "down",
+        summary: `${core.spaces} 个空间，${pending} 条待提炼${quarantined > 0 ? `，${quarantined} 条提炼失败待恢复` : ""}`,
+        details: { ...core.details, quarantined },
       };
     } catch (err) {
       core = { ok: false, spaces: 0, details: { error: String(err) } };

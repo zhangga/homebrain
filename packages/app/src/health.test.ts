@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { KnowledgeEngine } from "@homeagent/core";
+import { FakeLlm, KnowledgeEngine } from "@homeagent/core";
 import { createSystemHealthReporter } from "./health.ts";
 
 const loopHealth = {
@@ -128,6 +128,48 @@ describe("system health reporter", () => {
       status: "degraded",
       summary: "当前为终端前台运行（PID 8899）",
     }));
+    engine.close();
+  });
+
+  test("quarantined distillations degrade knowledge health without blocking readiness", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "hb-health-quarantine-"));
+    dirs.push(dir);
+    const llm = new FakeLlm();
+    const engine = new KnowledgeEngine({ dataDir: dir, llm });
+    const space = "team/oc_health" as const;
+    const rawId = await engine.remember({ space, source: "message", content: "will quarantine" });
+    llm.queueJSON({
+      operations: [{ type: "concept", name: "bad", title: "Bad", rawIds: [rawId] }],
+      skippedRawIds: [],
+    });
+    llm.queueJSON({ title: "Bad", summary: "", content: "" });
+    await engine.runDreamCycle(space);
+    const reportHealth = createSystemHealthReporter({
+      engine,
+      connectorHealth: () => ({
+        name: "feishu",
+        ready: true,
+        consumers: [
+          { key: "im.message.receive_v1", state: "ready", attempts: 0 },
+          { key: "im.chat.member.bot.added_v1", state: "ready", attempts: 0 },
+        ],
+      }),
+      dreamSchedulerHealth: () => loopHealth,
+      taskSchedulerHealth: () => loopHealth,
+      detectProviders: async () => [
+        { id: "codex", name: "Codex", bin: "codex", available: true, detail: "1.0" },
+      ],
+      requiredProviderIds: () => ["codex"],
+    });
+
+    const snapshot = await reportHealth();
+    expect(snapshot.ready).toBe(true);
+    expect(snapshot.status).toBe("degraded");
+    expect(snapshot.components.knowledge).toEqual(expect.objectContaining({
+      status: "degraded",
+      summary: "1 个空间，0 条待提炼，1 条提炼失败待恢复",
+    }));
+    expect(snapshot.components.knowledge?.details?.quarantined).toBe(1);
     engine.close();
   });
 

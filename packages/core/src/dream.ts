@@ -19,8 +19,6 @@
  * After distillation the deterministic map pages (index/glossary/overview) are
  * refreshed and a log entry is appended.
  */
-import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
 import type { DreamReport, Page, RawRecord } from "@homeagent/shared";
 import { config, logger } from "@homeagent/shared";
 import type { SpaceStore } from "./space.ts";
@@ -28,6 +26,7 @@ import type { DreamOptions } from "./types.ts";
 import { gatewayClient, type LlmClient } from "./llm.ts";
 import { canonicalSlug } from "./slug.ts";
 import { refreshDigest } from "./digest.ts";
+import { writeQuarantineRecord } from "./quarantine.ts";
 
 const log = logger.child("dream");
 
@@ -278,18 +277,12 @@ async function generate(
 // ---- quarantine ------------------------------------------------------------
 
 function quarantine(store: SpaceStore, slug: string, err: unknown, sources: RawRecord[]): void {
-  const dir = join(store.root, "quarantine");
-  mkdirSync(dir, { recursive: true });
-  const file = join(dir, `${slug.replace(/\//g, "__")}-${Date.now()}.json`);
-  writeFileSync(
-    file,
-    JSON.stringify(
-      { slug, error: String(err), rawIds: sources.map((s) => s.id), at: new Date().toISOString() },
-      null,
-      2,
-    ),
-    "utf8",
-  );
+  writeQuarantineRecord(store, {
+    slug,
+    error: String(err),
+    rawIds: sources.map((source) => source.id),
+    createdAt: Date.now(),
+  });
   log.warn("quarantined bad page", { space: store.space, slug, err: String(err) });
 }
 

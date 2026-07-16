@@ -163,7 +163,7 @@ bun run packages/app/src/repl.ts       # 启动横幅列出全部命令
 
 左侧导航分十区：
 
-- **空间 / 知识**：空间列表、知识页、原始条目、问答测试、手动触发提炼。
+- **空间 / 知识**：空间列表、知识页、原始条目、问答测试、手动触发提炼，以及提炼失败记录的单条/批量恢复。
 - **Agents**（中列列表 + 右侧编辑器）：新建 / 编辑 / 删除智能体，配置 **名称、Provider、Instruction（人格，会注入到回答）、Model、推理强度、Visibility**。
   - **Provider = 本机已安装的 agent CLI**（`claude` / `codex` / `trae-cli`）。**所有 LLM 工作（意图分类 + 问答 ask + 提炼 dream + 任务）都通过当前空间配置的本机 CLI 子进程执行，homeagent 不直连任何网络 API**。后台**探测本机** CLI，只让可用的可选（装了但跑不了的灰显并标注原因，如 WSL 下无 Linux node 的 codex）。
   - **Model 随 Provider 变化**：切 Provider 时 Model 下拉自动换成该 provider 的维护清单（CLI 无“列模型”接口）；Codex 当前提供 `gpt-5.6-sol / gpt-5.6-terra / gpt-5.6-luna / gpt-5.5 / gpt-5.4 / gpt-5.4-mini / gpt-5.3-codex-spark`。其中 `gpt-5.6-sol` 是 GPT-5.6 Sol 的完整模型 ID；HomeAgent 日常问答优先选择较快、成本更低的 `gpt-5.6-luna`，复杂研究可选择 `gpt-5.6-terra` 或 `gpt-5.6-sol`。
@@ -276,7 +276,7 @@ bun run smoke:macos --app dist/HomeAgent.app
 都会覆盖这些派生记录。macOS 使用系统自带的 Vision/PDFKit；其他平台仍可提取上述 UTF-8 文本文件，
 但会安全跳过图片 OCR 和 PDF 文本提取。音频转写、Office 文件、视频理解和 `post` 消息内嵌资源暂不支持。
 
-> **CLI-only 的代价（务必知悉）**：claude/trae-cli 是完整编码 agent，单次调用**慢、开销大**，dream 批量提炼会明显变慢；它们**自带鉴权和模型选择**，不一定尊重你在 homeagent 里选的 model。dream 的结构化抽取靠"让 CLI 只输出 JSON + 解析校验 + 失败跳过（quarantine）"，偶有条目建不出页。每日预算仅对可计费的 provider 有意义。
+> **CLI-only 的代价（务必知悉）**：claude/trae-cli 是完整编码 agent，单次调用**慢、开销大**，dream 批量提炼会明显变慢；它们**自带鉴权和模型选择**，不一定尊重你在 homeagent 里选的 model。dream 的结构化抽取靠"让 CLI 只输出 JSON + 解析校验 + 失败隔离（quarantine）"，偶有条目建不出页。失败记录会持续显示在对应空间的“提炼失败”页，并让知识健康状态降级但不阻断 `/readyz`；可单条或批量重试，且每次只处理该记录关联的原始来源，不会连带重跑无关消息。恢复所需来源不会被原始消息保留策略清理；若来源被撤回，旧失败记录会移除，仍有效的其他来源会重新进入待提炼队列。每日预算仅对可计费的 provider 有意义。
 
 ### 生产启动（接真实飞书）
 

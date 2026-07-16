@@ -707,6 +707,97 @@ describe("web backend (read-only)", () => {
     expect([302, 303]).toContain(res.status);
   });
 
+  test("quarantine page lists a failure and retries only its sources", async () => {
+    const rawId = await engine.remember({
+      space: SPACE,
+      source: "message",
+      content: "后台恢复测试",
+    });
+    fake.queueJSON({
+      operations: [{ type: "concept", name: "web-retry", title: "Web Retry", rawIds: [rawId] }],
+      skippedRawIds: [],
+    });
+    fake.queueJSON({ title: "Web Retry", summary: "", content: "" });
+    await engine.runDreamCycle(SPACE, { rawIds: [rawId] });
+    const record = (await engine.listQuarantines(SPACE))[0]!;
+
+    const spacePage = await app.request(`/spaces/${encodeURIComponent(SPACE)}`);
+    expect(await spacePage.text()).toContain("提炼失败（1）");
+
+    const page = await app.request(`/spaces/${encodeURIComponent(SPACE)}/quarantine`);
+    expect(page.status).toBe(200);
+    const body = await page.text();
+    expect(body).toContain("提炼失败恢复");
+    expect(body).toContain("concepts/web-retry");
+    expect(body).toContain("generated page has empty content");
+    expect(body).toContain("1 条原始来源");
+
+    fake.queueJSON({
+      operations: [{ type: "concept", name: "web-retry", title: "Web Retry", rawIds: [rawId] }],
+      skippedRawIds: [],
+    });
+    fake.queueJSON({
+      title: "Web Retry",
+      summary: "后台恢复成功",
+      aliases: [],
+      tags: [],
+      links: [],
+      content: "# Web Retry\n\n后台恢复成功。\n",
+    });
+    const retry = await app.request(
+      `/spaces/${encodeURIComponent(SPACE)}/quarantine/${encodeURIComponent(record.id)}/retry`,
+      { method: "POST" },
+    );
+    expect([302, 303]).toContain(retry.status);
+    expect(decodeURIComponent(retry.headers.get("location") ?? "")).toContain("恢复成功");
+    expect(await engine.listQuarantines(SPACE)).toEqual([]);
+    expect(await engine.getPage(SPACE, "concepts/web-retry")).not.toBeNull();
+  });
+
+  test("quarantine page retries the current failure snapshot in one batch", async () => {
+    const first = await engine.remember({ space: SPACE, source: "message", content: "批量失败一" });
+    const second = await engine.remember({ space: SPACE, source: "message", content: "批量失败二" });
+    fake.queueJSON({
+      operations: [
+        { type: "concept", name: "web-batch-one", title: "Batch One", rawIds: [first] },
+        { type: "concept", name: "web-batch-two", title: "Batch Two", rawIds: [second] },
+      ],
+      skippedRawIds: [],
+    });
+    fake.queueJSON({ title: "Batch One", summary: "", content: "" });
+    fake.queueJSON({ title: "Batch Two", summary: "", content: "" });
+    await engine.runDreamCycle(SPACE, { rawIds: [first, second] });
+    expect(await engine.listQuarantines(SPACE)).toHaveLength(2);
+
+    fake.onJSON((options) => {
+      const rawIds = [first, second].filter((id) => options.prompt?.includes(id));
+      return { operations: [], skippedRawIds: rawIds };
+    });
+    const retry = await app.request(`/spaces/${encodeURIComponent(SPACE)}/quarantine/retry-all`, {
+      method: "POST",
+    });
+
+    expect([302, 303]).toContain(retry.status);
+    expect(decodeURIComponent(retry.headers.get("location") ?? "")).toContain(
+      "已重试 2 条：恢复成功 2 条，仍失败 0 条",
+    );
+    expect(await engine.listQuarantines(SPACE)).toEqual([]);
+  });
+
+  test("quarantine retry rejects an unsafe or unknown record id", async () => {
+    const response = await app.request(
+      `/spaces/${encodeURIComponent(SPACE)}/quarantine/${encodeURIComponent("../../settings.json")}/retry`,
+      { method: "POST" },
+    );
+    expect(response.status).toBe(404);
+
+    const malformedEncoding = await app.request(
+      `/spaces/${encodeURIComponent(SPACE)}/quarantine/%25/retry`,
+      { method: "POST" },
+    );
+    expect(malformedEncoding.status).toBe(404);
+  });
+
   test("unknown space is 404", async () => {
     const res = await app.request(`/spaces/${encodeURIComponent("team/nope")}`);
     expect(res.status).toBe(404);

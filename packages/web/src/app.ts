@@ -51,6 +51,7 @@ import {
   governanceView,
   logsView,
   pageView,
+  quarantineView,
   rawListView,
   remindersView,
   settingsView,
@@ -749,9 +750,10 @@ export function createWebApp(opts: WebOptions): Hono {
     if (!space || !engine.registry.has(space)) return c.notFound();
     const pages = await engine.listPages(space);
     const rawCount = engine.registry.store(space).index().countRaw();
+    const quarantineCount = (await engine.listQuarantines(space)).length;
     const meta = engine.registry.get(space);
     return c.html(
-      await layout(space, [{ label: "空间 / 知识", href: "/" }, { label: space }], await spaceDetailView(space, pages, rawCount, meta), "spaces"),
+      await layout(space, [{ label: "空间 / 知识", href: "/" }, { label: space }], await spaceDetailView(space, pages, rawCount, quarantineCount, meta), "spaces"),
     );
   });
 
@@ -783,6 +785,43 @@ export function createWebApp(opts: WebOptions): Hono {
         "spaces",
       ),
     );
+  });
+
+  app.get("/spaces/:space/quarantine", async (c) => {
+    const space = parseSpace(c.req.param("space"));
+    if (!space || !engine.registry.has(space)) return c.notFound();
+    return c.html(
+      await layout(
+        `提炼失败恢复 · ${space}`,
+        [{ label: "空间 / 知识", href: "/" }, { label: space, href: `/spaces/${encodeURIComponent(space)}` }, { label: "提炼失败恢复" }],
+        await quarantineView(space, await engine.listQuarantines(space), c.req.query("ok") ?? undefined),
+        "spaces",
+      ),
+    );
+  });
+
+  app.post("/spaces/:space/quarantine/retry-all", async (c) => {
+    const space = parseSpace(c.req.param("space"));
+    if (!space || !engine.registry.has(space)) return c.notFound();
+    const model = engine.agentForSpace(space)?.model || undefined;
+    const result = await engine.retryQuarantines(space, model);
+    const message = result.total === 0
+      ? "当前没有待恢复的提炼失败"
+      : `已重试 ${result.total} 条：恢复成功 ${result.recovered} 条，仍失败 ${result.failed} 条`;
+    return c.redirect(`/spaces/${encodeURIComponent(space)}/quarantine?ok=${encodeURIComponent(message)}`);
+  });
+
+  app.post("/spaces/:space/quarantine/:id/retry", async (c) => {
+    const space = parseSpace(c.req.param("space"));
+    if (!space || !engine.registry.has(space)) return c.notFound();
+    const id = c.req.param("id");
+    const model = engine.agentForSpace(space)?.model || undefined;
+    const result = await engine.retryQuarantine(space, id, model);
+    if (result.status === "not_found") return c.notFound();
+    const message = result.status === "recovered"
+      ? "提炼失败恢复成功"
+      : `重试失败：${result.reason ?? "请查看最新隔离记录"}`;
+    return c.redirect(`/spaces/${encodeURIComponent(space)}/quarantine?ok=${encodeURIComponent(message)}`);
   });
 
   app.get("/spaces/:space/ask", async (c) => {

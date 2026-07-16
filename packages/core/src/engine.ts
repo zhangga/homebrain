@@ -37,10 +37,18 @@ import {
 import type {
   AskOptions,
   DreamOptions,
+  QuarantineBatchRetryResult,
+  QuarantineRecord,
+  QuarantineRetryResult,
   RetractionRequest,
   RetractionResult,
   SearchOptions,
 } from "./types.ts";
+import {
+  getQuarantineRecord,
+  listQuarantineRecords,
+  removeQuarantineRecord,
+} from "./quarantine.ts";
 import { SpaceRegistry } from "./registry.ts";
 import { AgentStore, type Agent } from "./agents.ts";
 import { TaskStore, type Task } from "./tasks.ts";
@@ -57,7 +65,7 @@ import {
   nextLearningSegment,
   type LearningSegment,
 } from "./learning-content.ts";
-import { runDreamCycle } from "./dream.ts";
+import { runDreamCycle as distillSpace } from "./dream.ts";
 import { refreshDigest } from "./digest.ts";
 import { ask as askImpl } from "./ask.ts";
 import type { LlmClient } from "./llm.ts";
@@ -873,6 +881,19 @@ export class KnowledgeEngine implements Knowledge {
         // leave content derived from a source that has already been removed.
         store.deletePage(slug);
       }
+      const affectedQuarantines = listQuarantineRecords(store).filter((record) =>
+        record.rawIds.some((sourceId) => removedSourceIds.has(sourceId))
+      );
+      for (const record of affectedQuarantines) {
+        for (const sourceId of record.rawIds) {
+          if (!removedSourceIds.has(sourceId) && index.getRaw(sourceId)) {
+            survivingSourceIds.add(sourceId);
+          }
+        }
+        // The failed output can no longer be reproduced from the same evidence.
+        // Drop it and let any surviving provenance enter a fresh dream cycle.
+        removeQuarantineRecord(store, record.id);
+      }
       index.recordMessageRetraction({
         chatId: request.chatId,
         messageId: request.messageId,
@@ -891,6 +912,7 @@ export class KnowledgeEngine implements Knowledge {
         messageId: request.messageId,
         rawIds: [...removedSourceIds],
         affectedPages,
+        removedQuarantines: affectedQuarantines.length,
         requeuedSources: survivingSourceIds.size,
       });
       return {
@@ -902,36 +924,108 @@ export class KnowledgeEngine implements Knowledge {
   }
 
   async runDreamCycle(space: SpaceId, opts: DreamOptions = {}): Promise<DreamReport> {
-    return this.serializer.run(space, async () => {
-      const health = this.dreamCycles.get(space) ?? { space, running: false };
-      health.running = true;
-      health.lastStartedAt = Date.now();
-      this.dreamCycles.set(space, health);
-      try {
-        const store = this.registry.ensure(space);
-        const report = await runDreamCycle(store, opts, { client: this.llmClientForSpace(space) });
-        this.registry.setLastDream(space, report.finishedAt);
-        health.lastExamined = report.examined;
-        health.lastPagesWritten = report.pagesWritten;
-        if (report.errors.length === 0) {
-          health.lastSuccessAt = report.finishedAt;
-          health.lastStatus = "ok";
-          health.lastError = undefined;
-        } else {
-          health.lastFailureAt = report.finishedAt;
-          health.lastStatus = "error";
-          health.lastError = report.errors.join("; ").slice(0, 500);
-        }
-        return report;
-      } catch (err) {
-        health.lastFailureAt = Date.now();
+    return this.serializer.run(space, async () => this.executeDreamCycle(space, opts));
+  }
+
+  /** Execute while the caller holds the per-space serializer. */
+  private async executeDreamCycle(space: SpaceId, opts: DreamOptions): Promise<DreamReport> {
+    const health = this.dreamCycles.get(space) ?? { space, running: false };
+    health.running = true;
+    health.lastStartedAt = Date.now();
+    this.dreamCycles.set(space, health);
+    try {
+      const store = this.registry.ensure(space);
+      const report = await distillSpace(store, opts, { client: this.llmClientForSpace(space) });
+      this.registry.setLastDream(space, report.finishedAt);
+      health.lastExamined = report.examined;
+      health.lastPagesWritten = report.pagesWritten;
+      if (report.errors.length === 0) {
+        health.lastSuccessAt = report.finishedAt;
+        health.lastStatus = "ok";
+        health.lastError = undefined;
+      } else {
+        health.lastFailureAt = report.finishedAt;
         health.lastStatus = "error";
-        health.lastError = String(err).slice(0, 500);
-        throw err;
-      } finally {
-        health.running = false;
+        health.lastError = report.errors.join("; ").slice(0, 500);
       }
+      return report;
+    } catch (err) {
+      health.lastFailureAt = Date.now();
+      health.lastStatus = "error";
+      health.lastError = String(err).slice(0, 500);
+      throw err;
+    } finally {
+      health.running = false;
+    }
+  }
+
+  async listQuarantines(space: SpaceId): Promise<QuarantineRecord[]> {
+    if (!this.registry.has(space)) return [];
+    return listQuarantineRecords(this.registry.store(space));
+  }
+
+  async retryQuarantine(
+    space: SpaceId,
+    id: string,
+    model?: string,
+  ): Promise<QuarantineRetryResult> {
+    if (!this.registry.has(space)) return { status: "not_found", id };
+    return this.serializer.run(space, async () => {
+      const store = this.registry.store(space);
+      const record = getQuarantineRecord(store, id);
+      if (!record) return { status: "not_found", id };
+      if (record.rawIds.length === 0) {
+        return { status: "failed", id, reason: "隔离记录没有可重试的原始来源" };
+      }
+      const available = store.index().listRawByIds(record.rawIds, { onlyPending: false });
+      if (available.length !== record.rawIds.length) {
+        return { status: "failed", id, reason: "部分原始来源已不存在，无法安全重试" };
+      }
+      let report: DreamReport;
+      try {
+        report = await this.executeDreamCycle(space, {
+          rawIds: record.rawIds,
+          force: true,
+          model,
+        });
+      } catch {
+        return { status: "failed", id, reason: "重试未完成，原隔离记录已保留" };
+      }
+      const processed = new Set(report.processedRawIds);
+      const allProcessed = record.rawIds.every((rawId) => processed.has(rawId));
+      if (allProcessed && report.pagesQuarantined === 0) {
+        removeQuarantineRecord(store, id);
+        return { status: "recovered", id, report };
+      }
+      if (allProcessed && report.pagesQuarantined > 0) {
+        // The retry wrote a fresh quarantine with the current failure details.
+        removeQuarantineRecord(store, id);
+        return {
+          status: "failed",
+          id,
+          report,
+          reason: "重试仍未生成有效知识页，已保留新的失败记录",
+        };
+      }
+      return {
+        status: "failed",
+        id,
+        report,
+        reason: "重试未完成，原隔离记录已保留",
+      };
     });
+  }
+
+  async retryQuarantines(space: SpaceId, model?: string): Promise<QuarantineBatchRetryResult> {
+    const records = await this.listQuarantines(space);
+    const results: QuarantineRetryResult[] = [];
+    for (const record of records) results.push(await this.retryQuarantine(space, record.id, model));
+    return {
+      total: results.length,
+      recovered: results.filter((result) => result.status === "recovered").length,
+      failed: results.filter((result) => result.status !== "recovered").length,
+      results,
+    };
   }
 
   async exportSpace(space: SpaceId): Promise<SpaceArchive> {
@@ -1139,7 +1233,10 @@ export class KnowledgeEngine implements Knowledge {
       const deleted = await this.serializer.run(meta.id, async () => {
         if (!this.registry.has(meta.id)) return 0;
         const protectedRawIds = new Set(
-          this.learning.exportBySpace(meta.id).sources.flatMap((source) => source.rawIds),
+          [
+            ...this.learning.exportBySpace(meta.id).sources.flatMap((source) => source.rawIds),
+            ...listQuarantineRecords(this.registry.store(meta.id)).flatMap((record) => record.rawIds),
+          ],
         );
         return this.registry
           .store(meta.id)
@@ -1274,6 +1371,7 @@ export class KnowledgeEngine implements Knowledge {
           ok: true,
           pages: index.countPages(),
           pendingRaw: index.countRaw(true),
+          quarantined: listQuarantineRecords(this.registry.store(space.id)).length,
           lastDreamAt: space.lastDreamAt,
         };
       } catch (err) {

@@ -2,7 +2,7 @@
  * Core-internal types layered on the shared domain vocabulary. Options bags for
  * the Knowledge seam live here so the interface file stays declarative.
  */
-import type { SpaceId } from "@homeagent/shared";
+import type { DreamReport, SpaceId } from "@homeagent/shared";
 
 export interface DreamOptions {
   /** cap on raw entries processed this run (cost control) */
@@ -46,6 +46,33 @@ export interface RetractionResult {
   affectedPages: string[];
   /** exact surviving source ids to rebuild before confirming the retraction */
   requeuedSourceIds: string[];
+}
+
+/** A durable record for raw sources whose generated knowledge page failed validation or execution. */
+export interface QuarantineRecord {
+  /** Safe filename-backed identifier used by management actions. */
+  id: string;
+  space: SpaceId;
+  slug: string;
+  error: string;
+  rawIds: string[];
+  createdAt: number;
+}
+
+export type QuarantineRetryStatus = "recovered" | "failed" | "not_found";
+
+export interface QuarantineRetryResult {
+  status: QuarantineRetryStatus;
+  id: string;
+  report?: DreamReport;
+  reason?: string;
+}
+
+export interface QuarantineBatchRetryResult {
+  total: number;
+  recovered: number;
+  failed: number;
+  results: QuarantineRetryResult[];
 }
 
 /** A space and its on-disk purpose/schema, as tracked by the registry. */

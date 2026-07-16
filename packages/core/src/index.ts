@@ -19,3 +19,4 @@ export * from "./testing.ts";
 export * from "./governance.ts";
 export * from "./learning-content.ts";
 export * from "./learning.ts";
+export * from "./quarantine.ts";

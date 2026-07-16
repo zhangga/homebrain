@@ -17,6 +17,9 @@ import type {
 import type {
   AskOptions,
   DreamOptions,
+  QuarantineBatchRetryResult,
+  QuarantineRecord,
+  QuarantineRetryResult,
   RetractionRequest,
   RetractionResult,
   SearchOptions,
@@ -31,6 +34,12 @@ export interface Knowledge {
 
   /** Nightly distillation: turn pending raw entries into wiki pages. */
   runDreamCycle(space: SpaceId, opts?: DreamOptions): Promise<DreamReport>;
+
+  /** Durable failed page generations awaiting an explicit retry. */
+  listQuarantines(space: SpaceId): Promise<QuarantineRecord[]>;
+
+  retryQuarantine(space: SpaceId, id: string, model?: string): Promise<QuarantineRetryResult>;
+  retryQuarantines(space: SpaceId, model?: string): Promise<QuarantineBatchRetryResult>;
 
   /**
    * Answer a question over the union of `spaces`. Returns an answer tagged

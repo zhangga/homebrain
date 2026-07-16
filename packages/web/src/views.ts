@@ -24,6 +24,7 @@ import type {
   LearningPlan,
   LearningSession,
   LearningSource,
+  QuarantineRecord,
 } from "@homeagent/core";
 import { AGENT_PERMISSIONS, TASK_CADENCES, learningProgress } from "@homeagent/core";
 import { codexReasoningEffortsForModel, type DetectedProvider } from "@homeagent/llm";
@@ -82,6 +83,7 @@ export function spaceDetailView(
   space: SpaceId,
   pages: PageRef[],
   rawCount: number,
+  quarantineCount: number,
   meta?: SpaceMeta,
 ): HtmlEscapedString | Promise<HtmlEscapedString> {
   const content = pages.filter((p) => !SINGLETON.has(p.slug));
@@ -107,6 +109,7 @@ export function spaceDetailView(
       <div class="muted">绑定群：${meta?.chatId ?? "—"} · 上次提炼：${fmtTime(meta?.lastDreamAt)}</div>
       <div style="margin-top:10px" class="actions">
         <a href="/spaces/${enc}/raw">原始条目（${rawCount}）</a> ·
+        <a href="/spaces/${enc}/quarantine">提炼失败（${quarantineCount}）</a> ·
         <a href="/spaces/${enc}/ask">问答测试</a>${groupSettingsLink} ·
         <form method="post" action="/spaces/${enc}/dream" class="inline-form">
           <button type="submit">手动触发提炼</button>
@@ -118,6 +121,42 @@ export function spaceDetailView(
       <tr><th>标题</th><th>类型</th><th>摘要</th></tr>
       ${pageRows}
     </table>`;
+}
+
+export function quarantineView(
+  space: SpaceId,
+  records: QuarantineRecord[],
+  flashMsg?: string,
+): HtmlEscapedString | Promise<HtmlEscapedString> {
+  const enc = encodeURIComponent(space);
+  const rows = records.map((record) => html`<tr>
+    <td class="muted">${fmtTime(record.createdAt)}</td>
+    <td><strong>${record.slug}</strong><div class="muted">${record.id}</div></td>
+    <td>${record.rawIds.length} 条原始来源</td>
+    <td><div class="contentbox">${record.error.slice(0, 500)}</div></td>
+    <td>
+      <form method="post" action="/spaces/${enc}/quarantine/${encodeURIComponent(record.id)}/retry" class="inline-form">
+        <button type="submit">重试</button>
+      </form>
+    </td>
+  </tr>`);
+  return html`<h1>提炼失败恢复</h1>
+    <p class="subtitle">只重新处理隔离记录关联的原始来源，不会带上本空间其他待提炼内容。</p>
+    ${flash(flashMsg)}
+    ${records.length > 0
+      ? html`<div class="card">
+          <div class="row">
+            <div><strong>${records.length} 条失败记录</strong><div class="muted">恢复成功后旧记录会自动删除；再次失败会保留最新错误。</div></div>
+            <form method="post" action="/spaces/${enc}/quarantine/retry-all" class="inline-form">
+              <button type="submit">全部重试</button>
+            </form>
+          </div>
+        </div>
+        <table>
+          <tr><th>失败时间</th><th>目标知识页</th><th>来源</th><th>错误</th><th>操作</th></tr>
+          ${rows}
+        </table>`
+      : html`<div class="empty">当前没有待恢复的提炼失败。</div>`}`;
 }
 
 export function pageView(space: SpaceId, page: Page): HtmlEscapedString | Promise<HtmlEscapedString> {
