@@ -25,3 +25,4 @@ export * from "./learning.ts";
 export * from "./quarantine.ts";
 export * from "./knowledge-governance.ts";
 export * from "./quality.ts";
+export * from "./retrieval.ts";

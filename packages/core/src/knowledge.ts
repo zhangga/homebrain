@@ -92,7 +92,7 @@ export interface Knowledge {
    */
   ask(spaces: SpaceId[], question: string, opts?: AskOptions): Promise<AskResult>;
 
-  /** FTS fallback search across `spaces`. */
+  /** Search across `spaces`; defaults to FTS, with an explicit hybrid experiment option. */
   search(spaces: SpaceId[], keyword: string, opts?: SearchOptions): Promise<Hit[]>;
 
   getPage(space: SpaceId, slug: string): Promise<Page | null>;

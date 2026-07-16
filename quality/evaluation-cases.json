@@ -3,6 +3,7 @@
     {
       "id": "backend-owner",
       "question": "谁负责后端服务？",
+      "queryEmbedding": [1, 0, 0, 0],
       "pages": [
         {
           "slug": "entities/alice",
@@ -10,7 +11,8 @@
           "title": "Alice",
           "summary": "Alice 负责后端服务",
           "aliases": ["后端负责人"],
-          "content": "Alice 负责后端服务，并主导服务端架构。"
+          "content": "Alice 负责后端服务，并主导服务端架构。",
+          "embedding": [1, 0, 0, 0]
         }
       ],
       "routeSlugs": ["entities/alice"],
@@ -23,6 +25,7 @@
     {
       "id": "family-alias",
       "question": "小贝儿是谁？",
+      "queryEmbedding": [0, 1, 0, 0],
       "pages": [
         {
           "slug": "entities/zhang-mingxi",
@@ -30,7 +33,8 @@
           "title": "张洺汐",
           "summary": "小贝儿是张洺汐",
           "aliases": ["小贝儿"],
-          "content": "小贝儿是张洺汐，是家庭成员。"
+          "content": "小贝儿是张洺汐，是家庭成员。",
+          "embedding": [0, 1, 0, 0]
         }
       ],
       "routeSlugs": ["entities/zhang-mingxi"],
@@ -43,6 +47,7 @@
     {
       "id": "release-retry-policy",
       "question": "release retry policy",
+      "queryEmbedding": [0, 0, 1, 0],
       "pages": [
         {
           "slug": "concepts/release-retry-policy",
@@ -50,7 +55,8 @@
           "title": "Release retry policy",
           "summary": "Retry failed releases twice",
           "aliases": ["deployment retry"],
-          "content": "The release retry policy allows two retries before escalation."
+          "content": "The release retry policy allows two retries before escalation.",
+          "embedding": [0, 0, 1, 0]
         }
       ],
       "routeSlugs": ["concepts/release-retry-policy"],
@@ -63,6 +69,7 @@
     {
       "id": "semantic-backend-paraphrase",
       "question": "线上故障该找哪位？",
+      "queryEmbedding": [0, 0, 0, 1],
       "pages": [
         {
           "slug": "entities/alice-semantic",
@@ -70,7 +77,8 @@
           "title": "Alice",
           "summary": "Alice 负责后端服务",
           "aliases": [],
-          "content": "Alice 负责后端服务，并主导服务端架构。"
+          "content": "Alice 负责后端服务，并主导服务端架构。",
+          "embedding": [0, 0, 0, 1]
         }
       ],
       "routeSlugs": ["entities/alice-semantic"],

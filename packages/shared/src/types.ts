@@ -96,13 +96,13 @@ export interface PageRef {
   tags: string[];
 }
 
-/** A full-text search hit. */
+/** A ranked knowledge search hit. */
 export interface Hit {
   slug: string;
   title: string;
   type: PageType;
   snippet: string;
-  /** bm25-derived score; lower is a better match in SQLite fts5 */
+  /** lower is better: BM25 for FTS, inverse reciprocal-rank score for hybrid */
   score: number;
 }
 

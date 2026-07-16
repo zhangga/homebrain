@@ -5,6 +5,8 @@
 import type { ImageInput } from "@homeagent/llm";
 import type { DreamReport, SpaceId } from "@homeagent/shared";
 
+export type RetrievalStrategy = "fts" | "hybrid";
+
 export interface DreamOptions {
   /** cap on raw entries processed this run (cost control) */
   maxEntries?: number;
@@ -29,10 +31,14 @@ export interface AskOptions {
   maxPages?: number;
   /** when true, never fall back to general knowledge (knowledge-only) */
   knowledgeOnly?: boolean;
+  /** opt-in retrieval experiment; defaults to the existing FTS path */
+  retrieval?: RetrievalStrategy;
 }
 
 export interface SearchOptions {
   limit?: number;
+  /** opt-in retrieval experiment; defaults to the existing FTS path */
+  retrieval?: RetrievalStrategy;
 }
 
 export interface RetractionRequest {

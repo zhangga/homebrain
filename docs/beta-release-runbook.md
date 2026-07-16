@@ -23,8 +23,9 @@ bun run verify:beta
 - 子进程遭受 `SIGKILL` 后的数据恢复验收。
 
 质量评测必须覆盖检索与引用、对话路由、群聊主动参与和学习路线四类用例。当前候选只有在全部
-固定用例通过时才进入后续发布门禁；报告中的 `consider_hybrid_retrieval` 是下一轮检索实验建议，
-不代表发布流程会自动启用 embedding。
+固定用例通过时才进入后续发布门禁。报告会分别给出 FTS 与固定向量混合召回的覆盖率；
+`validate_embedding_provider` 只表示融合管线值得进入真实 provider 基准验证，不代表发布流程会自动
+启用 embedding。生产默认仍为 FTS，且本轮没有新增知识数据外发服务。
 
 命令成功时仍会明确列出尚未完成的外部门禁。它不代表签名、公证、全新 Mac 安装或真实飞书
 Soak 已经完成，也不能替代 GitHub Release 工作流和发布记录。

@@ -244,8 +244,11 @@ bun run packages/app/src/repl.ts       # 启动横幅列出全部命令
 - 管理后台的问答测试页提供“有帮助 / 没帮助 / 引用有误”反馈。每个回答只接受一次反馈，反馈与回答追踪一起留在本机。
 - `bun run evaluate:quality` 离线运行固定评测集，覆盖检索与引用、对话路由、群聊主动参与和学习路线校验。命令会输出机器可读报告及检索建议：
   - `keep_fts`：当前 FTS、路由和引用达到阈值；
-  - `consider_hybrid_retrieval`：路由和引用正常，但 FTS 覆盖率低于 85%，应实验 embedding + FTS 混合检索；
+  - `consider_hybrid_retrieval`：混合召回有提升但仍未达到固定阈值，应继续调整实验；
+  - `validate_embedding_provider`：固定向量夹具证明混合链路可补足 FTS，应使用真实本地或明确授权的 embedding provider 做基准验证；
   - `insufficient_data`：检索样本不足，暂不调整架构。
+- 混合检索目前是代码级显式实验：只有注入 `EmbeddingProvider` 并传入 `retrieval: "hybrid"` 才会启用；默认问答和搜索仍完全使用 FTS。embedding 缺失、输出异常或调用失败时自动退回 FTS。单次语义扫描最多读取 2,048 个候选页，provider 每批最多接收 32 条输入，跨请求文档向量缓存同样限制为 2,048 条。
+- 固定评测向量只验证语义召回和排序融合的管线，不代表任何真实 embedding 模型的质量。这次改动没有配置新的外部服务，也不会自动把家庭或团队知识发送给新的 provider。
 - 评测已进入 CI 和 `verify:beta`。阶段二不引入个人空间隐藏或隐私策略，仍以家庭和团队协作为产品边界。
 
 ### 首次启动与飞书连接

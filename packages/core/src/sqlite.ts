@@ -149,11 +149,14 @@ export class SpaceIndex {
     return r.n;
   }
 
-  allPages(): Page[] {
-    const rows = this.db.query(`SELECT * FROM pages ORDER BY updated DESC`).all() as Record<
-      string,
-      unknown
-    >[];
+  allPages(limit?: number): Page[] {
+    const rows = (
+      limit === undefined
+        ? this.db.query(`SELECT * FROM pages ORDER BY updated DESC`).all()
+        : this.db
+            .query(`SELECT * FROM pages ORDER BY updated DESC LIMIT ?`)
+            .all(Math.max(0, Math.floor(limit)))
+    ) as Record<string, unknown>[];
     return rows.map(rowToPage);
   }
 

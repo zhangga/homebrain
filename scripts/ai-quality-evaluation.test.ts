@@ -28,22 +28,45 @@ describe("AI quality evaluation", () => {
       "proactive",
       "learning",
     ]);
-    expect(report.recommendation.decision).toBe("consider_hybrid_retrieval");
+    expect(report.retrieval.ftsCoverage).toBe(0.75);
+    expect(report.retrieval.hybridCoverage).toBe(1);
+    expect(report.retrieval.hybridLift).toBe(0.25);
+    expect(report.recommendation.decision).toBe("validate_embedding_provider");
   });
 
-  test("recommends a hybrid experiment only when FTS coverage is the bottleneck", () => {
+  test("recommends provider validation only when deterministic hybrid recall improves", () => {
     expect(recommendRetrieval({
       caseCount: 8,
       pipelineAccuracy: 1,
       citationAccuracy: 1,
       ftsCoverage: 0.75,
-    }).decision).toBe("consider_hybrid_retrieval");
+      hybridCoverage: 1,
+      hybridLift: 0.25,
+    }).decision).toBe("validate_embedding_provider");
     expect(recommendRetrieval({
       caseCount: 8,
       pipelineAccuracy: 0.75,
       citationAccuracy: 0.75,
       ftsCoverage: 0.5,
+      hybridCoverage: 1,
+      hybridLift: 0.5,
     }).decision).toBe("keep_fts");
+    expect(recommendRetrieval({
+      caseCount: 8,
+      pipelineAccuracy: 1,
+      citationAccuracy: 1,
+      ftsCoverage: 0.75,
+      hybridCoverage: 0.75,
+      hybridLift: 0,
+    }).decision).toBe("keep_fts");
+    expect(recommendRetrieval({
+      caseCount: 2,
+      pipelineAccuracy: 1,
+      citationAccuracy: 1,
+      ftsCoverage: 0.5,
+      hybridCoverage: 1,
+      hybridLift: 0.5,
+    }).decision).toBe("insufficient_data");
   });
 
   test("requires every quality category to pass", () => {
@@ -64,6 +87,8 @@ describe("AI quality evaluation", () => {
       pipelineAccuracy: 1,
       citationAccuracy: 1,
       ftsCoverage: 1,
+      hybridCoverage: 1,
+      hybridLift: 0,
     }, 1000);
     expect(report.overall).toEqual({
       passed: false,
