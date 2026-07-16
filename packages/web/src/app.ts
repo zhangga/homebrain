@@ -52,15 +52,18 @@ import {
   logsView,
   pageView,
   quarantineView,
+  rawGovernanceDetailView,
   rawListView,
   remindersView,
   settingsView,
   spaceDetailView,
+  spaceGovernanceView,
   spaceListView,
   tasksView,
 } from "./views.ts";
 
 const MUTATING_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
+const LOCAL_GOVERNANCE_ACTOR = "local-admin";
 
 export interface WebOptions {
   engine: KnowledgeEngine;
@@ -753,8 +756,160 @@ export function createWebApp(opts: WebOptions): Hono {
     const quarantineCount = (await engine.listQuarantines(space)).length;
     const meta = engine.registry.get(space);
     return c.html(
-      await layout(space, [{ label: "空间 / 知识", href: "/" }, { label: space }], await spaceDetailView(space, pages, rawCount, quarantineCount, meta), "spaces"),
+      await layout(
+        space,
+        [{ label: "空间 / 知识", href: "/" }, { label: space }],
+        await spaceDetailView(
+          space,
+          pages,
+          rawCount,
+          quarantineCount,
+          meta,
+          c.req.query("ok") ?? undefined,
+        ),
+        "spaces",
+      ),
     );
+  });
+
+  app.get("/spaces/:space/governance", async (c) => {
+    const space = parseSpace(c.req.param("space"));
+    if (!space || !engine.registry.has(space)) return c.notFound();
+    return c.html(
+      await layout(
+        `空间规则与治理记录 · ${space}`,
+        [
+          { label: "空间 / 知识", href: "/" },
+          { label: space, href: `/spaces/${encodeURIComponent(space)}` },
+          { label: "空间规则与治理记录" },
+        ],
+        await spaceGovernanceView(
+          space,
+          await engine.getSpaceGovernance(space),
+          c.req.query("ok") ?? undefined,
+        ),
+        "spaces",
+      ),
+    );
+  });
+
+  app.post("/spaces/:space/governance/rules", async (c) => {
+    const space = parseSpace(c.req.param("space"));
+    if (!space || !engine.registry.has(space)) return c.notFound();
+    try {
+      const body = await c.req.parseBody();
+      await engine.updateSpaceRules(
+        space,
+        {
+          purpose: str(body, "purpose"),
+          schema: str(body, "schema"),
+        },
+        LOCAL_GOVERNANCE_ACTOR,
+      );
+      return c.redirect(
+        `/spaces/${encodeURIComponent(space)}/governance?ok=${encodeURIComponent("空间规则已保存")}`,
+      );
+    } catch (error) {
+      return c.redirect(
+        `/spaces/${encodeURIComponent(space)}/governance?ok=${encodeURIComponent(`保存失败：${String(error)}`)}`,
+      );
+    }
+  });
+
+  app.post("/spaces/:space/governance/rules/reset", async (c) => {
+    const space = parseSpace(c.req.param("space"));
+    if (!space || !engine.registry.has(space)) return c.notFound();
+    const body = await c.req.parseBody();
+    const target = str(body, "target");
+    if (target !== "purpose" && target !== "schema") return c.notFound();
+    try {
+      await engine.resetSpaceRule(space, target, LOCAL_GOVERNANCE_ACTOR);
+      return c.redirect(
+        `/spaces/${encodeURIComponent(space)}/governance?ok=${encodeURIComponent(`已恢复默认 ${target}`)}`,
+      );
+    } catch (error) {
+      return c.redirect(
+        `/spaces/${encodeURIComponent(space)}/governance?ok=${encodeURIComponent(`恢复失败：${String(error)}`)}`,
+      );
+    }
+  });
+
+  app.post("/spaces/:space/pages/regenerate", async (c) => {
+    const space = parseSpace(c.req.param("space"));
+    if (!space || !engine.registry.has(space)) return c.notFound();
+    const body = await c.req.parseBody();
+    const slug = str(body, "slug");
+    const model = engine.agentForSpace(space)?.model || undefined;
+    try {
+      const result = await engine.regenerateKnowledgePage(
+        space,
+        slug,
+        LOCAL_GOVERNANCE_ACTOR,
+        model,
+      );
+      if (result.status === "not_found") return c.notFound();
+      const message = result.status === "regenerated"
+        ? "知识页已重新生成"
+        : `重新生成失败：${result.reason ?? "请查看提炼失败记录"}`;
+      return c.redirect(
+        `/spaces/${encodeURIComponent(space)}/pages/${encodeURIComponent(slug)}?ok=${encodeURIComponent(message)}`,
+      );
+    } catch (error) {
+      return c.redirect(
+        `/spaces/${encodeURIComponent(space)}/pages/${encodeURIComponent(slug)}?ok=${encodeURIComponent(`重新生成失败：${String(error)}`)}`,
+      );
+    }
+  });
+
+  app.post("/spaces/:space/pages/correct", async (c) => {
+    const space = parseSpace(c.req.param("space"));
+    if (!space || !engine.registry.has(space)) return c.notFound();
+    const body = await c.req.parseBody();
+    const slug = str(body, "slug");
+    const correction = str(body, "correction");
+    const model = engine.agentForSpace(space)?.model || undefined;
+    try {
+      const result = await engine.submitKnowledgeCorrection(
+        space,
+        slug,
+        correction,
+        LOCAL_GOVERNANCE_ACTOR,
+        model,
+      );
+      if (result.status === "not_found") return c.notFound();
+      const message = result.status === "regenerated"
+        ? "人工纠错已保存，知识页已重新生成"
+        : `纠错已保存，但重新生成失败：${result.reason ?? "请查看提炼失败记录"}`;
+      return c.redirect(
+        `/spaces/${encodeURIComponent(space)}/pages/${encodeURIComponent(slug)}?ok=${encodeURIComponent(message)}`,
+      );
+    } catch (error) {
+      return c.redirect(
+        `/spaces/${encodeURIComponent(space)}/pages/${encodeURIComponent(slug)}?ok=${encodeURIComponent(`提交纠错失败：${String(error)}`)}`,
+      );
+    }
+  });
+
+  app.post("/spaces/:space/pages/delete", async (c) => {
+    const space = parseSpace(c.req.param("space"));
+    if (!space || !engine.registry.has(space)) return c.notFound();
+    const body = await c.req.parseBody();
+    const slug = str(body, "slug");
+    try {
+      const result = await engine.deleteKnowledgePage(
+        space,
+        slug,
+        LOCAL_GOVERNANCE_ACTOR,
+      );
+      if (result.status === "not_found") return c.notFound();
+      return c.redirect(
+        `/spaces/${encodeURIComponent(space)}?ok=${encodeURIComponent("知识页已删除，原始来源仍保留")}`,
+      );
+    } catch (error) {
+      return c.redirect(
+        `/spaces/${encodeURIComponent(space)}/pages/${encodeURIComponent(slug)}?ok=${encodeURIComponent(`删除失败：${String(error)}`)}`,
+      );
+    }
   });
 
   app.get("/spaces/:space/pages/:slug{.+}", async (c) => {
@@ -767,7 +922,7 @@ export function createWebApp(opts: WebOptions): Hono {
       await layout(
         page.title,
         [{ label: "空间 / 知识", href: "/" }, { label: space, href: `/spaces/${encodeURIComponent(space)}` }, { label: page.title }],
-        await pageView(space, page),
+        await pageView(space, page, c.req.query("ok") ?? undefined),
         "spaces",
       ),
     );
@@ -785,6 +940,56 @@ export function createWebApp(opts: WebOptions): Hono {
         "spaces",
       ),
     );
+  });
+
+  app.get("/spaces/:space/raw/:id", async (c) => {
+    const space = parseSpace(c.req.param("space"));
+    if (!space || !engine.registry.has(space)) return c.notFound();
+    const detail = await engine.getRawGovernanceDetail(space, c.req.param("id"));
+    if (!detail) return c.notFound();
+    return c.html(
+      await layout(
+        `原始记录 · ${space}`,
+        [
+          { label: "空间 / 知识", href: "/" },
+          { label: space, href: `/spaces/${encodeURIComponent(space)}` },
+          { label: "原始条目", href: `/spaces/${encodeURIComponent(space)}/raw` },
+          { label: detail.raw.id },
+        ],
+        await rawGovernanceDetailView(
+          space,
+          detail,
+          c.req.query("ok") ?? undefined,
+        ),
+        "spaces",
+      ),
+    );
+  });
+
+  app.post("/spaces/:space/raw/:id/redistill", async (c) => {
+    const space = parseSpace(c.req.param("space"));
+    if (!space || !engine.registry.has(space)) return c.notFound();
+    const rawId = c.req.param("id");
+    const model = engine.agentForSpace(space)?.model || undefined;
+    try {
+      const report = await engine.redistillRaw(
+        space,
+        rawId,
+        LOCAL_GOVERNANCE_ACTOR,
+        model,
+      );
+      const message = report.errors.length === 0
+        ? `重新提炼完成：写入 ${report.pagesWritten} 个知识页`
+        : `重新提炼未完全成功：${report.errors.join("; ")}`;
+      return c.redirect(
+        `/spaces/${encodeURIComponent(space)}/raw/${encodeURIComponent(rawId)}?ok=${encodeURIComponent(message)}`,
+      );
+    } catch (error) {
+      if (!(await engine.getRawGovernanceDetail(space, rawId))) return c.notFound();
+      return c.redirect(
+        `/spaces/${encodeURIComponent(space)}/raw/${encodeURIComponent(rawId)}?ok=${encodeURIComponent(`重新提炼失败：${String(error)}`)}`,
+      );
+    }
   });
 
   app.get("/spaces/:space/quarantine", async (c) => {

@@ -24,6 +24,8 @@ import type {
   LearningPlan,
   LearningSession,
   LearningSource,
+  KnowledgeGovernanceSnapshot,
+  RawGovernanceDetail,
   QuarantineRecord,
 } from "@homeagent/core";
 import { AGENT_PERMISSIONS, TASK_CADENCES, learningProgress } from "@homeagent/core";
@@ -85,6 +87,7 @@ export function spaceDetailView(
   rawCount: number,
   quarantineCount: number,
   meta?: SpaceMeta,
+  flashMsg?: string,
 ): HtmlEscapedString | Promise<HtmlEscapedString> {
   const content = pages.filter((p) => !SINGLETON.has(p.slug));
   const enc = encodeURIComponent(space);
@@ -105,11 +108,13 @@ export function spaceDetailView(
 
   return html`<h1>${meta ? spaceLabel(meta) : space}</h1>
     <p class="subtitle">${space}</p>
+    ${flash(flashMsg)}
     <div class="card">
       <div class="muted">绑定群：${meta?.chatId ?? "—"} · 上次提炼：${fmtTime(meta?.lastDreamAt)}</div>
       <div style="margin-top:10px" class="actions">
         <a href="/spaces/${enc}/raw">原始条目（${rawCount}）</a> ·
         <a href="/spaces/${enc}/quarantine">提炼失败（${quarantineCount}）</a> ·
+        <a href="/spaces/${enc}/governance">空间规则与治理记录</a> ·
         <a href="/spaces/${enc}/ask">问答测试</a>${groupSettingsLink} ·
         <form method="post" action="/spaces/${enc}/dream" class="inline-form">
           <button type="submit">手动触发提炼</button>
@@ -121,6 +126,67 @@ export function spaceDetailView(
       <tr><th>标题</th><th>类型</th><th>摘要</th></tr>
       ${pageRows}
     </table>`;
+}
+
+export function spaceGovernanceView(
+  space: SpaceId,
+  snapshot: KnowledgeGovernanceSnapshot,
+  flashMsg?: string,
+): HtmlEscapedString | Promise<HtmlEscapedString> {
+  const enc = encodeURIComponent(space);
+  const actionLabels: Record<string, string> = {
+    rules_updated: "更新空间规则",
+    rule_reset: "恢复默认规则",
+    raw_redistilled: "重新提炼原始记录",
+    page_deleted: "删除知识页",
+    page_regenerated: "重新生成知识页",
+    correction_submitted: "提交人工纠错",
+  };
+  const rows = [...snapshot.audit].reverse().map((record) => html`<tr>
+    <td class="muted">${fmtTime(record.createdAt)}</td>
+    <td>${actionLabels[record.action] ?? record.action}</td>
+    <td><span class="tag">${record.status === "succeeded" ? "成功" : "失败"}</span></td>
+    <td>${record.target}</td>
+    <td>${record.actor}</td>
+    <td class="muted">${record.summary}</td>
+  </tr>`);
+  return html`<h1>空间规则与治理记录</h1>
+    <p class="subtitle">${space} · 规则会在下一次提炼时立即生效。</p>
+    ${flash(flashMsg)}
+    <form method="post" action="/spaces/${enc}/governance/rules">
+      <div class="card">
+        <h2>空间意图 purpose.md</h2>
+        <textarea name="purpose" rows="12">${snapshot.purpose}</textarea>
+        <div class="actions" style="margin-top:10px">
+          <button type="submit">保存空间规则</button>
+        </div>
+      </div>
+      <div class="card">
+        <h2>页类型规则 schema.md</h2>
+        <textarea name="schema" rows="14">${snapshot.schema}</textarea>
+      </div>
+    </form>
+    <div class="card">
+      <strong>恢复默认值</strong>
+      <div class="muted">只重置所选文件，不会覆盖另一项规则。</div>
+      <div class="actions" style="margin-top:10px">
+        <form method="post" action="/spaces/${enc}/governance/rules/reset" class="inline-form">
+          <input type="hidden" name="target" value="purpose" />
+          <button type="submit">恢复默认 purpose</button>
+        </form>
+        <form method="post" action="/spaces/${enc}/governance/rules/reset" class="inline-form">
+          <input type="hidden" name="target" value="schema" />
+          <button type="submit">恢复默认 schema</button>
+        </form>
+      </div>
+    </div>
+    <h2>治理审计（${snapshot.audit.length}）</h2>
+    ${rows.length > 0
+      ? html`<table>
+          <tr><th>时间</th><th>操作</th><th>结果</th><th>目标</th><th>操作人</th><th>摘要</th></tr>
+          ${rows}
+        </table>`
+      : html`<div class="empty">还没有人工治理操作。</div>`}`;
 }
 
 export function quarantineView(
@@ -159,7 +225,11 @@ export function quarantineView(
       : html`<div class="empty">当前没有待恢复的提炼失败。</div>`}`;
 }
 
-export function pageView(space: SpaceId, page: Page): HtmlEscapedString | Promise<HtmlEscapedString> {
+export function pageView(
+  space: SpaceId,
+  page: Page,
+  flashMsg?: string,
+): HtmlEscapedString | Promise<HtmlEscapedString> {
   const enc = encodeURIComponent(space);
   const aliases = page.aliases.length ? html`<div class="muted">别名：${page.aliases.join("、")}</div>` : "";
   const links = page.links.length
@@ -168,25 +238,51 @@ export function pageView(space: SpaceId, page: Page): HtmlEscapedString | Promis
       )}</div>`
     : "";
   const tags = page.tags.map((t) => html`<span class="tag">${t}</span>`);
+  const sourceLinks = page.sources.length
+    ? page.sources.map((sourceId) => html`<a href="/spaces/${enc}/raw/${encodeURIComponent(sourceId)}">${sourceId}</a> `)
+    : "—";
   return html`<h1>${page.title} <span class="tag">${page.type}</span></h1>
+    ${flash(flashMsg)}
     <div class="card">
       <div class="muted">slug：${page.slug} · 更新：${fmtTime(page.updatedAt)}</div>
       ${aliases}${links}
       <div style="margin-top:8px">${tags}</div>
-      <div class="muted" style="margin-top:8px">来源 raw：${page.sources.length ? page.sources.join(", ") : "—"}</div>
+      <div class="muted" style="margin-top:8px">来源 raw：${sourceLinks}</div>
     </div>
     <h2>正文</h2>
-    <div class="contentbox">${page.content}</div>`;
+    <div class="contentbox">${page.content}</div>
+    <h2>人工治理</h2>
+    <div class="card">
+      <div class="actions">
+        <form method="post" action="/spaces/${enc}/pages/regenerate" class="inline-form">
+          <input type="hidden" name="slug" value="${page.slug}" />
+          <button type="submit">重新生成知识页</button>
+        </form>
+        <form method="post" action="/spaces/${enc}/pages/delete" class="inline-form">
+          <input type="hidden" name="slug" value="${page.slug}" />
+          <button type="submit" class="danger" onclick="return confirm('确定删除这张知识页？原始来源会保留。')">删除知识页</button>
+        </form>
+      </div>
+      <form method="post" action="/spaces/${enc}/pages/correct" style="margin-top:18px">
+        <input type="hidden" name="slug" value="${page.slug}" />
+        <div class="field">
+          <label>人工纠错 <span class="hint">纠错会保存为 manual 原始来源，再重新生成当前页。</span></label>
+          <textarea name="correction" required placeholder="说明哪一项事实有误，以及正确内容是什么。"></textarea>
+        </div>
+        <button type="submit">提交人工纠错</button>
+      </form>
+    </div>`;
 }
 
 export function rawListView(space: SpaceId, raws: RawRecord[]): HtmlEscapedString | Promise<HtmlEscapedString> {
+  const enc = encodeURIComponent(space);
   const rows = raws.length
     ? raws.map(
         (r) => html`<tr>
           <td class="muted">${fmtTime(r.createdAt)}</td>
           <td><span class="tag">${r.source}</span></td>
           <td>${r.ingested ? "✓" : "…"}</td>
-          <td>${r.content.slice(0, 160)}</td>
+          <td><a href="/spaces/${enc}/raw/${encodeURIComponent(r.id)}">${r.content.slice(0, 160)}</a></td>
         </tr>`,
       )
     : [html`<tr><td colspan="4" class="empty">暂无原始条目。</td></tr>`];
@@ -195,6 +291,47 @@ export function rawListView(space: SpaceId, raws: RawRecord[]): HtmlEscapedStrin
       <tr><th>时间</th><th>来源</th><th>已提炼</th><th>内容</th></tr>
       ${rows}
     </table>`;
+}
+
+export function rawGovernanceDetailView(
+  space: SpaceId,
+  detail: RawGovernanceDetail,
+  flashMsg?: string,
+): HtmlEscapedString | Promise<HtmlEscapedString> {
+  const enc = encodeURIComponent(space);
+  const rawId = encodeURIComponent(detail.raw.id);
+  const attachments = detail.raw.attachments ?? [];
+  const pageRows = detail.pages.map((page) => html`<li>
+    <a href="/spaces/${enc}/pages/${encodeURIComponent(page.slug)}">${page.title}</a>
+    <span class="muted">${page.slug}</span>
+  </li>`);
+  const attachmentRows = attachments.map((attachment) => html`<li>
+    ${attachment.name ?? attachment.ref}
+    <span class="muted">${attachment.kind} · ${attachment.ref}</span>
+  </li>`);
+  return html`<h1>原始记录详情</h1>
+    <p class="subtitle">${detail.raw.id}</p>
+    ${flash(flashMsg)}
+    <div class="card">
+      <div>来源：<span class="tag">${detail.raw.source}</span> · 状态：${detail.raw.ingested ? "已处理" : "待提炼"}</div>
+      <div class="muted" style="margin-top:8px">
+        时间：${fmtTime(detail.raw.createdAt)} · 作者：${detail.raw.author ?? "—"} ·
+        chat：${detail.raw.chatId ?? "—"} · message：${detail.raw.messageId ?? "—"}
+      </div>
+      <form method="post" action="/spaces/${enc}/raw/${rawId}/redistill" style="margin-top:12px">
+        <button type="submit">重新提炼这条记录</button>
+      </form>
+    </div>
+    <h2>完整内容</h2>
+    <div class="contentbox">${detail.raw.content}</div>
+    <h2>附件（${attachments.length}）</h2>
+    ${attachmentRows.length > 0
+      ? html`<ul>${attachmentRows}</ul>`
+      : html`<div class="empty">没有附件。</div>`}
+    <h2>关联知识页（${detail.pages.length}）</h2>
+    ${pageRows.length > 0
+      ? html`<ul>${pageRows}</ul>`
+      : html`<div class="empty">当前没有知识页引用这条原始记录。</div>`}`;
 }
 
 export function askView(
@@ -331,7 +468,7 @@ export function governanceView(
           <div class="actions">
             <a class="btn secondary" href="/spaces/${encodeURIComponent(meta.id)}/export">导出</a>
             <form method="post" action="/spaces/${encodeURIComponent(meta.id)}/delete" class="inline-form"
-              onsubmit="return confirm('永久删除该空间的知识、原始记录、任务、提醒和学习计划？请先导出备份。后续新消息可能重新创建空空间。')">
+              onsubmit="return confirm('永久删除该空间的知识、原始记录、治理审计、任务、提醒和学习计划？请先导出备份。后续新消息可能重新创建空空间。')">
               <button type="submit" class="danger">删除</button>
             </form>
           </div>
@@ -350,7 +487,7 @@ export function governanceView(
     </div>
     <div class="card">
       <h2 style="margin-top:0">恢复空间</h2>
-      <p class="muted">接受 homeagent.space v1/v2/v3 归档；v2 包含阅读计划，v3 包含主题路线与多来源材料，已有同名空间不会被覆盖。</p>
+      <p class="muted">接受 homeagent.space v1/v2/v3/v4 归档；v2 包含阅读计划，v3 包含主题路线与多来源材料，v4 包含知识人工治理审计，已有同名空间不会被覆盖。</p>
       <form method="post" action="/governance/restore" enctype="multipart/form-data" class="actions">
         <input type="file" name="archive" accept="application/json,.json" required />
         <button type="submit">上传并恢复</button>

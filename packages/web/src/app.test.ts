@@ -114,6 +114,221 @@ describe("web backend (read-only)", () => {
     expect((await fresh.request("/setup")).status).toBe(200);
   });
 
+  test("edits and resets space rules from the knowledge governance page", async () => {
+    const initial = await app.request(`/spaces/${encodeURIComponent(SPACE)}/governance`);
+    expect(initial.status).toBe(200);
+    expect(await initial.text()).toContain("空间规则与治理记录");
+
+    const update = await app.request(
+      `/spaces/${encodeURIComponent(SPACE)}/governance/rules`,
+      {
+        method: "POST",
+        body: new URLSearchParams({
+          purpose: "# 产品空间\n\n只沉淀产品决策。",
+          schema: "# 产品规则\n\n- analysis: 产品决策",
+        }),
+      },
+    );
+    expect([302, 303]).toContain(update.status);
+
+    const updated = await app.request(`/spaces/${encodeURIComponent(SPACE)}/governance`);
+    const updatedBody = await updated.text();
+    expect(updatedBody).toContain("只沉淀产品决策");
+    expect(updatedBody).toContain("更新空间规则");
+
+    const reset = await app.request(
+      `/spaces/${encodeURIComponent(SPACE)}/governance/rules/reset`,
+      {
+        method: "POST",
+        body: new URLSearchParams({ target: "purpose" }),
+      },
+    );
+    expect([302, 303]).toContain(reset.status);
+    expect((await engine.getSpaceGovernance(SPACE)).purpose).toContain(
+      "这是一个 homeagent 知识空间",
+    );
+  });
+
+  test("shows the full raw record and its derived knowledge pages", async () => {
+    const rawId = await engine.remember({
+      space: SPACE,
+      source: "doc",
+      author: "ou_owner",
+      content: "完整原始内容：Alice 负责结算系统，并维护值班手册。",
+      attachments: [{ kind: "file", ref: "file-key", name: "值班手册.md" }],
+    });
+    await engine.upsertPage(SPACE, {
+      ...page("entities/alice-settlement", "Alice 与结算系统", "Alice 负责结算系统。"),
+      sources: [rawId],
+    });
+
+    const listing = await app.request(`/spaces/${encodeURIComponent(SPACE)}/raw`);
+    const listingBody = await listing.text();
+    expect(listingBody).toContain(`/raw/${rawId}`);
+
+    const detail = await app.request(
+      `/spaces/${encodeURIComponent(SPACE)}/raw/${encodeURIComponent(rawId)}`,
+    );
+    expect(detail.status).toBe(200);
+    const detailBody = await detail.text();
+    expect(detailBody).toContain("完整原始内容：Alice 负责结算系统");
+    expect(detailBody).toContain("值班手册.md");
+    expect(detailBody).toContain("Alice 与结算系统");
+    expect(detailBody).toContain("重新提炼这条记录");
+  });
+
+  test("redistills one raw record from its detail page", async () => {
+    const rawId = await engine.remember({
+      space: SPACE,
+      source: "manual",
+      content: "结算系统负责人是 Bob。",
+    });
+    fake.queueJSON({
+      operations: [
+        {
+          type: "concept",
+          name: "settlement-owner",
+          title: "结算系统负责人",
+          rawIds: [rawId],
+        },
+      ],
+      skippedRawIds: [],
+    });
+    fake.queueJSON({
+      title: "结算系统负责人",
+      summary: "Bob 负责结算系统",
+      aliases: [],
+      tags: [],
+      links: [],
+      content: "# 结算系统负责人\n\nBob 负责结算系统。",
+    });
+
+    const response = await app.request(
+      `/spaces/${encodeURIComponent(SPACE)}/raw/${encodeURIComponent(rawId)}/redistill`,
+      { method: "POST" },
+    );
+
+    expect([302, 303]).toContain(response.status);
+    expect(await engine.getPage(SPACE, "concepts/settlement-owner")).not.toBeNull();
+    expect((await engine.getSpaceGovernance(SPACE)).audit.at(-1)).toEqual(
+      expect.objectContaining({ action: "raw_redistilled", rawIds: [rawId] }),
+    );
+  });
+
+  test("regenerates a knowledge page from its detail screen", async () => {
+    const rawId = await engine.remember({
+      space: SPACE,
+      source: "message",
+      content: "值班负责人是 Alice。",
+    });
+    engine.registry.store(SPACE).index().markIngested([rawId]);
+    await engine.upsertPage(SPACE, {
+      ...page("concepts/oncall-owner", "值班负责人", "旧内容"),
+      sources: [rawId],
+    });
+
+    const detail = await app.request(
+      `/spaces/${encodeURIComponent(SPACE)}/pages/${encodeURIComponent("concepts/oncall-owner")}`,
+    );
+    const detailBody = await detail.text();
+    expect(detailBody).toContain("重新生成知识页");
+    expect(detailBody).toContain("提交人工纠错");
+    expect(detailBody).toContain(`/raw/${rawId}`);
+
+    fake.queueJSON({
+      title: "值班负责人",
+      summary: "Alice 负责值班",
+      aliases: [],
+      tags: [],
+      links: [],
+      content: "# 值班负责人\n\nAlice 负责值班。",
+    });
+    const response = await app.request(
+      `/spaces/${encodeURIComponent(SPACE)}/pages/regenerate`,
+      {
+        method: "POST",
+        body: new URLSearchParams({ slug: "concepts/oncall-owner" }),
+      },
+    );
+
+    expect([302, 303]).toContain(response.status);
+    expect((await engine.getPage(SPACE, "concepts/oncall-owner"))?.content).toContain(
+      "Alice 负责值班",
+    );
+  });
+
+  test("submits an auditable correction from the knowledge page", async () => {
+    const rawId = await engine.remember({
+      space: SPACE,
+      source: "message",
+      content: "支付负责人是 Alice。",
+    });
+    engine.registry.store(SPACE).index().markIngested([rawId]);
+    await engine.upsertPage(SPACE, {
+      ...page("concepts/payment-owner", "支付负责人", "Alice 负责支付。"),
+      sources: [rawId],
+    });
+    fake.queueJSON({
+      title: "支付负责人",
+      summary: "Bob 负责支付",
+      aliases: [],
+      tags: [],
+      links: [],
+      content: "# 支付负责人\n\nBob 负责支付。",
+    });
+
+    const response = await app.request(
+      `/spaces/${encodeURIComponent(SPACE)}/pages/correct`,
+      {
+        method: "POST",
+        body: new URLSearchParams({
+          slug: "concepts/payment-owner",
+          correction: "支付负责人已经改为 Bob。",
+        }),
+      },
+    );
+
+    expect([302, 303]).toContain(response.status);
+    expect((await engine.getPage(SPACE, "concepts/payment-owner"))?.content).toContain(
+      "Bob 负责支付",
+    );
+    expect(
+      engine.registry.store(SPACE).index().listRaw({}).some(
+        (raw) => raw.source === "manual" && raw.content.includes("已经改为 Bob"),
+      ),
+    ).toBe(true);
+    expect((await engine.getSpaceGovernance(SPACE)).audit.at(-1)?.action).toBe(
+      "correction_submitted",
+    );
+  });
+
+  test("deletes a knowledge page while preserving its raw source", async () => {
+    const rawId = await engine.remember({
+      space: SPACE,
+      source: "message",
+      content: "临时项目代号是 Atlas。",
+    });
+    await engine.upsertPage(SPACE, {
+      ...page("concepts/temporary-code", "临时代号", "Atlas"),
+      sources: [rawId],
+    });
+
+    const response = await app.request(
+      `/spaces/${encodeURIComponent(SPACE)}/pages/delete`,
+      {
+        method: "POST",
+        body: new URLSearchParams({ slug: "concepts/temporary-code" }),
+      },
+    );
+
+    expect([302, 303]).toContain(response.status);
+    expect(await engine.getPage(SPACE, "concepts/temporary-code")).toBeNull();
+    expect(engine.registry.store(SPACE).index().getRaw(rawId)).not.toBeNull();
+    expect((await engine.getSpaceGovernance(SPACE)).audit.at(-1)?.action).toBe(
+      "page_deleted",
+    );
+  });
+
   test("an imported space does not hide an unconfigured production connection", async () => {
     const unconfigured = createWebApp({
       engine,
@@ -816,7 +1031,7 @@ describe("management backend (read-write)", () => {
     const governanceBody = await governance.text();
     expect(governanceBody).toContain("数据治理");
     expect(governanceBody).toContain("原始消息保留");
-    expect(governanceBody).toContain("homeagent.space v1/v2/v3");
+    expect(governanceBody).toContain("homeagent.space v1/v2/v3/v4");
 
     const exported = await app.request(`/spaces/${encodeURIComponent(SPACE)}/export`);
     expect(exported.status).toBe(200);
@@ -825,8 +1040,9 @@ describe("management backend (read-write)", () => {
     expect(JSON.parse(archiveText)).toEqual(
       expect.objectContaining({
         format: "homeagent.space",
-        version: 3,
+        version: 4,
         learning: { plans: [], sources: [], sessions: [] },
+        governanceAudit: [],
       }),
     );
 

@@ -144,3 +144,23 @@ export function removeQuarantineRecord(store: SpaceStore, id: string): boolean {
   rmSync(path);
   return true;
 }
+
+export function removeQuarantineRecordsCoveredBy(
+  store: SpaceStore,
+  slug: string,
+  rawIds: Iterable<string>,
+): number {
+  const coveredRawIds = new Set(rawIds);
+  let removed = 0;
+  for (const record of listQuarantineRecords(store)) {
+    if (
+      record.slug === slug
+      && record.rawIds.length > 0
+      && record.rawIds.every((rawId) => coveredRawIds.has(rawId))
+      && removeQuarantineRecord(store, record.id)
+    ) {
+      removed += 1;
+    }
+  }
+  return removed;
+}

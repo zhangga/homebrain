@@ -20,13 +20,13 @@ import { spaceToDir } from "@homeagent/shared";
 import { SpaceIndex } from "./sqlite.ts";
 import { markdownToPage, pageToMarkdown } from "./markdown.ts";
 
-const DEFAULT_PURPOSE = `# 空间意图 (purpose)
+export const DEFAULT_PURPOSE = `# 空间意图 (purpose)
 
 这是一个 homeagent 知识空间。此文件描述本空间收集与提炼知识的目标。
 团队成员可编辑本文件，让 agent 更了解本空间关注什么。
 `;
 
-const DEFAULT_SCHEMA = `# 页类型规则 (schema)
+export const DEFAULT_SCHEMA = `# 页类型规则 (schema)
 
 - entity: 人、团队、项目、系统等实体
 - concept: 概念、术语、约定

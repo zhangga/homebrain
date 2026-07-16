@@ -29,6 +29,11 @@ describe("space data governance", () => {
       provider: "codex",
     });
     source.registry.updateMeta(SPACE, { name: "治理群", agentId: agent.id });
+    await source.updateSpaceRules(
+      SPACE,
+      { purpose: "# 治理目标\n\n保留可验证的团队事实。" },
+      "local-admin",
+    );
     const rawId = await source.remember({
       space: SPACE,
       source: "message",
@@ -99,7 +104,7 @@ describe("space data governance", () => {
     expect(archive).toEqual(
       expect.objectContaining({
         format: "homeagent.space",
-        version: 3,
+        version: 4,
         space: expect.objectContaining({ id: SPACE, name: "治理群", agentId: agent.id }),
         agent: expect.objectContaining({ id: agent.id, name: "治理助手" }),
         pages: [expect.objectContaining({ slug: page.slug, title: page.title })],
@@ -114,6 +119,13 @@ describe("space data governance", () => {
           sources: [expect.objectContaining({ title: "principles.md", rawIds: [rawId] })],
           sessions: [expect.objectContaining({ id: learningSession.id, status: "awaiting_reply" })],
         },
+        governanceAudit: [
+          expect.objectContaining({
+            action: "rules_updated",
+            actor: "local-admin",
+            target: "purpose",
+          }),
+        ],
       }),
     );
     source.close();
@@ -131,6 +143,7 @@ describe("space data governance", () => {
     expect(roundTrip.retractions).toEqual(archive.retractions);
     expect(roundTrip.reminders).toEqual(archive.reminders);
     expect(roundTrip.learning).toEqual(archive.learning);
+    expect(roundTrip.governanceAudit).toEqual(archive.governanceAudit);
     restored.close();
   });
 
@@ -152,11 +165,16 @@ describe("space data governance", () => {
     const archive = await engine.exportSpace(SPACE);
     engine.close();
 
-    const { learning: _learning, ...withoutLearning } = archive;
+    const {
+      learning: _learning,
+      governanceAudit: _governanceAudit,
+      ...withoutLearning
+    } = archive;
     const parsed = parseSpaceArchive({ ...withoutLearning, version: 1 });
 
-    expect(parsed.version).toBe(3);
+    expect(parsed.version).toBe(4);
     expect(parsed.learning).toEqual({ plans: [], sources: [], sessions: [] });
+    expect(parsed.governanceAudit).toEqual([]);
   });
 
   test("accepts version 2 reading archives and normalizes their learning fields", async () => {
@@ -175,6 +193,7 @@ describe("space data governance", () => {
     const archive = JSON.parse(JSON.stringify(await engine.exportSpace(SPACE))) as Record<string, any>;
     engine.close();
     archive.version = 2;
+    delete archive.governanceAudit;
     delete archive.learning.plans[0].mode;
     delete archive.learning.plans[0].topic;
     delete archive.learning.plans[0].route;
@@ -184,7 +203,7 @@ describe("space data governance", () => {
 
     const parsed = parseSpaceArchive(archive);
 
-    expect(parsed.version).toBe(3);
+    expect(parsed.version).toBe(4);
     expect(parsed.learning.plans[0]).toEqual(expect.objectContaining({
       id: plan.id,
       mode: "reading",
@@ -217,8 +236,9 @@ describe("space data governance", () => {
       messageId: "om_async",
     }, 101);
 
-    const archive = await source.exportSpace(SPACE);
-    expect(archive.version).toBe(3);
+    const archive = JSON.parse(JSON.stringify(await source.exportSpace(SPACE))) as Record<string, any>;
+    archive.version = 3;
+    delete archive.governanceAudit;
     source.close();
 
     const target = new KnowledgeEngine({ dataDir: tempDir("ha-v3-topic-target-") });
@@ -231,6 +251,7 @@ describe("space data governance", () => {
     expect(target.learning.source(plan.id)?.materials).toEqual([
       expect.objectContaining({ title: "Async Book", rawIds: ["raw_async"] }),
     ]);
+    expect((await target.exportSpace(SPACE)).version).toBe(4);
     target.close();
   });
 

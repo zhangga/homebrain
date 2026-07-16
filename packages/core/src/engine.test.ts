@@ -61,6 +61,14 @@ describe("Knowledge seam contract", () => {
     const k: Knowledge = engine;
     for (const method of [
       "remember",
+      "getSpaceGovernance",
+      "updateSpaceRules",
+      "resetSpaceRule",
+      "getRawGovernanceDetail",
+      "redistillRaw",
+      "deleteKnowledgePage",
+      "regenerateKnowledgePage",
+      "submitKnowledgeCorrection",
       "retractMessage",
       "runDreamCycle",
       "listQuarantines",

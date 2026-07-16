@@ -163,7 +163,7 @@ bun run packages/app/src/repl.ts       # 启动横幅列出全部命令
 
 左侧导航分十区：
 
-- **空间 / 知识**：空间列表、知识页、原始条目、问答测试、手动触发提炼，以及提炼失败记录的单条/批量恢复。
+- **空间 / 知识**：空间列表、知识页、原始条目、问答测试、手动触发提炼，以及提炼失败记录的单条/批量恢复。支持编辑 `purpose.md` / `schema.md`、查看完整原始记录及其关联知识页、单条重新提炼、固定目标重新生成、删除知识页和提交可追溯的人工纠错；所有人工治理操作都会写入审计记录。
 - **Agents**（中列列表 + 右侧编辑器）：新建 / 编辑 / 删除智能体，配置 **名称、Provider、Instruction（人格，会注入到回答）、Model、推理强度、Visibility**。
   - **Provider = 本机已安装的 agent CLI**（`claude` / `codex` / `trae-cli`）。**所有 LLM 工作（意图分类 + 问答 ask + 提炼 dream + 任务）都通过当前空间配置的本机 CLI 子进程执行，homeagent 不直连任何网络 API**。后台**探测本机** CLI，只让可用的可选（装了但跑不了的灰显并标注原因，如 WSL 下无 Linux node 的 codex）。
   - **Model 随 Provider 变化**：切 Provider 时 Model 下拉自动换成该 provider 的维护清单（CLI 无“列模型”接口）；Codex 当前提供 `gpt-5.6-sol / gpt-5.6-terra / gpt-5.6-luna / gpt-5.5 / gpt-5.4 / gpt-5.4-mini / gpt-5.3-codex-spark`。其中 `gpt-5.6-sol` 是 GPT-5.6 Sol 的完整模型 ID；HomeAgent 日常问答优先选择较快、成本更低的 `gpt-5.6-luna`，复杂研究可选择 `gpt-5.6-terra` 或 `gpt-5.6-sol`。
@@ -209,7 +209,7 @@ bun run packages/app/src/repl.ts       # 启动横幅列出全部命令
   `@ mentions only`，并直接发送测试消息验证发送通道。对外共享状态按 App ID 独立记录，更换机器人后不会沿用
   旧机器人的验证结果。
 - **运行状态**：集中展示后台托管方式、PID、启动时间、两条飞书事件消费者的详细状态、必需 CLI、知识存储、任务、提醒、学习、Dream Cycle 与四个调度器；LaunchAgent 托管时可从页面安全重启。
-- **数据治理**：按空间导出 `homeagent.space v3` JSON 完整备份（知识页、原始记录、撤回标记、任务、提醒、学习计划、主题路线、多来源材料及课程历史、空间元数据及关联 Agent），兼容恢复 v1/v2/v3 备份，或永久删除整个空间；可按保留周期立即清理已提炼的过期消息。
+- **数据治理**：按空间导出 `homeagent.space v4` JSON 完整备份（知识页、原始记录、人工治理审计、撤回标记、任务、提醒、学习计划、主题路线、多来源材料及课程历史、空间元数据及关联 Agent），兼容恢复 v1/v2/v3/v4 备份，或永久删除整个空间；可按保留周期立即清理已提炼的过期消息。
 - **设置**：**默认 Provider + 默认 Model**（群未指定 Agent 时用它）、每日预算、提炼时刻、原始消息保留周期、端口。
 
 后台默认只监听 `127.0.0.1`，无需登录。若通过 `HOMEAGENT_WEB_HOST` 开放到非回环地址，启动时会强制要求

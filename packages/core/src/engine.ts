@@ -65,11 +65,29 @@ import {
   nextLearningSegment,
   type LearningSegment,
 } from "./learning-content.ts";
-import { runDreamCycle as distillSpace } from "./dream.ts";
+import {
+  regeneratePageFromSources,
+  runDreamCycle as distillSpace,
+} from "./dream.ts";
 import { refreshDigest } from "./digest.ts";
 import { ask as askImpl } from "./ask.ts";
 import type { LlmClient } from "./llm.ts";
 import { makeCliClient, type RunProviderFn } from "./cli-client.ts";
+import { DEFAULT_PURPOSE, DEFAULT_SCHEMA } from "./space.ts";
+import {
+  appendKnowledgeGovernanceAudit,
+  assertGovernablePageSlug,
+  listKnowledgeGovernanceAudit,
+  normalizeGovernanceActor,
+  normalizeKnowledgeCorrection,
+  normalizeSpaceRule,
+  restoreKnowledgeGovernanceAudit,
+  type KnowledgeCorrectionResult,
+  type KnowledgeGovernanceSnapshot,
+  type KnowledgePageDeleteResult,
+  type KnowledgePageRegenerationResult,
+  type RawGovernanceDetail,
+} from "./knowledge-governance.ts";
 
 const log = logger.child("core");
 
@@ -476,6 +494,328 @@ export class KnowledgeEngine implements Knowledge {
   /** Ensure a space exists (used by connectors when a group is joined). */
   ensureSpace(space: SpaceId, opts: { chatId?: string } = {}): void {
     this.registry.ensure(space, opts);
+  }
+
+  async getSpaceGovernance(space: SpaceId): Promise<KnowledgeGovernanceSnapshot> {
+    if (!this.registry.has(space)) throw new Error(`unknown space: ${space}`);
+    const store = this.registry.store(space);
+    return {
+      purpose: store.purpose(),
+      schema: store.schema(),
+      audit: listKnowledgeGovernanceAudit(store),
+    };
+  }
+
+  async updateSpaceRules(
+    space: SpaceId,
+    input: { purpose?: string; schema?: string },
+    actor: string,
+  ): Promise<KnowledgeGovernanceSnapshot> {
+    if (!this.registry.has(space)) throw new Error(`unknown space: ${space}`);
+    const normalizedActor = normalizeGovernanceActor(actor);
+    const purpose = input.purpose === undefined
+      ? undefined
+      : normalizeSpaceRule(input.purpose, "purpose");
+    const schema = input.schema === undefined
+      ? undefined
+      : normalizeSpaceRule(input.schema, "schema");
+    const targets = [
+      purpose === undefined ? undefined : "purpose",
+      schema === undefined ? undefined : "schema",
+    ].filter((target): target is string => Boolean(target));
+    if (targets.length === 0) throw new Error("至少提供一项空间规则");
+
+    return this.serializer.run(space, async () => {
+      const store = this.registry.store(space);
+      const previousPurpose = store.purpose();
+      const previousSchema = store.schema();
+      try {
+        if (purpose !== undefined) store.setPurpose(purpose);
+        if (schema !== undefined) store.setSchema(schema);
+        appendKnowledgeGovernanceAudit(store, {
+          action: "rules_updated",
+          actor: normalizedActor,
+          target: targets.join(","),
+          summary: `更新空间规则：${targets.join("、")}`,
+        });
+      } catch (error) {
+        store.setPurpose(previousPurpose);
+        store.setSchema(previousSchema);
+        throw error;
+      }
+      return {
+        purpose: store.purpose(),
+        schema: store.schema(),
+        audit: listKnowledgeGovernanceAudit(store),
+      };
+    });
+  }
+
+  async resetSpaceRule(
+    space: SpaceId,
+    target: "purpose" | "schema",
+    actor: string,
+  ): Promise<KnowledgeGovernanceSnapshot> {
+    if (!this.registry.has(space)) throw new Error(`unknown space: ${space}`);
+    const normalizedActor = normalizeGovernanceActor(actor);
+    return this.serializer.run(space, async () => {
+      const store = this.registry.store(space);
+      const previous = target === "purpose" ? store.purpose() : store.schema();
+      try {
+        if (target === "purpose") store.setPurpose(DEFAULT_PURPOSE);
+        else store.setSchema(DEFAULT_SCHEMA);
+        appendKnowledgeGovernanceAudit(store, {
+          action: "rule_reset",
+          actor: normalizedActor,
+          target,
+          summary: `恢复默认空间规则：${target}`,
+        });
+      } catch (error) {
+        if (target === "purpose") store.setPurpose(previous);
+        else store.setSchema(previous);
+        throw error;
+      }
+      return {
+        purpose: store.purpose(),
+        schema: store.schema(),
+        audit: listKnowledgeGovernanceAudit(store),
+      };
+    });
+  }
+
+  async getRawGovernanceDetail(
+    space: SpaceId,
+    rawId: string,
+  ): Promise<RawGovernanceDetail | null> {
+    if (!this.registry.has(space)) return null;
+    const index = this.registry.store(space).index();
+    const raw = index.getRaw(rawId);
+    if (!raw) return null;
+    const pages = index
+      .allPages()
+      .filter((page) => page.sources.includes(rawId))
+      .map((page) => ({
+        slug: page.slug,
+        type: page.type,
+        title: page.title,
+        summary: page.summary,
+        aliases: [...page.aliases],
+        tags: [...page.tags],
+      }));
+    return { raw, pages };
+  }
+
+  async redistillRaw(
+    space: SpaceId,
+    rawId: string,
+    actor: string,
+    model?: string,
+  ): Promise<DreamReport> {
+    if (!this.registry.has(space)) throw new Error(`unknown space: ${space}`);
+    const normalizedActor = normalizeGovernanceActor(actor);
+    return this.serializer.run(space, async () => {
+      const store = this.registry.store(space);
+      if (!store.index().getRaw(rawId)) throw new Error(`unknown raw record: ${rawId}`);
+      try {
+        const report = await this.executeDreamCycle(space, {
+          rawIds: [rawId],
+          force: true,
+          model,
+        });
+        const pageSlugs = store.index()
+          .allPages()
+          .filter((page) => page.sources.includes(rawId))
+          .map((page) => page.slug)
+          .sort();
+        appendKnowledgeGovernanceAudit(store, {
+          action: "raw_redistilled",
+          actor: normalizedActor,
+          target: rawId,
+          status: report.errors.length === 0 ? "succeeded" : "failed",
+          summary: report.errors.length === 0
+            ? `重新提炼原始记录，写入 ${report.pagesWritten} 个知识页`
+            : `重新提炼原始记录失败：${report.errors.join("; ").slice(0, 800)}`,
+          rawIds: [rawId],
+          pageSlugs,
+        });
+        return report;
+      } catch (error) {
+        appendKnowledgeGovernanceAudit(store, {
+          action: "raw_redistilled",
+          actor: normalizedActor,
+          target: rawId,
+          status: "failed",
+          summary: `重新提炼原始记录失败：${String(error).slice(0, 800)}`,
+          rawIds: [rawId],
+        });
+        throw error;
+      }
+    });
+  }
+
+  async deleteKnowledgePage(
+    space: SpaceId,
+    slug: string,
+    actor: string,
+  ): Promise<KnowledgePageDeleteResult> {
+    if (!this.registry.has(space)) return { status: "not_found", slug, rawIds: [] };
+    const safeSlug = assertGovernablePageSlug(slug);
+    const normalizedActor = normalizeGovernanceActor(actor);
+    return this.serializer.run(space, async () => {
+      const store = this.registry.store(space);
+      const page = store.index().getPage(safeSlug);
+      if (!page) return { status: "not_found", slug: safeSlug, rawIds: [] };
+      store.deletePage(safeSlug);
+      try {
+        refreshDigest(store);
+        appendKnowledgeGovernanceAudit(store, {
+          action: "page_deleted",
+          actor: normalizedActor,
+          target: safeSlug,
+          summary: `删除知识页：${page.title}`,
+          rawIds: page.sources,
+          pageSlugs: [safeSlug],
+        });
+      } catch (error) {
+        store.writePage(page);
+        refreshDigest(store);
+        throw error;
+      }
+      return {
+        status: "deleted",
+        slug: safeSlug,
+        rawIds: [...page.sources],
+      };
+    });
+  }
+
+  async regenerateKnowledgePage(
+    space: SpaceId,
+    slug: string,
+    actor: string,
+    model?: string,
+  ): Promise<KnowledgePageRegenerationResult> {
+    if (!this.registry.has(space)) return { status: "not_found", slug, rawIds: [] };
+    const safeSlug = assertGovernablePageSlug(slug);
+    const normalizedActor = normalizeGovernanceActor(actor);
+    return this.serializer.run(space, async () => {
+      const store = this.registry.store(space);
+      const existing = store.index().getPage(safeSlug);
+      if (!existing) return { status: "not_found", slug: safeSlug, rawIds: [] };
+      try {
+        const page = await regeneratePageFromSources(
+          store,
+          safeSlug,
+          [],
+          { model },
+          { client: this.llmClientForSpace(space) },
+        );
+        appendKnowledgeGovernanceAudit(store, {
+          action: "page_regenerated",
+          actor: normalizedActor,
+          target: safeSlug,
+          summary: `重新生成知识页：${page.title}`,
+          rawIds: page.sources,
+          pageSlugs: [safeSlug],
+        });
+        return {
+          status: "regenerated",
+          slug: safeSlug,
+          rawIds: [...page.sources],
+          page,
+        };
+      } catch (error) {
+        appendKnowledgeGovernanceAudit(store, {
+          action: "page_regenerated",
+          actor: normalizedActor,
+          target: safeSlug,
+          status: "failed",
+          summary: `重新生成知识页失败：${String(error).slice(0, 800)}`,
+          rawIds: existing.sources,
+          pageSlugs: [safeSlug],
+        });
+        return {
+          status: "failed",
+          slug: safeSlug,
+          rawIds: [...existing.sources],
+          reason: String(error),
+        };
+      }
+    });
+  }
+
+  async submitKnowledgeCorrection(
+    space: SpaceId,
+    slug: string,
+    correction: string,
+    actor: string,
+    model?: string,
+  ): Promise<KnowledgeCorrectionResult> {
+    if (!this.registry.has(space)) return { status: "not_found", slug, rawIds: [] };
+    const safeSlug = assertGovernablePageSlug(slug);
+    const normalizedActor = normalizeGovernanceActor(actor);
+    const normalizedCorrection = normalizeKnowledgeCorrection(correction);
+    return this.serializer.run(space, async () => {
+      const store = this.registry.store(space);
+      const existing = store.index().getPage(safeSlug);
+      if (!existing) return { status: "not_found", slug: safeSlug, rawIds: [] };
+      const rawId = store.index().insertRaw({
+        space,
+        source: "manual",
+        author: normalizedActor,
+        content: [
+          "# 人工纠错",
+          "",
+          `目标知识页：${safeSlug}`,
+          "",
+          "## 修正说明",
+          normalizedCorrection,
+        ].join("\n"),
+      });
+      const allRawIds = [...new Set([...existing.sources, rawId])];
+      let page: Page;
+      try {
+        page = await regeneratePageFromSources(
+          store,
+          safeSlug,
+          [rawId],
+          { model, allowMissingExistingSources: true },
+          { client: this.llmClientForSpace(space) },
+        );
+      } catch (error) {
+        appendKnowledgeGovernanceAudit(store, {
+          action: "correction_submitted",
+          actor: normalizedActor,
+          target: safeSlug,
+          status: "failed",
+          summary: `提交人工纠错后重新生成失败：${String(error).slice(0, 800)}`,
+          rawIds: allRawIds,
+          pageSlugs: [safeSlug],
+        });
+        return {
+          status: "failed",
+          slug: safeSlug,
+          rawId,
+          rawIds: allRawIds,
+          reason: String(error),
+        };
+      }
+      appendKnowledgeGovernanceAudit(store, {
+        action: "correction_submitted",
+        actor: normalizedActor,
+        target: safeSlug,
+        summary: `提交人工纠错并重新生成知识页：${page.title}`,
+        rawIds: page.sources,
+        pageSlugs: [safeSlug],
+      });
+      return {
+        status: "regenerated",
+        slug: safeSlug,
+        rawId,
+        rawIds: [...page.sources],
+        page,
+      };
+    });
   }
 
   /** The Agent assigned to a space, if any (management backend). */
@@ -1050,6 +1390,7 @@ export class KnowledgeEngine implements Knowledge {
         tasks: this.tasks.list().filter((task) => task.space === space),
         reminders: this.reminders.list().filter((reminder) => reminder.space === space),
         learning: this.learning.exportBySpace(space),
+        governanceAudit: listKnowledgeGovernanceAudit(store),
       };
     });
   }
@@ -1097,6 +1438,7 @@ export class KnowledgeEngine implements Knowledge {
         this.reminders.restore(archive.reminders);
         this.learning.restore(archive.learning);
         learningRestored = archive.learning.plans.length > 0;
+        restoreKnowledgeGovernanceAudit(store, archive.governanceAudit);
         this.registry.restoreMeta({
           ...archive.space,
           agentId: archive.space.agentId,

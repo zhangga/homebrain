@@ -24,12 +24,17 @@ import type {
 } from "./learning.ts";
 import { MAX_LEARNING_SOURCE_CHARACTERS } from "./learning.ts";
 import type { SpaceMeta } from "./types.ts";
+import {
+  parseKnowledgeGovernanceAuditRecord,
+  type KnowledgeGovernanceAuditRecord,
+} from "./knowledge-governance.ts";
 
 export const SPACE_ARCHIVE_FORMAT = "homeagent.space" as const;
 export const LEGACY_SPACE_ARCHIVE_FORMAT = "homebrain.space" as const;
 export const LEGACY_SPACE_ARCHIVE_VERSION = 1 as const;
 export const LEARNING_SPACE_ARCHIVE_VERSION = 2 as const;
-export const SPACE_ARCHIVE_VERSION = 3 as const;
+export const ADAPTIVE_LEARNING_SPACE_ARCHIVE_VERSION = 3 as const;
+export const SPACE_ARCHIVE_VERSION = 4 as const;
 
 export interface MessageRetractionRecord {
   chatId: string;
@@ -61,11 +66,16 @@ export interface SpaceArchiveV2 extends Omit<SpaceArchiveV1, "version"> {
 }
 
 export interface SpaceArchiveV3 extends Omit<SpaceArchiveV2, "version"> {
+  version: typeof ADAPTIVE_LEARNING_SPACE_ARCHIVE_VERSION;
+}
+
+export interface SpaceArchiveV4 extends Omit<SpaceArchiveV3, "version"> {
   version: typeof SPACE_ARCHIVE_VERSION;
+  governanceAudit: KnowledgeGovernanceAuditRecord[];
 }
 
 /** Current normalized archive shape returned by export and parsing. */
-export type SpaceArchive = SpaceArchiveV3;
+export type SpaceArchive = SpaceArchiveV4;
 
 export interface SpaceDeleteResult {
   status: "deleted" | "not_found";
@@ -336,7 +346,7 @@ function parseLearningSource(value: unknown, index: number, version: number): Le
   const rawIds = strings(item.rawIds, `learning.sources[${index}].rawIds`);
   const messageId = nonemptyText(item.messageId, `learning.sources[${index}].messageId`);
   const createdAt = finiteNumber(item.createdAt, `learning.sources[${index}].createdAt`);
-  const materials = version < SPACE_ARCHIVE_VERSION
+  const materials = version < ADAPTIVE_LEARNING_SPACE_ARCHIVE_VERSION
     ? rawIds.length > 0
       ? [{ title, rawIds: [...rawIds], messageId, startOffset: 0, endOffset: content.length, createdAt }]
       : []
@@ -427,13 +437,13 @@ function parseLearningPlan(
   if (!["active", "paused", "completed"].includes(status)) {
     throw new Error(`learning.plans[${index}].status is invalid`);
   }
-  const mode = version < SPACE_ARCHIVE_VERSION
+  const mode = version < ADAPTIVE_LEARNING_SPACE_ARCHIVE_VERSION
     ? "reading" as const
     : text(item.mode, `learning.plans[${index}].mode`) as LearningPlan["mode"];
   if (!["reading", "topic"].includes(mode)) {
     throw new Error(`learning.plans[${index}].mode is invalid`);
   }
-  const route = version < SPACE_ARCHIVE_VERSION
+  const route = version < ADAPTIVE_LEARNING_SPACE_ARCHIVE_VERSION
     ? []
     : (() => {
         if (!Array.isArray(item.route)) {
@@ -470,7 +480,7 @@ function parseLearningPlan(
           };
         });
       })();
-  const routeIndex = version < SPACE_ARCHIVE_VERSION
+  const routeIndex = version < ADAPTIVE_LEARNING_SPACE_ARCHIVE_VERSION
     ? 0
     : finiteNumber(item.routeIndex, `learning.plans[${index}].routeIndex`);
   if (!Number.isInteger(routeIndex) || routeIndex < 0 || routeIndex > route.length) {
@@ -483,12 +493,12 @@ function parseLearningPlan(
     creatorId: nonemptyText(item.creatorId, `learning.plans[${index}].creatorId`),
     chatId: nonemptyText(item.chatId, `learning.plans[${index}].chatId`),
     mode,
-    topic: version < SPACE_ARCHIVE_VERSION
+    topic: version < ADAPTIVE_LEARNING_SPACE_ARCHIVE_VERSION
       ? undefined
       : optionalText(item.topic, `learning.plans[${index}].topic`),
     route,
     routeIndex,
-    adaptiveFocus: version < SPACE_ARCHIVE_VERSION
+    adaptiveFocus: version < ADAPTIVE_LEARNING_SPACE_ARCHIVE_VERSION
       ? undefined
       : optionalText(item.adaptiveFocus, `learning.plans[${index}].adaptiveFocus`),
     sourceId: nonemptyText(item.sourceId, `learning.plans[${index}].sourceId`),
@@ -530,7 +540,7 @@ function parseLearningSession(value: unknown, index: number, version: number): L
   if (!["prepared", "awaiting_reply", "completed", "skipped"].includes(status)) {
     throw new Error(`learning.sessions[${index}].status is invalid`);
   }
-  const mastery = version < SPACE_ARCHIVE_VERSION || item.mastery === undefined
+  const mastery = version < ADAPTIVE_LEARNING_SPACE_ARCHIVE_VERSION || item.mastery === undefined
     ? undefined
     : text(item.mastery, `learning.sessions[${index}].mastery`) as LearningSession["mastery"];
   if (mastery !== undefined && !["review", "ready"].includes(mastery)) {
@@ -548,11 +558,11 @@ function parseLearningSession(value: unknown, index: number, version: number): L
     status,
     learnerReply: optionalText(item.learnerReply, `learning.sessions[${index}].learnerReply`),
     feedback: optionalText(item.feedback, `learning.sessions[${index}].feedback`),
-    routeStepId: version < SPACE_ARCHIVE_VERSION
+    routeStepId: version < ADAPTIVE_LEARNING_SPACE_ARCHIVE_VERSION
       ? undefined
       : optionalText(item.routeStepId, `learning.sessions[${index}].routeStepId`),
     mastery,
-    nextFocus: version < SPACE_ARCHIVE_VERSION
+    nextFocus: version < ADAPTIVE_LEARNING_SPACE_ARCHIVE_VERSION
       ? undefined
       : optionalText(item.nextFocus, `learning.sessions[${index}].nextFocus`),
     preparedAt: finiteNumber(item.preparedAt, `learning.sessions[${index}].preparedAt`),
@@ -634,6 +644,7 @@ export function parseSpaceArchive(value: unknown): SpaceArchive {
     || (
       version !== LEGACY_SPACE_ARCHIVE_VERSION
       && version !== LEARNING_SPACE_ARCHIVE_VERSION
+      && version !== ADAPTIVE_LEARNING_SPACE_ARCHIVE_VERSION
       && version !== SPACE_ARCHIVE_VERSION
     )
   ) {
@@ -658,6 +669,10 @@ export function parseSpaceArchive(value: unknown): SpaceArchive {
     || !Array.isArray(root.retractions)
     || !Array.isArray(root.tasks)
     || (root.reminders !== undefined && !Array.isArray(root.reminders))
+    || (
+      version === SPACE_ARCHIVE_VERSION
+      && !Array.isArray(root.governanceAudit)
+    )
   ) {
     throw new Error("archive collections must be arrays");
   }
@@ -687,6 +702,12 @@ export function parseSpaceArchive(value: unknown): SpaceArchive {
   assertUnique(tasks, (task) => task.id, "task id");
   assertUnique(reminders, (reminder) => reminder.id, "reminder id");
   const learning = parseLearningArchive(root.learning, version, id);
+  const governanceAudit = version < SPACE_ARCHIVE_VERSION
+    ? []
+    : (root.governanceAudit as unknown[]).map((item, index) =>
+        parseKnowledgeGovernanceAuditRecord(item, index + 1, id)
+      );
+  assertUnique(governanceAudit, (record) => record.id, "governance audit id");
   return {
     format: SPACE_ARCHIVE_FORMAT,
     version: SPACE_ARCHIVE_VERSION,
@@ -701,5 +722,6 @@ export function parseSpaceArchive(value: unknown): SpaceArchive {
     tasks,
     reminders,
     learning,
+    governanceAudit,
   };
 }

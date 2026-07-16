@@ -24,10 +24,55 @@ import type {
   RetractionResult,
   SearchOptions,
 } from "./types.ts";
+import type {
+  KnowledgeCorrectionResult,
+  KnowledgeGovernanceSnapshot,
+  KnowledgePageDeleteResult,
+  KnowledgePageRegenerationResult,
+  RawGovernanceDetail,
+} from "./knowledge-governance.ts";
 
 export interface Knowledge {
   /** Cheap capture — persists a raw entry, no LLM call. */
   remember(entry: RawEntry): Promise<string>;
+
+  /** Read and edit the human-maintained rules and governance history for a space. */
+  getSpaceGovernance(space: SpaceId): Promise<KnowledgeGovernanceSnapshot>;
+  updateSpaceRules(
+    space: SpaceId,
+    input: { purpose?: string; schema?: string },
+    actor: string,
+  ): Promise<KnowledgeGovernanceSnapshot>;
+  resetSpaceRule(
+    space: SpaceId,
+    target: "purpose" | "schema",
+    actor: string,
+  ): Promise<KnowledgeGovernanceSnapshot>;
+  getRawGovernanceDetail(space: SpaceId, rawId: string): Promise<RawGovernanceDetail | null>;
+  redistillRaw(
+    space: SpaceId,
+    rawId: string,
+    actor: string,
+    model?: string,
+  ): Promise<DreamReport>;
+  deleteKnowledgePage(
+    space: SpaceId,
+    slug: string,
+    actor: string,
+  ): Promise<KnowledgePageDeleteResult>;
+  regenerateKnowledgePage(
+    space: SpaceId,
+    slug: string,
+    actor: string,
+    model?: string,
+  ): Promise<KnowledgePageRegenerationResult>;
+  submitKnowledgeCorrection(
+    space: SpaceId,
+    slug: string,
+    correction: string,
+    actor: string,
+    model?: string,
+  ): Promise<KnowledgeCorrectionResult>;
 
   /** Remove one captured message, enforcing source ownership. */
   retractMessage(space: SpaceId, request: RetractionRequest): Promise<RetractionResult>;

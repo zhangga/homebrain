@@ -26,7 +26,10 @@ import type { DreamOptions } from "./types.ts";
 import { gatewayClient, type LlmClient } from "./llm.ts";
 import { canonicalSlug } from "./slug.ts";
 import { refreshDigest } from "./digest.ts";
-import { writeQuarantineRecord } from "./quarantine.ts";
+import {
+  removeQuarantineRecordsCoveredBy,
+  writeQuarantineRecord,
+} from "./quarantine.ts";
 
 const log = logger.child("dream");
 
@@ -207,7 +210,9 @@ function generatePrompt(
   existing: Page | null,
   sources: RawRecord[],
 ): string {
-  const src = sources.map((r) => `<source id="${r.id}">\n${r.content}\n</source>`).join("\n\n");
+  const src = sources
+    .map((r) => `<source id="${r.id}" type="${r.source}">\n${r.content}\n</source>`)
+    .join("\n\n");
   const parts = [
     `请为知识页「${op.title}」(slug: ${slug}, 类型: ${op.type}) 生成完整内容。`,
     "",
@@ -219,6 +224,13 @@ function generatePrompt(
     parts.push(
       "## 该页现有内容（请在此基础上合并更新，不要丢失既有信息）",
       existing.content.trim(),
+      "",
+    );
+  }
+  if (sources.some((source) => source.source === "manual")) {
+    parts.push(
+      "## 人工纠错规则",
+      "标记为 type=\"manual\" 的来源是管理员明确提交的纠错，若与旧内容或更早来源冲突，以人工纠错为准，并移除被纠正的错误说法。",
       "",
     );
   }
@@ -284,6 +296,74 @@ function quarantine(store: SpaceStore, slug: string, err: unknown, sources: RawR
     createdAt: Date.now(),
   });
   log.warn("quarantined bad page", { space: store.space, slug, err: String(err) });
+}
+
+export async function regeneratePageFromSources(
+  store: SpaceStore,
+  slug: string,
+  extraRawIds: string[] = [],
+  opts: { model?: string; allowMissingExistingSources?: boolean } = {},
+  deps: DreamDeps = {},
+): Promise<Page> {
+  const existing = store.index().getPage(slug);
+  if (!existing) throw new Error(`unknown knowledge page: ${slug}`);
+  if (!["entity", "concept", "source", "analysis"].includes(existing.type)) {
+    throw new Error(`knowledge page cannot be regenerated manually: ${slug}`);
+  }
+  const rawIds = [...new Set([...existing.sources, ...extraRawIds])];
+  if (rawIds.length === 0) throw new Error("知识页没有可用于重新生成的原始来源");
+  const sources = store.index().listRawByIds(rawIds, { onlyPending: false });
+  const availableRawIds = new Set(sources.map((source) => source.id));
+  if (extraRawIds.some((rawId) => !availableRawIds.has(rawId))) {
+    throw new Error("新增的人工来源不存在，无法安全重新生成");
+  }
+  if (
+    !opts.allowMissingExistingSources
+    && existing.sources.some((rawId) => !availableRawIds.has(rawId))
+  ) {
+    throw new Error("知识页的部分原始来源已不存在，无法安全重新生成");
+  }
+  if (sources.length === 0) throw new Error("知识页没有仍可读取的原始来源");
+  const op: PlannedOp = {
+    type: existing.type as PlannedOp["type"],
+    name: slug.split("/").at(-1) ?? slug,
+    title: existing.title,
+    rawIds,
+  };
+  const client = deps.client ?? gatewayClient;
+  const model = opts.model ?? config().model;
+  try {
+    const generated = await generate(client, store, op, slug, existing, sources, model);
+    const page: Page = {
+      slug,
+      type: op.type,
+      title: generated.title,
+      summary: generated.summary,
+      aliases: generated.aliases,
+      tags: generated.tags,
+      sources: rawIds,
+      links: generated.links,
+      content: `${generated.content.trimEnd()}\n`,
+      updatedAt: Date.now(),
+      contentHash: sourceHash(sources, existing),
+    };
+    store.writePage(page);
+    try {
+      refreshDigest(store);
+    } catch (error) {
+      store.writePage(existing);
+      refreshDigest(store);
+      throw error;
+    }
+    store.index().markIngested([...availableRawIds]);
+    removeQuarantineRecordsCoveredBy(store, slug, availableRawIds);
+    return page;
+  } catch (error) {
+    removeQuarantineRecordsCoveredBy(store, slug, availableRawIds);
+    quarantine(store, slug, error, sources);
+    store.index().markIngested([...availableRawIds]);
+    throw error;
+  }
 }
 
 function appendLog(store: SpaceStore, report: DreamReport): void {
