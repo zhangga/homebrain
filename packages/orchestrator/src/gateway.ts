@@ -1,18 +1,19 @@
 /**
- * Reply gateway (plan Q2). Decides whether an inbound message warrants a
- * response or should be silently captured. The rule:
+ * Reply gateway (plan Q2). Applies the static reply rules before the
+ * orchestrator optionally asks the group-participation classifier:
  *
  *   - p2p (private chat): always respond.
  *   - group + @bot mention: respond.
- *   - group without mention: DO NOT respond — but still remember() the content.
+ *   - group without mention in the default mode: capture; the runtime may
+ *     promote a genuine open question into a proactive response.
  *
  * "收录 != 应答" (capturing is not answering): every group message is captured
- * as knowledge; only addressed ones get a reply. This keeps the always-on bot
- * quiet in group chatter while still learning from it.
+ * as knowledge. The model-backed participation decision keeps ordinary chatter
+ * quiet while allowing useful answers to open group questions.
  *
- * The group rule is configurable per space (management backend, mew's "@
- * mentions only" toggle): when `mentionsOnly` is false, the bot responds to
- * every group message, not just @-mentions. Defaults to true.
+ * The legacy `mentionsOnly` setting remains persisted for compatibility:
+ * `true` now means smart participation, while `false` responds to every group
+ * message. Defaults to smart participation.
  */
 import type { InboundMessage } from "@homeagent/connectors";
 
@@ -25,7 +26,7 @@ export interface GatewayDecision {
 }
 
 export interface GateOptions {
-  /** group: only respond when @-mentioned (default true). No effect on p2p. */
+  /** group: smart participation when true; respond to every message when false. */
   mentionsOnly?: boolean;
 }
 

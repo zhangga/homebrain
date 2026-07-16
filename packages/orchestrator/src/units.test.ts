@@ -2,9 +2,10 @@ import { describe, expect, test } from "bun:test";
 import type { InboundMessage } from "@homeagent/connectors";
 import { attribute } from "./attribution.ts";
 import { gate } from "./gateway.ts";
-import { prefilterChitchat } from "./intent.ts";
+import { classifyIntent, prefilterChitchat, prefilterQuestion } from "./intent.ts";
 import { formatAnswer } from "./format.ts";
 import type { AskResult } from "@homeagent/shared";
+import type { LlmClient } from "@homeagent/core";
 
 function msg(over: Partial<InboundMessage>): InboundMessage {
   return {
@@ -76,6 +77,67 @@ describe("chitchat prefilter", () => {
   test("substantive messages are not prefiltered", () => {
     expect(prefilterChitchat("谁负责后端服务？")).toBe(false);
     expect(prefilterChitchat("记住：发布流程是先灰度再全量")).toBe(false);
+  });
+});
+
+describe("intent classification", () => {
+  test("recognizes stable question forms without treating nearby statements as questions", () => {
+    for (const text of [
+      "谁负责后端",
+      "小贝儿是谁",
+      "张洺汐在哪里",
+      "这个词什么意思",
+      "怎么处理",
+      "有没有安排",
+      "你记得小贝儿吗",
+      "What is HomeAgent",
+    ]) {
+      expect(prefilterQuestion(text)).toBe(true);
+    }
+    for (const text of [
+      "小贝儿就是说的张洺汐",
+      "记录谁负责后端很重要",
+      "几何学是数学的一个分支",
+      "重新提炼本空间知识",
+      "在么",
+    ]) {
+      expect(prefilterQuestion(text)).toBe(false);
+    }
+  });
+
+  test("recognizes a mentioned Chinese question without punctuation before resolving a model", async () => {
+    let resolved = false;
+    const result = await classifyIntent(() => {
+      resolved = true;
+      throw new Error("the obvious question should not need a model");
+    }, "@agent 小贝儿是谁");
+
+    expect(result).toEqual({ intent: "question", prefiltered: true });
+    expect(resolved).toBe(false);
+  });
+
+  test("removes a leading mention before model classification", async () => {
+    let prompt = "";
+    const client = {
+      async completeJSON(opts) {
+        prompt = String(opts.prompt);
+        return {
+          value: { intent: "remember" },
+          result: {
+            text: "",
+            model: "test",
+            inputTokens: 0,
+            outputTokens: 0,
+            costUsd: 0,
+          },
+        };
+      },
+    } as LlmClient;
+
+    await classifyIntent(() => client, "@agent 发布流程先灰度再全量");
+
+    expect(prompt).toContain("发布流程先灰度再全量");
+    expect(prompt).not.toContain("@agent");
   });
 });
 

@@ -1289,6 +1289,8 @@ describe("management backend (read-write)", () => {
     expect(listing).toContain('action="/integrations/groups/team%2Foc_web"');
     expect(listing).toContain("群助手");
     expect(listing).not.toContain("仅个人可见助手");
+    expect(listing).toContain("智能应答未 @ 提问");
+    expect(listing).toContain("模型判断为向群提问");
     expect(listing).toContain("敏感权限已在创建时申请");
     expect(listing).toContain("若企业尚未批准");
 

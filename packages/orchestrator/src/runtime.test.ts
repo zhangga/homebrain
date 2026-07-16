@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { JSONOptions } from "@homeagent/llm";
 import { resetConfig, saveSettings, type SpaceId } from "@homeagent/shared";
-import { KnowledgeEngine, FakeLlm, type AgentInput } from "@homeagent/core";
+import { KnowledgeEngine, FakeLlm, type AgentInput, type LlmClient } from "@homeagent/core";
 import { CliConnector, type Connector } from "@homeagent/connectors";
 import { Orchestrator } from "./runtime.ts";
 
@@ -35,6 +35,13 @@ function makeFake(): FakeLlm {
       if (/[?？]/.test(prompt)) return { intent: "question" };
       if (/记住|记下/.test(prompt)) return { intent: "remember" };
       return { intent: "chitchat" };
+    }
+    if ("respond" in props) {
+      const prompt = String(call.prompt ?? "");
+      return {
+        respond: /谁负责后端服务/.test(prompt) && !/@Alice/.test(prompt),
+        reason: "测试中的群聊参与判断",
+      };
     }
     if ("triggerAt" in props) {
       const prompt = String(call.prompt ?? "");
@@ -148,6 +155,119 @@ describe("orchestrator trunk (cli connector, no feishu)", () => {
     // captured into team space
     const pending = engine.registry.store("team/oc_team").index().countRaw(true);
     expect(pending).toBe(1);
+    expect(fake.calls.some((call) =>
+      call.kind === "json"
+      && String(call.opts.prompt).includes("群消息是否值得机器人主动回答")
+    )).toBe(true);
+  });
+
+  test("an unmentioned group message is captured before participation classification finishes", async () => {
+    let markClassificationStarted!: () => void;
+    let releaseClassification!: () => void;
+    const classificationStarted = new Promise<void>((resolve) => {
+      markClassificationStarted = resolve;
+    });
+    const classificationGate = new Promise<void>((resolve) => {
+      releaseClassification = resolve;
+    });
+    const slowClassifier = {
+      async complete() {
+        throw new Error("unexpected text completion");
+      },
+      async completeJSON(opts: JSONOptions<unknown>) {
+        markClassificationStarted();
+        await classificationGate;
+        const raw = { respond: false, reason: "普通陈述" };
+        return {
+          value: opts.validate ? opts.validate(raw) : raw,
+          result: {
+            text: "",
+            model: "test",
+            inputTokens: 0,
+            outputTokens: 0,
+            costUsd: 0,
+          },
+        };
+      },
+    } as LlmClient;
+    orch = new Orchestrator({ engine, connector, llm: slowClassifier });
+
+    await orch.start();
+    const sending = connector.sendGroup("Alice 今天更新了后端服务。", false);
+    await classificationStarted;
+    const capturedBeforeDecision = engine.registry.has("team/oc_team")
+      ? engine.registry.store("team/oc_team").index().countRaw(true)
+      : 0;
+    releaseClassification();
+    await sending;
+
+    expect(capturedBeforeDecision).toBe(1);
+    expect(connector.sent).toHaveLength(0);
+  });
+
+  test("an unmentioned group question is proactively answered and still captured", async () => {
+    await engine.upsertPage("team/oc_team", {
+      slug: "entities/alice",
+      type: "entity",
+      title: "Alice",
+      summary: "后端负责人",
+      aliases: [],
+      tags: [],
+      sources: [],
+      links: [],
+      content: "# Alice\nAlice 负责后端服务。\n",
+      updatedAt: Date.now(),
+      contentHash: "h",
+    });
+
+    await orch.start();
+    await connector.sendGroup("谁负责后端服务", false);
+
+    expect(connector.sent).toHaveLength(1);
+    expect(connector.sent[0]!.markdown).toContain("Alice");
+    expect(engine.registry.store("team/oc_team").index().countRaw(true)).toBe(1);
+  });
+
+  test("a question addressed to another group member stays silent even if the model says respond", async () => {
+    let asked = 0;
+    engine.ask = async () => {
+      asked += 1;
+      return { answer: "不应发送", source: "general", citations: [] };
+    };
+    const overEager = new FakeLlm().onJSON(() => ({
+      respond: true,
+      reason: "错误地认为应该参与",
+    }));
+    orch = new Orchestrator({ engine, connector, llm: overEager });
+
+    await orch.start();
+    await connector.sendGroup("@Alice 谁负责后端服务？", false);
+
+    expect(asked).toBe(0);
+    expect(connector.sent).toHaveLength(0);
+    expect(engine.registry.store("team/oc_team").index().countRaw(true)).toBe(1);
+  });
+
+  test("an obvious unmentioned question is answered when participation classification fails", async () => {
+    let asked = 0;
+    engine.ask = async () => {
+      asked += 1;
+      return {
+        answer: "小贝儿是张洺汐。",
+        source: "knowledge",
+        citations: [{ slug: "entities/zhang-ming-xi", title: "张洺汐" }],
+      };
+    };
+    const unavailable = new FakeLlm().onJSON(() => {
+      throw new Error("participation model unavailable");
+    });
+    orch = new Orchestrator({ engine, connector, llm: unavailable });
+
+    await orch.start();
+    await connector.sendGroup("小贝儿是谁", false);
+
+    expect(asked).toBe(1);
+    expect(connector.sent[0]!.markdown).toContain("小贝儿是张洺汐");
   });
 
   test("@-mentioned group question answers from knowledge with citations", async () => {
@@ -171,6 +291,36 @@ describe("orchestrator trunk (cli connector, no feishu)", () => {
     expect(connector.sent[0]!.markdown).toContain("Alice");
     expect(connector.sent[0]!.markdown).toContain("依据");
     expect(connector.sent[0]!.inThread).toBe(true);
+  });
+
+  test("a mentioned Chinese question without punctuation reaches ask when classification fails", async () => {
+    let asked = 0;
+    engine.ask = async (spaces, question) => {
+      asked += 1;
+      expect(spaces).toEqual(["team/oc_team", "personal/ou_me"]);
+      expect(question).toBe("@agent 小贝儿是谁");
+      return {
+        answer: "小贝儿是张洺汐。",
+        source: "knowledge",
+        citations: [{ slug: "entities/zhang-ming-xi", title: "张洺汐" }],
+      };
+    };
+    const failingClassifier = {
+      async complete() {
+        throw new Error("simulated classifier failure");
+      },
+      async completeJSON() {
+        throw new Error("simulated classifier failure");
+      },
+    } as LlmClient;
+    orch = new Orchestrator({ engine, connector, llm: failingClassifier });
+
+    await orch.start();
+    await connector.sendGroup("@agent 小贝儿是谁", true);
+
+    expect(asked).toBe(1);
+    expect(connector.sent[0]!.markdown).toContain("小贝儿是张洺汐");
+    expect(connector.sent[0]!.markdown).not.toContain("记下");
   });
 
   test("p2p message always gets a reply and is captured to personal space", async () => {
@@ -1006,9 +1156,34 @@ describe("orchestrator trunk (cli connector, no feishu)", () => {
     expect(connector.sent[0]!.markdown).toContain("Alice");
   });
 
-  test("CLI-only runtime classifies a question without punctuation through the space agent", async () => {
-    // No injected orchestrator llm: classification, routing, and synthesis must
-    // all use the space's CLI-backed client. This is the production topology.
+  test("CLI-only runtime bounds the proactive participation decision", async () => {
+    let participationTimeout: number | undefined;
+    const cliEngine = new KnowledgeEngine({
+      dataDir: dir,
+      runProvider: async (_id, input, timeoutMs) => {
+        if (/群消息是否值得机器人主动回答/.test(input.prompt)) {
+          participationTimeout = timeoutMs;
+          return JSON.stringify({ respond: false, reason: "普通陈述" });
+        }
+        throw new Error("unexpected provider call");
+      },
+    });
+    const { connector: cliConnector, orchestrator: cliOrch } = makeCliOnlyRuntime(
+      cliEngine,
+      "team/oc_team",
+      { name: "群助手", provider: "codex" },
+    );
+
+    await cliOrch.start();
+    await cliConnector.sendGroup("Alice 今天更新了后端服务。", false);
+
+    expect(participationTimeout).toBe(30_000);
+    expect(cliConnector.sent).toHaveLength(0);
+  });
+
+  test("CLI-only runtime prefilters an obvious question and uses the space agent for answering", async () => {
+    // No injected orchestrator llm: routing and synthesis use the space's
+    // CLI-backed client, while the stable question form skips classification.
     let sawInstruction = false;
     let sawCliClassification = false;
     const cliEngine = new KnowledgeEngine({
@@ -1064,7 +1239,7 @@ describe("orchestrator trunk (cli connector, no feishu)", () => {
     await cliOrch.start();
     await cliConnector.sendGroup("谁负责后端服务", true);
     expect(cliConnector.sent[0]!.markdown).toContain("Alice");
-    expect(sawCliClassification).toBe(true);
+    expect(sawCliClassification).toBe(false);
     expect(sawInstruction).toBe(true);
   });
 
@@ -1137,12 +1312,9 @@ describe("orchestrator trunk (cli connector, no feishu)", () => {
   });
 
   test("CLI-only runtime distinguishes a provider timeout from missing configuration", async () => {
-    let calls = 0;
     const cliEngine = new KnowledgeEngine({
       dataDir: dir,
       runProvider: async () => {
-        calls += 1;
-        if (calls === 1) return JSON.stringify({ intent: "question" });
         throw new Error("provider codex timed out after 120000ms");
       },
     });

@@ -1267,7 +1267,7 @@ export function integrationsView(
         const enc = encodeURIComponent(g.id);
         const assigned = agentName(g.agentId) ?? "默认";
         const replyMode = (g.replyInThread ?? true) ? "Topic reply" : "普通回复";
-        const mentionMode = (g.mentionsOnly ?? true) ? "@ mentions only" : "响应全部消息";
+        const mentionMode = (g.mentionsOnly ?? true) ? "智能应答" : "响应全部消息";
         const agentOpts = [
           html`<option value="" ${!g.agentId ? "selected" : ""}>默认（全局）</option>`,
           ...teamAgents.map(
@@ -1298,7 +1298,7 @@ export function integrationsView(
               <label class="switch"><input type="checkbox" name="replyInThread" ${(g.replyInThread ?? true) ? "checked" : ""} /><span class="slider"></span></label>
             </div>
             <div class="toggle-row">
-              <div><strong>@ mentions only</strong><div class="hint">推荐开启；敏感权限已在创建时申请。若企业尚未批准，关闭后可能无法收到全部消息。</div></div>
+              <div><strong>智能应答未 @ 提问</strong><div class="hint">开启时，被 @ 或模型判断为向群提问才回答；关闭后每条群消息都回答。敏感权限已在创建时申请，若企业尚未批准，则只能收到 @ 消息。</div></div>
               <label class="switch"><input type="checkbox" name="mentionsOnly" ${(g.mentionsOnly ?? true) ? "checked" : ""} /><span class="slider"></span></label>
             </div>
             <div class="actions">

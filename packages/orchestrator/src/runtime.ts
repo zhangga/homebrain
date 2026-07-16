@@ -3,10 +3,11 @@
  * connector events into knowledge operations and replies. Flow per message:
  *
  *   1. Dedup by eventId (feishu can redeliver).
- *   2. Reply gateway (Q2): decide respond vs. capture-only.
- *   3. Attribution (Q4/Q5): pick write space + read spaces.
+ *   2. Attribution (Q4/Q5): pick write space + read spaces.
+ *   3. Reply gateway (Q2): apply static rules, then use an LLM to decide
+ *      whether an unmentioned open group question deserves a proactive answer.
  *   4. Always capture the content (remember) — even unaddressed group messages.
- *   5. If responding: classify intent (LLM, not regex) and dispatch:
+ *   5. If responding: classify intent with deterministic prefilters + LLM and dispatch:
  *        question  -> engine.ask over the read spaces, reply with formatting
  *        command   -> handle simple built-ins ("别记这条" / "重新提炼")
  *        remember  -> acknowledge capture
@@ -30,6 +31,7 @@ import type {
 import { extractAttachmentText } from "./attachment-extractor.ts";
 import { attribute } from "./attribution.ts";
 import { gate } from "./gateway.ts";
+import { decideGroupParticipation } from "./group-participation.ts";
 import { classifyIntent, type Intent } from "./intent.ts";
 import { formatAnswer } from "./format.ts";
 import { GROUP_ADDED_NOTICE, coldStartNote, providerNotice } from "./messages.ts";
@@ -55,6 +57,7 @@ import { inferReminderRequest } from "./reminder-inference.ts";
 const log = logger.child("orchestrator");
 const RETRACTION_COMMANDS = new Set(["别记这条", "撤回这条", "删掉这条", "不要记这条"]);
 const REMINDER_CONFIRMATION_TTL_MS = 15 * 60_000;
+const GROUP_PARTICIPATION_TIMEOUT_MS = 30_000;
 
 interface PendingReminderConfirmation {
   draft: ReminderDraft;
@@ -260,7 +263,8 @@ export class Orchestrator {
       return this.withThinking(msg, () => this.send(msg, pendingReminderReply));
     }
 
-    const decision = gate(msg, { mentionsOnly: meta?.mentionsOnly });
+    let decision = gate(msg, { mentionsOnly: meta?.mentionsOnly });
+    let proactiveQuestion = false;
 
     // Retraction is a deterministic control command. Handle it before capture
     // so the command itself never becomes knowledge.
@@ -271,6 +275,59 @@ export class Orchestrator {
     }
     if (decision.respond && retractionCommand) {
       return this.withThinking(msg, () => this.handleRetraction(msg, writeSpace));
+    }
+
+    let inputsCaptured = false;
+    const captureInputs = async (): Promise<void> => {
+      if (inputsCaptured) return;
+      inputsCaptured = true;
+
+      // Always capture (收录 != 应答).
+      if (decision.capture && msg.text.trim() !== "") {
+        await this.engine.remember({
+          space: writeSpace,
+          source: "message",
+          author: msg.senderId,
+          chatId: msg.chatId,
+          messageId: msg.messageId,
+          content: msg.text,
+        });
+      }
+
+      if (
+        decision.capture
+        && msg.messageType
+        && ["image", "file", "audio", "media"].includes(msg.messageType)
+        && this.attachmentDownloader
+      ) {
+        await this.syncAttachments(msg, writeSpace);
+      }
+
+      // Doc sync (Q8): pull any docx/wiki links referenced in the message.
+      if (this.docFetcher && msg.docLinks && msg.docLinks.length > 0) {
+        await this.syncDocs(msg, writeSpace);
+      }
+    };
+
+    if (!decision.respond && msg.chatType === "group" && !msg.mentionsBot) {
+      // Persist first: a slow classifier must not put the message's durable
+      // capture behind an external model call.
+      await captureInputs();
+      const participation = await decideGroupParticipation(
+        () => this.llm ?? this.engine.llmClientForSpace(
+          writeSpace,
+          GROUP_PARTICIPATION_TIMEOUT_MS,
+        ),
+        msg.text,
+      );
+      if (participation.respond) {
+        proactiveQuestion = true;
+        decision = {
+          ...decision,
+          respond: true,
+          reason: `proactive group answer (${participation.source}): ${participation.reason}`,
+        };
+      }
     }
 
     // Answers use an explicit prefix so an ordinary conversation cannot
@@ -347,34 +404,6 @@ export class Orchestrator {
       }
     }
 
-    const captureInputs = async (): Promise<void> => {
-      // Always capture (收录 != 应答).
-      if (decision.capture && msg.text.trim() !== "") {
-        await this.engine.remember({
-          space: writeSpace,
-          source: "message",
-          author: msg.senderId,
-          chatId: msg.chatId,
-          messageId: msg.messageId,
-          content: msg.text,
-        });
-      }
-
-      if (
-        decision.capture
-        && msg.messageType
-        && ["image", "file", "audio", "media"].includes(msg.messageType)
-        && this.attachmentDownloader
-      ) {
-        await this.syncAttachments(msg, writeSpace);
-      }
-
-      // Doc sync (Q8): pull any docx/wiki links referenced in the message.
-      if (this.docFetcher && msg.docLinks && msg.docLinks.length > 0) {
-        await this.syncDocs(msg, writeSpace);
-      }
-    };
-
     if (!decision.respond) {
       await captureInputs();
       log.debug("captured without responding", { space: writeSpace, reason: decision.reason });
@@ -384,18 +413,22 @@ export class Orchestrator {
     return this.withThinking(msg, async () => {
       await captureInputs();
       let intent: Intent;
-      try {
-        ({ intent } = await classifyIntent(
-          () => this.llm ?? this.engine.llmClientForSpace(writeSpace),
-          msg.text,
-        ));
-      } catch (err) {
-        log.warn("intent provider unavailable; prompting to configure", {
-          space: writeSpace,
-          err: String(err),
-        });
-        await this.send(msg, providerNotice(err));
-        return;
+      if (proactiveQuestion) {
+        intent = "question";
+      } else {
+        try {
+          ({ intent } = await classifyIntent(
+            () => this.llm ?? this.engine.llmClientForSpace(writeSpace),
+            msg.text,
+          ));
+        } catch (err) {
+          log.warn("intent provider unavailable; prompting to configure", {
+            space: writeSpace,
+            err: String(err),
+          });
+          await this.send(msg, providerNotice(err));
+          return;
+        }
       }
       log.debug("classified intent", { intent, chatType: msg.chatType });
 
