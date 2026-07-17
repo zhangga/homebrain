@@ -86,7 +86,10 @@ import {
   QualityStore,
   type AnswerFeedback,
   type AnswerFeedbackKind,
+  type AnswerFeedbackReview,
   type AnswerTrace,
+  type QualityEvaluationCase,
+  type QualityReviewQuery,
   type QualitySnapshot,
 } from "./quality.ts";
 import {
@@ -2549,6 +2552,25 @@ export class KnowledgeEngine implements Knowledge {
 
   qualitySnapshot(): QualitySnapshot {
     return this.quality.snapshot();
+  }
+
+  answerFeedbackReviews(query: QualityReviewQuery = {}): AnswerFeedbackReview[] {
+    return this.quality.feedbackReviews(query);
+  }
+
+  promoteAnswerFeedback(
+    traceId: string,
+    curatorNote: string,
+  ): QualityEvaluationCase | undefined {
+    return this.quality.promoteFeedbackToEvaluationCase(traceId, curatorNote);
+  }
+
+  resolveAnswerFeedback(traceId: string, resolutionNote: string): AnswerFeedback | undefined {
+    return this.quality.resolveFeedback(traceId, resolutionNote);
+  }
+
+  qualityEvaluationCases(): QualityEvaluationCase[] {
+    return this.quality.evaluationCases();
   }
 
   async search(spaces: SpaceId[], keyword: string, opts: SearchOptions = {}): Promise<Hit[]> {

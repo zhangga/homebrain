@@ -37,6 +37,7 @@ import {
 import {
   isGroupParticipationLevel,
   isAnswerFeedbackKind,
+  NEGATIVE_ANSWER_FEEDBACK_KINDS,
   TaskAlreadyRunningError,
   type GroupParticipationLevel,
   type KnowledgeEngine,
@@ -59,6 +60,7 @@ import {
   governanceView,
   logsView,
   pageView,
+  qualityView,
   quarantineView,
   rawGovernanceDetailView,
   rawListView,
@@ -496,6 +498,83 @@ export function createWebApp(opts: WebOptions): Hono {
     if (!managed || !opts.onServiceRestart) return c.text("Service restart unavailable", 409);
     opts.onServiceRestart();
     return c.redirect(`/health?ok=${encodeURIComponent("已请求后台服务安全重启")}`);
+  });
+
+  app.get("/quality", async (c) => {
+    const status = c.req.query("status") === "resolved" ? "resolved" : "open";
+    const reviews = engine.answerFeedbackReviews({
+      status,
+      kinds: NEGATIVE_ANSWER_FEEDBACK_KINDS,
+    }).reverse();
+    const reviewItems = await Promise.all(reviews.map(async (review) => ({
+      review,
+      citations: await Promise.all(review.trace.citations.map(async (citation) => {
+        const spaces: SpaceId[] = [];
+        for (const space of review.trace.spaces) {
+          if (await engine.getPage(space, citation.slug)) spaces.push(space);
+        }
+        return { citation, spaces };
+      })),
+    })));
+    return c.html(
+      await layout(
+        "AI 质量反馈",
+        [{ label: "AI 质量反馈" }],
+        await qualityView(
+          reviewItems,
+          engine.qualitySnapshot(),
+          status,
+          engine.qualityEvaluationCases().length,
+          c.req.query("ok") ?? undefined,
+        ),
+        "quality",
+      ),
+    );
+  });
+
+  app.get("/quality/evaluation-cases.json", (c) => {
+    c.header("cache-control", "no-store");
+    c.header(
+      "content-disposition",
+      'attachment; filename="homeagent-quality-evaluation-candidates.json"',
+    );
+    return c.json({
+      version: "homeagent.quality-evaluation-candidates.v1",
+      exportedAt: Date.now(),
+      cases: engine.qualityEvaluationCases(),
+    });
+  });
+
+  app.post("/quality/:traceId/promote", async (c) => {
+    const traceId = c.req.param("traceId");
+    const review = engine.answerFeedbackReviews().find((item) => item.trace.id === traceId);
+    if (!review) return c.notFound();
+    const body = await c.req.parseBody();
+    const curatorNote = str(body, "curatorNote").trim();
+    if (!curatorNote) return c.text("Calibration note is required", 400);
+    const evaluationCase = engine.promoteAnswerFeedback(
+      traceId,
+      curatorNote,
+    );
+    if (!evaluationCase) return c.text("Feedback cannot be promoted", 409);
+    return c.redirect(
+      `/quality?ok=${encodeURIComponent("已加入待校准评测集，等待人工确认标准答案")}`,
+    );
+  });
+
+  app.post("/quality/:traceId/resolve", async (c) => {
+    const traceId = c.req.param("traceId");
+    const review = engine.answerFeedbackReviews().find((item) => item.trace.id === traceId);
+    if (!review) return c.notFound();
+    const body = await c.req.parseBody();
+    const resolutionNote = str(body, "resolutionNote").trim();
+    if (!resolutionNote) return c.text("Resolution note is required", 400);
+    const feedback = engine.resolveAnswerFeedback(
+      traceId,
+      resolutionNote,
+    );
+    if (!feedback) return c.text("Feedback already resolved", 409);
+    return c.redirect(`/quality?ok=${encodeURIComponent("反馈已标记为解决")}`);
   });
 
   // ---- guided first-run setup --------------------------------------------

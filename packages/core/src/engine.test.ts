@@ -1283,4 +1283,33 @@ describe("answer quality tracing", () => {
       "helpful",
     )).toBeUndefined();
   });
+
+  test("exposes the feedback review workflow through the engine", async () => {
+    engine.close();
+    const fake = new FakeLlm().queueText("这不在知识库记录中，以下是我的一般性回答。");
+    engine = new KnowledgeEngine({ dataDir: dir, llm: fake });
+    const result = await engine.ask([SPACE], "线上故障该找谁？");
+    engine.recordAnswerFeedback(result.traceId!, SPACE, "unhelpful", "没有给出负责人");
+
+    expect(engine.answerFeedbackReviews({
+      status: "open",
+      kinds: ["unhelpful", "citation_error"],
+    })).toEqual([
+      expect.objectContaining({
+        trace: expect.objectContaining({ id: result.traceId }),
+        feedback: expect.objectContaining({ kind: "unhelpful" }),
+      }),
+    ]);
+    const evaluationCase = engine.promoteAnswerFeedback(
+      result.traceId!,
+      "补充正确负责人后校准",
+    );
+    expect(engine.qualityEvaluationCases()).toEqual([
+      expect.objectContaining({ id: evaluationCase!.id, traceId: result.traceId }),
+    ]);
+    expect(engine.resolveAnswerFeedback(result.traceId!, "知识页已修正")).toEqual(
+      expect.objectContaining({ resolutionNote: "知识页已修正" }),
+    );
+    expect(engine.answerFeedbackReviews({ status: "open" })).toEqual([]);
+  });
 });

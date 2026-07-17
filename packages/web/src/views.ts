@@ -8,6 +8,7 @@ import { html, raw } from "hono/html";
 import type { HtmlEscapedString } from "hono/utils/html";
 import type {
   AskResult,
+  Citation,
   PageRef,
   RawRecord,
   SpaceId,
@@ -28,6 +29,8 @@ import type {
   KnowledgeGovernanceSnapshot,
   RawGovernanceDetail,
   QuarantineRecord,
+  AnswerFeedbackReview,
+  QualitySnapshot,
 } from "@homeagent/core";
 import {
   ANSWER_FEEDBACK_KINDS,
@@ -58,6 +61,11 @@ const GROUP_PARTICIPATION_LABELS = {
   balanced: "均衡",
   active: "积极",
 } as const;
+
+export interface QualityReviewViewItem {
+  review: AnswerFeedbackReview;
+  citations: Array<{ citation: Citation; spaces: SpaceId[] }>;
+}
 
 function fmtTime(ms?: number): string {
   if (!ms) return "—";
@@ -417,6 +425,100 @@ export function askView(
       <button type="submit">提问</button>
     </form>
     ${answer}`;
+}
+
+export function qualityView(
+  reviewItems: QualityReviewViewItem[],
+  snapshot: QualitySnapshot,
+  status: "open" | "resolved",
+  evaluationCaseCount: number,
+  flashMsg?: string,
+): HtmlEscapedString | Promise<HtmlEscapedString> {
+  const cards = reviewItems.map(({ review, citations: citationTargets }) => {
+    const { trace, feedback, evaluationCase } = review;
+    const citations = citationTargets.length > 0
+      ? citationTargets.map(({ citation, spaces }) => {
+          if (spaces.length === 0) {
+            return html`${citation.title} <span class="muted">${citation.slug}</span>`;
+          }
+          if (spaces.length === 1) {
+            const space = spaces[0]!;
+            return html`
+              <a href="/spaces/${encodeURIComponent(space)}/pages/${encodeURIComponent(citation.slug)}">${citation.title}</a>
+              <span class="muted">${citation.slug}</span>
+            `;
+          }
+          return html`
+            <span class="muted">同名引用，候选空间：</span>
+            ${spaces.map((space) => html`
+              <a href="/spaces/${encodeURIComponent(space)}/pages/${encodeURIComponent(citation.slug)}">${citation.title}（${space}）</a>
+            `)}
+            <span class="muted">${citation.slug}</span>
+          `;
+        })
+      : html`<span class="muted">无引用</span>`;
+    return html`<div class="card">
+      <div class="row">
+        <div>
+          <span class="badge degraded">${ANSWER_FEEDBACK_LABELS[feedback.kind]}</span>
+          ${status === "resolved" ? html`<span class="badge ok">已解决</span>` : ""}
+          <span class="muted">${trace.spaces.join("、")} · ${fmtTime(feedback.createdAt)}</span>
+        </div>
+        <span class="muted">${trace.latencyMs} ms</span>
+      </div>
+      <h2 style="margin:16px 0 8px">${trace.question}</h2>
+      <div class="contentbox">${trace.answer ?? trace.error ?? "没有保存回答正文"}</div>
+      <div style="margin-top:10px"><strong>引用：</strong> ${citations}</div>
+      ${feedback.note
+        ? html`<div class="muted" style="margin-top:8px">反馈说明：${feedback.note}</div>`
+        : ""}
+      ${feedback.resolutionNote
+        ? html`<div class="muted" style="margin-top:8px">处理说明：${feedback.resolutionNote}</div>`
+        : ""}
+      ${feedback.evaluationCaseId
+        ? html`<div class="card" style="margin-top:14px;background:var(--accent-soft)">
+            <strong>已加入待校准评测集</strong>
+            ${evaluationCase?.curatorNote
+              ? html`<div class="muted" style="margin-top:6px">校准说明：${evaluationCase.curatorNote}</div>`
+              : html`<div class="muted" style="margin-top:6px">该候选已超出本机保留窗口。</div>`}
+          </div>`
+        : status === "open"
+          ? html`<form method="post" action="/quality/${encodeURIComponent(trace.id)}/promote" style="margin-top:14px">
+            <div class="field">
+              <label>校准说明 <span class="hint">记录正确方向，后续人工确认后再进入固定评测集。</span></label>
+              <textarea name="curatorNote" required placeholder="例如：补充值班范围后重跑"></textarea>
+            </div>
+            <button type="submit" class="secondary">加入待校准评测集</button>
+          </form>`
+          : ""}
+      ${status === "open"
+        ? html`<form method="post" action="/quality/${encodeURIComponent(trace.id)}/resolve" style="margin-top:14px">
+            <div class="field">
+              <label>处理说明 <span class="hint">修正文档或确认无需处理后再标记解决。</span></label>
+              <textarea name="resolutionNote" required placeholder="例如：发布策略页已改为重试两次"></textarea>
+            </div>
+            <button type="submit">标记已解决</button>
+          </form>`
+        : ""}
+    </div>`;
+  });
+  const negative = snapshot.feedback.unhelpful + snapshot.feedback.citationError;
+  return html`<h1>AI 质量反馈</h1>
+    <p class="subtitle">检查没帮助和引用有误的回答；问题、回答和评测候选只保存在本机。</p>
+    ${flash(flashMsg)}
+    <div class="actions" style="margin-bottom:14px">
+      <a class="btn ${status === "open" ? "" : "secondary"}" href="/quality">待处理</a>
+      <a class="btn ${status === "resolved" ? "" : "secondary"}" href="/quality?status=resolved">已解决</a>
+    </div>
+    <div class="card">
+      <div class="row">
+        <div><strong>${reviewItems.length} 条${status === "open" ? "待处理" : "已解决"}</strong><div class="muted">${status === "open" ? "当前打开的负面反馈" : "保留的问题处理历史"}</div></div>
+        <div class="muted">全部反馈 ${snapshot.feedback.total} · 负面 ${negative} · <a href="/quality/evaluation-cases.json">${evaluationCaseCount} 条待校准评测案例</a></div>
+      </div>
+    </div>
+    ${cards.length > 0
+      ? cards
+      : html`<div class="empty">当前没有${status === "open" ? "待处理" : "已解决"}的负面反馈。</div>`}`;
 }
 
 export function logsView(logs: { day: string; lines: string[] }[]): HtmlEscapedString | Promise<HtmlEscapedString> {

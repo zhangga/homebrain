@@ -25,6 +25,11 @@ export const ANSWER_FEEDBACK_KINDS = [
   "citation_error",
 ] as const;
 export type AnswerFeedbackKind = (typeof ANSWER_FEEDBACK_KINDS)[number];
+export const NEGATIVE_ANSWER_FEEDBACK_KINDS = [
+  "unhelpful",
+  "citation_error",
+] as const;
+export type NegativeAnswerFeedbackKind = (typeof NEGATIVE_ANSWER_FEEDBACK_KINDS)[number];
 
 export interface AnswerTrace {
   id: string;
@@ -57,6 +62,38 @@ export interface AnswerFeedback {
   kind: AnswerFeedbackKind;
   note?: string;
   createdAt: number;
+  resolvedAt?: number;
+  resolutionNote?: string;
+  evaluationCaseId?: string;
+}
+
+export type QualityReviewStatus = "open" | "resolved";
+
+export interface QualityEvaluationCase {
+  id: string;
+  traceId: string;
+  spaces: SpaceId[];
+  question: string;
+  observedAnswer?: string;
+  observedSource?: "knowledge" | "general";
+  observedCitations: Citation[];
+  feedbackKind: NegativeAnswerFeedbackKind;
+  feedbackNote?: string;
+  curatorNote: string;
+  createdAt: number;
+}
+
+export interface AnswerFeedbackReview {
+  trace: AnswerTrace;
+  feedback: AnswerFeedback;
+  status: QualityReviewStatus;
+  evaluationCase?: QualityEvaluationCase;
+}
+
+export interface QualityReviewQuery {
+  status?: QualityReviewStatus;
+  spaces?: SpaceId[];
+  kinds?: readonly AnswerFeedbackKind[];
 }
 
 export interface QualitySnapshot {
@@ -82,18 +119,27 @@ export interface QualitySnapshot {
 interface QualityFile {
   traces: AnswerTrace[];
   feedback: AnswerFeedback[];
+  evaluationCases: QualityEvaluationCase[];
 }
 
 const MAX_TRACES = 1000;
 const MAX_FEEDBACK = 2000;
+const MAX_EVALUATION_CASES = 1000;
 const MAX_QUESTION_LENGTH = 4000;
 const MAX_ANSWER_LENGTH = 12_000;
 const MAX_ERROR_LENGTH = 1000;
 const MAX_NOTE_LENGTH = 1000;
 const FEEDBACK_KINDS = new Set<AnswerFeedbackKind>(ANSWER_FEEDBACK_KINDS);
+const NEGATIVE_FEEDBACK_KINDS = new Set<AnswerFeedbackKind>(NEGATIVE_ANSWER_FEEDBACK_KINDS);
 
 export function isAnswerFeedbackKind(value: unknown): value is AnswerFeedbackKind {
   return typeof value === "string" && FEEDBACK_KINDS.has(value as AnswerFeedbackKind);
+}
+
+export function isNegativeAnswerFeedbackKind(
+  value: unknown,
+): value is NegativeAnswerFeedbackKind {
+  return isAnswerFeedbackKind(value) && NEGATIVE_FEEDBACK_KINDS.has(value);
 }
 
 function finiteNonNegative(value: unknown): value is number {
@@ -137,7 +183,40 @@ function validFeedback(value: unknown): value is AnswerFeedback {
     && typeof feedback.traceId === "string" && feedback.traceId.length > 0
     && isAnswerFeedbackKind(feedback.kind)
     && (feedback.note === undefined || typeof feedback.note === "string")
-    && finiteNonNegative(feedback.createdAt);
+    && finiteNonNegative(feedback.createdAt)
+    && (
+      (feedback.resolvedAt === undefined && feedback.resolutionNote === undefined)
+      || (
+        finiteNonNegative(feedback.resolvedAt)
+        && typeof feedback.resolutionNote === "string"
+        && feedback.resolutionNote.trim().length > 0
+      )
+    )
+    && (feedback.evaluationCaseId === undefined || typeof feedback.evaluationCaseId === "string");
+}
+
+function validEvaluationCase(value: unknown): value is QualityEvaluationCase {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const item = value as Partial<QualityEvaluationCase>;
+  return typeof item.id === "string" && item.id.length > 0
+    && typeof item.traceId === "string" && item.traceId.length > 0
+    && Array.isArray(item.spaces)
+    && item.spaces.length > 0
+    && item.spaces.every((space) => typeof space === "string" && isSpaceId(space))
+    && typeof item.question === "string"
+    && (item.observedAnswer === undefined || typeof item.observedAnswer === "string")
+    && (
+      item.observedSource === undefined
+      || item.observedSource === "knowledge"
+      || item.observedSource === "general"
+    )
+    && Array.isArray(item.observedCitations)
+    && item.observedCitations.every(validCitation)
+    && isNegativeAnswerFeedbackKind(item.feedbackKind)
+    && (item.feedbackNote === undefined || typeof item.feedbackNote === "string")
+    && typeof item.curatorNote === "string"
+    && item.curatorNote.trim().length > 0
+    && finiteNonNegative(item.createdAt);
 }
 
 function cloneTrace(trace: AnswerTrace): AnswerTrace {
@@ -148,20 +227,30 @@ function cloneTrace(trace: AnswerTrace): AnswerTrace {
   };
 }
 
+function cloneEvaluationCase(item: QualityEvaluationCase): QualityEvaluationCase {
+  return {
+    ...item,
+    spaces: [...item.spaces],
+    observedCitations: item.observedCitations.map((citation) => ({ ...citation })),
+  };
+}
+
 export class QualityStore {
   private readonly configPath: string;
   private traces: AnswerTrace[];
   private feedbackRecords: AnswerFeedback[];
+  private evaluationCaseRecords: QualityEvaluationCase[];
 
   constructor(dataDir: string) {
     this.configPath = join(dataDir, "quality", "quality.json");
     const loaded = this.load();
     this.traces = loaded.traces;
     this.feedbackRecords = loaded.feedback;
+    this.evaluationCaseRecords = loaded.evaluationCases;
   }
 
   private load(): QualityFile {
-    if (!existsSync(this.configPath)) return { traces: [], feedback: [] };
+    if (!existsSync(this.configPath)) return { traces: [], feedback: [], evaluationCases: [] };
     try {
       const parsed = JSON.parse(readFileSync(this.configPath, "utf8")) as Partial<QualityFile>;
       const traces = Array.isArray(parsed.traces)
@@ -175,20 +264,30 @@ export class QualityStore {
           .slice(-MAX_FEEDBACK)
           .map((record) => ({ ...record }))
         : [];
-      return { traces, feedback };
+      const evaluationCases = Array.isArray(parsed.evaluationCases)
+        ? parsed.evaluationCases
+          .filter(validEvaluationCase)
+          .slice(-MAX_EVALUATION_CASES)
+          .map(cloneEvaluationCase)
+        : [];
+      return { traces, feedback, evaluationCases };
     } catch {
-      return { traces: [], feedback: [] };
+      return { traces: [], feedback: [], evaluationCases: [] };
     }
   }
 
-  private persist(traces = this.traces, feedback = this.feedbackRecords): void {
+  private persist(
+    traces = this.traces,
+    feedback = this.feedbackRecords,
+    evaluationCases = this.evaluationCaseRecords,
+  ): void {
     const directory = dirname(this.configPath);
     mkdirSync(directory, { recursive: true });
     const temporaryPath = `${this.configPath}.${process.pid}.${randomUUID()}.tmp`;
     try {
       writeFileSync(
         temporaryPath,
-        JSON.stringify({ traces, feedback } satisfies QualityFile, null, 2),
+        JSON.stringify({ traces, feedback, evaluationCases } satisfies QualityFile, null, 2),
         { encoding: "utf8", mode: 0o600 },
       );
       const fileDescriptor = openSync(temporaryPath, "r");
@@ -272,6 +371,105 @@ export class QualityStore {
   feedbackFor(traceId: string): AnswerFeedback | undefined {
     const record = this.feedbackRecords.find((feedback) => feedback.traceId === traceId);
     return record ? { ...record } : undefined;
+  }
+
+  feedbackReviews(query: QualityReviewQuery = {}): AnswerFeedbackReview[] {
+    const spaces = query.spaces ? new Set(query.spaces) : undefined;
+    const kinds = query.kinds ? new Set(query.kinds) : undefined;
+    const traces = new Map(this.traces.map((trace) => [trace.id, trace]));
+    const evaluationCases = new Map(
+      this.evaluationCaseRecords.map((item) => [item.id, item]),
+    );
+    const reviews: AnswerFeedbackReview[] = [];
+    for (const feedback of this.feedbackRecords) {
+      const trace = traces.get(feedback.traceId);
+      if (!trace) continue;
+      const status: QualityReviewStatus = feedback.resolvedAt === undefined ? "open" : "resolved";
+      if (query.status && query.status !== status) continue;
+      if (spaces && !trace.spaces.some((space) => spaces.has(space))) continue;
+      if (kinds && !kinds.has(feedback.kind)) continue;
+      const evaluationCase = feedback.evaluationCaseId
+        ? evaluationCases.get(feedback.evaluationCaseId)
+        : undefined;
+      reviews.push({
+        trace: cloneTrace(trace),
+        feedback: { ...feedback },
+        status,
+        ...(evaluationCase ? { evaluationCase: cloneEvaluationCase(evaluationCase) } : {}),
+      });
+    }
+    return reviews;
+  }
+
+  promoteFeedbackToEvaluationCase(
+    traceId: string,
+    curatorNote: string,
+    createdAt = Date.now(),
+  ): QualityEvaluationCase | undefined {
+    const normalizedNote = bounded(curatorNote, MAX_NOTE_LENGTH);
+    if (!normalizedNote) return undefined;
+    const feedbackIndex = this.feedbackRecords.findIndex((item) => item.traceId === traceId);
+    if (feedbackIndex < 0) return undefined;
+    const feedback = this.feedbackRecords[feedbackIndex]!;
+    if (!isNegativeAnswerFeedbackKind(feedback.kind) || feedback.evaluationCaseId) {
+      return undefined;
+    }
+    const trace = this.traces.find((item) => item.id === traceId);
+    if (!trace) return undefined;
+    const item: QualityEvaluationCase = {
+      id: `evaluation_${randomUUID()}`,
+      traceId,
+      spaces: [...trace.spaces],
+      question: trace.question,
+      observedAnswer: trace.answer,
+      observedSource: trace.source,
+      observedCitations: trace.citations.map((citation) => ({ ...citation })),
+      feedbackKind: feedback.kind,
+      feedbackNote: feedback.note,
+      curatorNote: normalizedNote,
+      createdAt,
+    };
+    const evaluationCases = [...this.evaluationCaseRecords, item].slice(-MAX_EVALUATION_CASES);
+    const feedbackRecords = this.feedbackRecords.map((record, index) =>
+      index === feedbackIndex ? { ...record, evaluationCaseId: item.id } : record
+    );
+    this.persist(this.traces, feedbackRecords, evaluationCases);
+    this.feedbackRecords = feedbackRecords;
+    this.evaluationCaseRecords = evaluationCases;
+    return cloneEvaluationCase(item);
+  }
+
+  resolveFeedback(
+    traceId: string,
+    resolutionNote: string,
+    resolvedAt = Date.now(),
+  ): AnswerFeedback | undefined {
+    const normalizedNote = bounded(resolutionNote, MAX_NOTE_LENGTH);
+    if (!normalizedNote) return undefined;
+    const feedbackIndex = this.feedbackRecords.findIndex((item) => item.traceId === traceId);
+    const feedback = this.feedbackRecords[feedbackIndex];
+    if (
+      !feedback
+      || !isNegativeAnswerFeedbackKind(feedback.kind)
+      || feedback.resolvedAt !== undefined
+    ) {
+      return undefined;
+    }
+    const updated = {
+      ...feedback,
+      resolvedAt,
+      resolutionNote: normalizedNote,
+    };
+    const feedbackRecords = this.feedbackRecords.map((record, index) =>
+      index === feedbackIndex ? updated : record
+    );
+    this.persist(this.traces, feedbackRecords);
+    this.feedbackRecords = feedbackRecords;
+    return { ...updated };
+  }
+
+  evaluationCases(): QualityEvaluationCase[] {
+    return this.evaluationCaseRecords.map(cloneEvaluationCase);
   }
 
   snapshot(): QualitySnapshot {

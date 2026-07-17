@@ -994,6 +994,236 @@ describe("web backend (read-only)", () => {
     expect(crossSpace.status).toBe(404);
   });
 
+  test("quality workbench lists negative feedback with answer and citation context", async () => {
+    const negative = engine.quality.recordTrace({
+      spaces: [SPACE],
+      question: "线上故障该找谁？",
+      outcome: "succeeded",
+      source: "knowledge",
+      answer: "请联系 Alice。",
+      citations: [{ slug: "entities/alice", title: "Alice" }],
+      latencyMs: 80,
+      createdAt: 1000,
+    });
+    engine.recordAnswerFeedback(
+      negative.id,
+      SPACE,
+      "citation_error",
+      "引用页面没有值班信息",
+    );
+    const helpful = engine.quality.recordTrace({
+      spaces: [SPACE],
+      question: "这条回答很好吗？",
+      outcome: "succeeded",
+      source: "general",
+      answer: "很好。",
+      citations: [],
+      latencyMs: 20,
+      createdAt: 2000,
+    });
+    engine.recordAnswerFeedback(helpful.id, SPACE, "helpful");
+
+    const response = await app.request("/quality");
+    expect(response.status).toBe(200);
+    const body = await response.text();
+    expect(body).toContain("AI 质量反馈");
+    expect(body).toContain("线上故障该找谁？");
+    expect(body).toContain("请联系 Alice。");
+    expect(body).toContain("引用有误");
+    expect(body).toContain("引用页面没有值班信息");
+    expect(body).toContain(
+      `/spaces/${encodeURIComponent(SPACE)}/pages/${encodeURIComponent("entities/alice")}`,
+    );
+    expect(body).not.toContain("这条回答很好吗？");
+  });
+
+  test("quality workbench promotes one negative feedback into a calibration case", async () => {
+    const trace = engine.quality.recordTrace({
+      spaces: [SPACE],
+      question: "谁负责线上值班？",
+      outcome: "succeeded",
+      source: "knowledge",
+      answer: "请联系 Alice。",
+      citations: [{ slug: "entities/alice", title: "Alice" }],
+      latencyMs: 80,
+    });
+    engine.recordAnswerFeedback(trace.id, SPACE, "unhelpful", "缺少值班范围");
+
+    const before = await (await app.request("/quality")).text();
+    expect(before).toContain(`action="/quality/${encodeURIComponent(trace.id)}/promote"`);
+    expect(before).toContain("加入待校准评测集");
+
+    const invalid = await app.request(`/quality/${encodeURIComponent(trace.id)}/promote`, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ curatorNote: "   " }),
+    });
+    expect(invalid.status).toBe(400);
+    expect(engine.qualityEvaluationCases()).toEqual([]);
+
+    const promoted = await app.request(`/quality/${encodeURIComponent(trace.id)}/promote`, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ curatorNote: "补充值班范围后重跑" }),
+    });
+    expect(promoted.status).toBe(302);
+    expect(engine.qualityEvaluationCases()).toEqual([
+      expect.objectContaining({
+        traceId: trace.id,
+        curatorNote: "补充值班范围后重跑",
+      }),
+    ]);
+
+    const after = await (await app.request(promoted.headers.get("location")!)).text();
+    expect(after).toContain("已加入待校准评测集");
+    expect(after).toContain("补充值班范围后重跑");
+    const duplicate = await app.request(`/quality/${encodeURIComponent(trace.id)}/promote`, {
+      method: "POST",
+      body: new URLSearchParams({ curatorNote: "重复加入" }),
+    });
+    expect(duplicate.status).toBe(409);
+  });
+
+  test("quality workbench resolves feedback and keeps it in review history", async () => {
+    const trace = engine.quality.recordTrace({
+      spaces: [SPACE],
+      question: "发布失败后重试几次？",
+      outcome: "succeeded",
+      source: "knowledge",
+      answer: "重试一次。",
+      citations: [{ slug: "entities/alice", title: "Alice" }],
+      latencyMs: 50,
+    });
+    engine.recordAnswerFeedback(trace.id, SPACE, "unhelpful", "次数错误");
+
+    const before = await (await app.request("/quality")).text();
+    expect(before).toContain(`action="/quality/${encodeURIComponent(trace.id)}/resolve"`);
+
+    const invalid = await app.request(`/quality/${encodeURIComponent(trace.id)}/resolve`, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ resolutionNote: "   " }),
+    });
+    expect(invalid.status).toBe(400);
+    expect(engine.answerFeedbackReviews({ status: "open" })).toHaveLength(1);
+
+    const resolved = await app.request(`/quality/${encodeURIComponent(trace.id)}/resolve`, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ resolutionNote: "发布策略页已改为重试两次" }),
+    });
+    expect(resolved.status).toBe(302);
+    expect(engine.answerFeedbackReviews({ status: "resolved" })).toEqual([
+      expect.objectContaining({
+        trace: expect.objectContaining({ id: trace.id }),
+        feedback: expect.objectContaining({ resolutionNote: "发布策略页已改为重试两次" }),
+      }),
+    ]);
+
+    const openPage = await (await app.request(resolved.headers.get("location")!)).text();
+    expect(openPage).not.toContain("发布失败后重试几次？");
+    const history = await (await app.request("/quality?status=resolved")).text();
+    expect(history).toContain("发布失败后重试几次？");
+    expect(history).toContain("已解决");
+    expect(history).toContain("发布策略页已改为重试两次");
+    expect(history).not.toContain(`action="/quality/${encodeURIComponent(trace.id)}/resolve"`);
+
+    const duplicate = await app.request(`/quality/${encodeURIComponent(trace.id)}/resolve`, {
+      method: "POST",
+      body: new URLSearchParams({ resolutionNote: "重复处理" }),
+    });
+    expect(duplicate.status).toBe(409);
+  });
+
+  test("quality workbench links citations to the space that owns the page", async () => {
+    const personal = "personal/ou_quality" as const;
+    await engine.upsertPage(
+      personal,
+      page("entities/bob", "Bob", "Bob 负责线上值班。"),
+    );
+    const trace = engine.quality.recordTrace({
+      spaces: [SPACE, personal],
+      question: "线上值班找谁？",
+      outcome: "succeeded",
+      source: "knowledge",
+      answer: "请联系 Bob。",
+      citations: [{ slug: "entities/bob", title: "Bob" }],
+      latencyMs: 60,
+    });
+    engine.recordAnswerFeedback(trace.id, SPACE, "citation_error", "核对引用");
+
+    const body = await (await app.request("/quality")).text();
+    expect(body).toContain(
+      `/spaces/${encodeURIComponent(personal)}/pages/${encodeURIComponent("entities/bob")}`,
+    );
+    expect(body).not.toContain(
+      `/spaces/${encodeURIComponent(SPACE)}/pages/${encodeURIComponent("entities/bob")}`,
+    );
+  });
+
+  test("quality workbench shows every candidate space for an ambiguous legacy citation", async () => {
+    const personal = "personal/ou_quality" as const;
+    await engine.upsertPage(
+      personal,
+      page("entities/alice", "Alice（个人）", "个人空间中的 Alice。"),
+    );
+    const trace = engine.quality.recordTrace({
+      spaces: [SPACE, personal],
+      question: "这里的 Alice 是谁？",
+      outcome: "succeeded",
+      source: "knowledge",
+      answer: "请查看 Alice。",
+      citations: [{ slug: "entities/alice", title: "Alice" }],
+      latencyMs: 60,
+    });
+    engine.recordAnswerFeedback(trace.id, SPACE, "citation_error", "同名页面需人工确认");
+
+    const body = await (await app.request("/quality")).text();
+    expect(body).toContain(
+      `/spaces/${encodeURIComponent(SPACE)}/pages/${encodeURIComponent("entities/alice")}`,
+    );
+    expect(body).toContain(
+      `/spaces/${encodeURIComponent(personal)}/pages/${encodeURIComponent("entities/alice")}`,
+    );
+    expect(body).toContain("同名引用，候选空间");
+  });
+
+  test("quality workbench exports calibration cases as local JSON", async () => {
+    const trace = engine.quality.recordTrace({
+      spaces: [SPACE],
+      question: "线上故障该找谁？",
+      outcome: "succeeded",
+      source: "knowledge",
+      answer: "请联系 Alice。",
+      citations: [{ slug: "entities/alice", title: "Alice" }],
+      latencyMs: 80,
+    });
+    engine.recordAnswerFeedback(trace.id, SPACE, "citation_error", "页面缺少值班依据");
+    engine.promoteAnswerFeedback(trace.id, "确认正确引用后加入固定集");
+
+    const page = await (await app.request("/quality")).text();
+    expect(page).toContain("1 条待校准评测案例");
+    expect(page).toContain('href="/quality/evaluation-cases.json"');
+
+    const response = await app.request("/quality/evaluation-cases.json");
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-disposition")).toContain(
+      "homeagent-quality-evaluation-candidates.json",
+    );
+    expect(await response.json()).toEqual({
+      version: "homeagent.quality-evaluation-candidates.v1",
+      exportedAt: expect.any(Number),
+      cases: [
+        expect.objectContaining({
+          traceId: trace.id,
+          question: "线上故障该找谁？",
+          feedbackKind: "citation_error",
+          curatorNote: "确认正确引用后加入固定集",
+        }),
+      ],
+    });
+  });
+
   test("dream POST triggers a cycle and redirects", async () => {
     fake.queueJSON({ operations: [], skippedRawIds: [] });
     const res = await app.request(`/spaces/${encodeURIComponent(SPACE)}/dream`, { method: "POST" });

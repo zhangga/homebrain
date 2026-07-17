@@ -70,6 +70,92 @@ describe("QualityStore", () => {
     expect(store.recordFeedback(trace.id, "unknown" as never)).toBeUndefined();
   });
 
+  test("turns negative feedback into a durable review and evaluation candidate", () => {
+    const dir = tempDir();
+    const store = new QualityStore(dir);
+    const trace = store.recordTrace({
+      spaces: ["team/oc_quality"],
+      question: "线上故障该找谁？",
+      outcome: "succeeded",
+      source: "knowledge",
+      answer: "请联系 Alice。",
+      citations: [{ slug: "entities/alice", title: "Alice" }],
+      latencyMs: 80,
+      createdAt: 1000,
+    });
+    const helpfulTrace = store.recordTrace({
+      spaces: ["team/oc_quality"],
+      question: "发布流程是什么？",
+      outcome: "succeeded",
+      source: "knowledge",
+      answer: "先灰度发布。",
+      citations: [{ slug: "release", title: "发布流程" }],
+      latencyMs: 40,
+      createdAt: 1500,
+    });
+    store.recordFeedback(trace.id, "citation_error", "引用页面没有值班信息", 2000);
+    store.recordFeedback(helpfulTrace.id, "helpful", undefined, 2100);
+
+    expect(store.feedbackReviews({ status: "open" })).toEqual([
+      expect.objectContaining({
+        status: "open",
+        trace: expect.objectContaining({ id: trace.id, question: "线上故障该找谁？" }),
+        feedback: expect.objectContaining({ kind: "citation_error" }),
+      }),
+      expect.objectContaining({
+        status: "open",
+        trace: expect.objectContaining({ id: helpfulTrace.id }),
+        feedback: expect.objectContaining({ kind: "helpful" }),
+      }),
+    ]);
+
+    expect(store.promoteFeedbackToEvaluationCase(trace.id, "   ")).toBeUndefined();
+    const evaluationCase = store.promoteFeedbackToEvaluationCase(
+      trace.id,
+      "补充值班负责人后重跑",
+      3000,
+    );
+    expect(evaluationCase).toEqual(expect.objectContaining({
+      traceId: trace.id,
+      spaces: ["team/oc_quality"],
+      question: "线上故障该找谁？",
+      observedAnswer: "请联系 Alice。",
+      observedCitations: [{ slug: "entities/alice", title: "Alice" }],
+      feedbackKind: "citation_error",
+      feedbackNote: "引用页面没有值班信息",
+      curatorNote: "补充值班负责人后重跑",
+      createdAt: 3000,
+    }));
+    expect(store.promoteFeedbackToEvaluationCase(trace.id, "重复加入")).toBeUndefined();
+    expect(store.promoteFeedbackToEvaluationCase(helpfulTrace.id, "不应加入")).toBeUndefined();
+
+    expect(store.resolveFeedback(trace.id, "   ")).toBeUndefined();
+    expect(store.resolveFeedback(helpfulTrace.id, "正面反馈无需处理")).toBeUndefined();
+    expect(store.resolveFeedback(trace.id, "已修正负责人知识页", 4000)).toEqual(
+      expect.objectContaining({
+        traceId: trace.id,
+        resolvedAt: 4000,
+        resolutionNote: "已修正负责人知识页",
+      }),
+    );
+    expect(store.feedbackReviews({ status: "open" }).map((item) => item.trace.id)).toEqual([
+      helpfulTrace.id,
+    ]);
+    expect(store.feedbackReviews({ status: "resolved" })).toEqual([
+      expect.objectContaining({
+        status: "resolved",
+        trace: expect.objectContaining({ id: trace.id }),
+        evaluationCase: expect.objectContaining({ id: evaluationCase!.id }),
+      }),
+    ]);
+
+    const restarted = new QualityStore(dir);
+    expect(restarted.evaluationCases()).toEqual([
+      expect.objectContaining({ id: evaluationCase!.id, traceId: trace.id }),
+    ]);
+    expect(restarted.feedbackReviews({ status: "resolved" })).toHaveLength(1);
+  });
+
   test("snapshot exposes aggregates without leaking stored content", () => {
     const store = new QualityStore(tempDir());
     const helpful = store.recordTrace({
