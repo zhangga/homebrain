@@ -4,7 +4,7 @@
 默默收录大家分享的知识，夜间提炼成 wiki 知识页，并在被 @ 或私聊时基于知识库作答（带引用）；也能按天带读一本书，提问、反馈并记录进度。
 回复飞书图片或含图片的富文本消息后，可以直接让 Codex Agent 分析视觉内容。
 
-知识引擎借鉴 [`nashsu/llm_wiki`](https://github.com/nashsu/llm_wiki) 的设计（无 embedding 原生可用、
+知识引擎借鉴 [`nashsu/llm_wiki`](https://github.com/nashsu/llm_wiki) 的设计（项目明确采用无 embedding 路线：
 中文 CJK bigram、整页范式、成熟的 ingest/检索思路）与 `gbrain` 的 dream cycle 思路，
 **编排/多用户/飞书层完全自建**。llm_wiki 为 GPL-3.0 → 仅借鉴设计，不 fork/拷贝代码或 prompt 原文。
 
@@ -244,8 +244,9 @@ bun run packages/app/src/repl.ts       # 启动横幅列出全部命令
 - 管理后台的问答测试页提供“有帮助 / 没帮助 / 引用有误”反馈。每个回答只接受一次反馈，反馈与回答追踪一起留在本机。
 - `bun run evaluate:quality` 离线运行固定评测集，覆盖检索与引用、对话路由、群聊主动参与和学习路线校验。命令会输出机器可读报告及检索建议：
   - `keep_fts`：当前 FTS、路由和引用达到阈值；
-  - `consider_hybrid_retrieval`：路由和引用正常，但 FTS 覆盖率低于 85%，应实验 embedding + FTS 混合检索；
+  - `improve_fts_retrieval`：路由和引用正常，但 FTS 覆盖率低于 85%，应补强知识页 aliases/tags、查询改写和大目录路由；
   - `insufficient_data`：检索样本不足，暂不调整架构。
+- 项目架构决定不引入 embedding；后续检索改进保持 FTS + LLM 路由路线，不新增向量模型、向量索引或知识数据外发通道。
 - 评测已进入 CI 和 `verify:beta`。阶段二不引入个人空间隐藏或隐私策略，仍以家庭和团队协作为产品边界。
 
 ### 首次启动与飞书连接

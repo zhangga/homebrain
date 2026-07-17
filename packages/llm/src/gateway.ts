@@ -9,7 +9,8 @@
  *     REWRITES the tool name in the response (we send "extract", it returns
  *     e.g. "CompatExtract9f0a1b"), so we must locate the tool_use block by
  *     BLOCK TYPE, never by matching the name we sent.
- *   - There is no embeddings endpoint; the knowledge layer is retrieval-by-LLM.
+ *   - There is no embeddings endpoint; the knowledge layer intentionally uses
+ *     FTS plus LLM routing.
  */
 import { config, logger, type Logger } from "@homeagent/shared";
 import { estimateCost } from "./pricing.ts";

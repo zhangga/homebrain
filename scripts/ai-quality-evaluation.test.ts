@@ -28,16 +28,21 @@ describe("AI quality evaluation", () => {
       "proactive",
       "learning",
     ]);
-    expect(report.recommendation.decision).toBe("consider_hybrid_retrieval");
+    expect(report.recommendation.decision).toBe("improve_fts_retrieval");
+    expect(report.recommendation.reasons.join(" ")).toContain("aliases/tags");
+    expect(report.recommendation.reasons.join(" ")).toContain("查询改写");
+    expect(report.recommendation.reasons.join(" ")).not.toMatch(/embedding|hybrid/iu);
   });
 
-  test("recommends a hybrid experiment only when FTS coverage is the bottleneck", () => {
-    expect(recommendRetrieval({
+  test("recommends FTS-native improvements only when FTS coverage is the bottleneck", () => {
+    const retrievalGap = recommendRetrieval({
       caseCount: 8,
       pipelineAccuracy: 1,
       citationAccuracy: 1,
       ftsCoverage: 0.75,
-    }).decision).toBe("consider_hybrid_retrieval");
+    });
+    expect(retrievalGap.decision).toBe("improve_fts_retrieval");
+    expect(retrievalGap.reasons.join(" ")).not.toMatch(/embedding|hybrid/iu);
     expect(recommendRetrieval({
       caseCount: 8,
       pipelineAccuracy: 0.75,

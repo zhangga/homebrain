@@ -17,7 +17,7 @@ import type { Page, PageType, SpaceId } from "@homeagent/shared";
 export type EvaluationCategory = "retrieval" | "routing" | "proactive" | "learning";
 export type RetrievalRecommendation =
   | "keep_fts"
-  | "consider_hybrid_retrieval"
+  | "improve_fts_retrieval"
   | "insufficient_data";
 
 interface RetrievalCase {
@@ -266,7 +266,7 @@ export function recommendRetrieval(metrics: RetrievalMetrics): {
   if (metrics.caseCount < 3) {
     return {
       decision: "insufficient_data",
-      reasons: ["检索样本少于 3 条，暂不足以判断是否引入 embedding 或混合检索"],
+      reasons: ["检索样本少于 3 条，暂不足以调整 FTS 检索策略"],
     };
   }
   if (metrics.pipelineAccuracy < 0.9 || metrics.citationAccuracy < 0.9) {
@@ -280,10 +280,10 @@ export function recommendRetrieval(metrics: RetrievalMetrics): {
   }
   if (metrics.ftsCoverage < 0.85) {
     return {
-      decision: "consider_hybrid_retrieval",
+      decision: "improve_fts_retrieval",
       reasons: [
         "现有 FTS 在固定检索集上的覆盖率低于 85%",
-        `ftsCoverage=${metrics.ftsCoverage.toFixed(2)}，建议用 embedding 召回与 FTS 排序组成混合检索实验`,
+        `ftsCoverage=${metrics.ftsCoverage.toFixed(2)}，优先补强知识页 aliases/tags、查询改写与大目录路由`,
       ],
     };
   }

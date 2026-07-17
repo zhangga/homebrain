@@ -1,8 +1,8 @@
 /**
  * The Knowledge seam (plan §2.2). Upper layers (orchestrator, web) depend ONLY
  * on this interface, never on the SQLite/markdown/LLM internals behind it. That
- * makes the engine replaceable — e.g. a future embedding-backed implementation
- * can be swapped in without touching callers (plan R7).
+ * keeps callers decoupled from the FTS/markdown implementation details behind
+ * the seam (plan R7).
  */
 import type {
   AskResult,

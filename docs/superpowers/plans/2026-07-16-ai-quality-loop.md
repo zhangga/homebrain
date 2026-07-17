@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development to implement this plan task-by-task.
 
-**Goal:** Build the stage-two AI quality loop: deterministic quality evaluation, durable answer feedback, runtime observability, and an evidence-based retrieval upgrade recommendation.
+**Goal:** Build the stage-two AI quality loop: deterministic quality evaluation, durable answer feedback, runtime observability, and an evidence-based FTS-native retrieval improvement recommendation.
 
-**Architecture:** Keep the current ask, routing, proactive participation, and learning behavior intact. Add a focused core quality store around `KnowledgeEngine.ask()`, expose aggregate-only operational health, collect explicit feedback from the management ask page, and run a deterministic offline evaluation suite that emits a retrieval strategy recommendation.
+**Architecture:** Keep the current FTS + LLM routing, ask, proactive participation, and learning behavior intact. Add a focused core quality store around `KnowledgeEngine.ask()`, expose aggregate-only operational health, collect explicit feedback from the management ask page, and run a deterministic offline evaluation suite that emits an FTS-native improvement recommendation. Do not introduce embedding providers or vector indexes.
 
 **Tech Stack:** TypeScript, Bun test runner, Hono, existing SQLite/markdown knowledge stores, atomic JSON persistence, existing fake LLM test boundary.
 
@@ -102,7 +102,7 @@
 - [x] Write tests for category scoring, overall scoring, failure reporting, and retrieval recommendations.
 - [x] Use the existing fake LLM boundary so the suite is offline, repeatable, and free of provider credentials.
 - [x] Score retrieval coverage and citation correctness separately.
-- [x] Emit `consider_hybrid_retrieval` only when FTS semantic coverage is the bottleneck, keep FTS while fixing grounding when routing/citations fail, and emit `insufficient_data` when the dataset is too small.
+- [x] Emit `improve_fts_retrieval` when FTS coverage is the bottleneck, recommend aliases/tags, query rewriting, and large-catalog routing, keep FTS while fixing grounding when routing/citations fail, and emit `insufficient_data` when the dataset is too small.
 - [x] Print a human-readable summary and machine-readable JSON when run from the command line.
 - [x] Add `evaluate:quality` to package scripts.
 - [x] Run `bun test scripts/ai-quality-evaluation.test.ts` and `bun run evaluate:quality`.
