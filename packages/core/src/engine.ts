@@ -103,11 +103,6 @@ import {
 } from "./dream.ts";
 import { refreshDigest } from "./digest.ts";
 import { ask as askImpl } from "./ask.ts";
-import {
-  EmbeddingSearch,
-  retrieveHits,
-  type EmbeddingProvider,
-} from "./retrieval.ts";
 import type { LlmClient } from "./llm.ts";
 import { makeCliClient, type RunProviderFn } from "./cli-client.ts";
 import { DEFAULT_PURPOSE, DEFAULT_SCHEMA } from "./space.ts";
@@ -821,8 +816,6 @@ export interface EngineOptions {
   runProvider?: RunProviderFn;
   /** deterministic web-research seam for tests or custom deployments */
   learningResearch?: LearningResearchProvider;
-  /** opt-in vector provider for the hybrid retrieval experiment */
-  embeddingProvider?: EmbeddingProvider;
   /** Mark task runs left active by a previous service process as failed. */
   recoverInterruptedTaskRuns?: boolean;
 }
@@ -862,7 +855,6 @@ export class KnowledgeEngine implements Knowledge {
   private llm?: LlmClient;
   private runProvider: RunProviderFn;
   private learningResearch?: LearningResearchProvider;
-  private embeddingSearch?: EmbeddingSearch;
   private providerRuns = new Map<ProviderId, ProviderRunHealth>();
   private dreamCycles = new Map<SpaceId, DreamCycleHealth>();
   private activeTaskRuns = new Map<string, string>();
@@ -886,9 +878,6 @@ export class KnowledgeEngine implements Knowledge {
     this.serializer = opts.serializer ?? new Serializer();
     this.llm = opts.llm;
     this.learningResearch = opts.learningResearch;
-    this.embeddingSearch = opts.embeddingProvider
-      ? new EmbeddingSearch(opts.embeddingProvider)
-      : undefined;
     const providerRunner = opts.runProvider ?? runLocalProvider;
     this.runProvider = async (provider, input, timeoutMs, signal) => {
       const run = this.providerRuns.get(provider) ?? { provider, running: 0 };
@@ -2508,10 +2497,7 @@ export class KnowledgeEngine implements Knowledge {
     const client = primary ? this.llmClientForSpace(primary) : this.llmClientForSpace(spaces[0]!);
     const startedAt = Date.now();
     try {
-      const result = await askImpl(stores, question, opts, {
-        client,
-        embeddingSearch: this.embeddingSearch,
-      });
+      const result = await askImpl(stores, question, opts, { client });
       try {
         const trace = this.quality.recordTrace({
           spaces,
@@ -2567,15 +2553,14 @@ export class KnowledgeEngine implements Knowledge {
 
   async search(spaces: SpaceId[], keyword: string, opts: SearchOptions = {}): Promise<Hit[]> {
     const limit = opts.limit ?? 10;
-    const stores = spaces
-      .filter((space) => this.registry.has(space))
-      .map((space) => this.registry.store(space));
-    const hits = await retrieveHits(stores, keyword, {
-      limit,
-      retrieval: opts.retrieval ?? "fts",
-      embeddingSearch: this.embeddingSearch,
-    });
-    return hits.map((candidate) => candidate.hit);
+    const hits: Hit[] = [];
+    for (const space of spaces) {
+      if (!this.registry.has(space)) continue;
+      hits.push(...this.registry.store(space).index().search(keyword, limit));
+    }
+    // Merge across spaces by bm25 score (lower is better) and cap.
+    hits.sort((a, b) => a.score - b.score);
+    return hits.slice(0, limit);
   }
 
   async getPage(space: SpaceId, slug: string): Promise<Page | null> {

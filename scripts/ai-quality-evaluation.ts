@@ -18,13 +18,11 @@ export type EvaluationCategory = "retrieval" | "routing" | "proactive" | "learni
 export type RetrievalRecommendation =
   | "keep_fts"
   | "consider_hybrid_retrieval"
-  | "validate_embedding_provider"
   | "insufficient_data";
 
 interface RetrievalCase {
   id: string;
   question: string;
-  queryEmbedding: number[];
   pages: Array<{
     slug: string;
     type: PageType;
@@ -32,7 +30,6 @@ interface RetrievalCase {
     summary: string;
     aliases: string[];
     content: string;
-    embedding: number[];
   }>;
   routeSlugs: string[];
   relevant: boolean;
@@ -96,8 +93,6 @@ export interface RetrievalMetrics {
   pipelineAccuracy: number;
   citationAccuracy: number;
   ftsCoverage: number;
-  hybridCoverage: number;
-  hybridLift: number;
 }
 
 export interface QualityEvaluationReport {
@@ -129,9 +124,8 @@ function category(
 }
 
 function page(input: RetrievalCase["pages"][number]): Page {
-  const { embedding: _embedding, ...pageInput } = input;
   return {
-    ...pageInput,
+    ...input,
     tags: ["evaluation"],
     sources: ["evaluation"],
     links: [],
@@ -148,7 +142,6 @@ async function evaluateRetrievalCases(
   let pipelinePassed = 0;
   let citationsPassed = 0;
   let ftsPassed = 0;
-  let hybridPassed = 0;
   for (const [index, item] of cases.entries()) {
     const fake = new FakeLlm();
     fake.onJSON((call) => {
@@ -167,18 +160,6 @@ async function evaluateRetrievalCases(
     const engine = new KnowledgeEngine({
       dataDir: join(root, `retrieval-${index}`),
       llm: fake,
-      embeddingProvider: {
-        async embed(texts) {
-          return texts.map((text) => {
-            if (text === item.question) return item.queryEmbedding;
-            const candidate = item.pages.find((page) => text.includes(page.content));
-            if (!candidate) {
-              throw new Error(`evaluation embedding fixture missing for ${text.slice(0, 80)}`);
-            }
-            return candidate.embedding;
-          });
-        },
-      },
     });
     const space = `team/evaluation_${index}` as SpaceId;
     for (const candidate of item.pages) await engine.upsertPage(space, page(candidate));
@@ -194,56 +175,33 @@ async function evaluateRetrievalCases(
       const hits = await engine.search([space], item.question, { limit: 10 });
       const hitSlugs = new Set(hits.map((hit) => hit.slug));
       const ftsCovered = item.expectedCitations.every((slug) => hitSlugs.has(slug));
-      const hybridHits = await engine.search(
-        [space],
-        item.question,
-        { limit: 10, retrieval: "hybrid" },
-      );
-      const hybridSlugs = new Set(hybridHits.map((hit) => hit.slug));
-      const hybridCovered =
-        item.expectedCitations.every((slug) => hybridSlugs.has(slug));
       if (pipelineCorrect) pipelinePassed += 1;
       if (citationCorrect) citationsPassed += 1;
       if (ftsCovered) ftsPassed += 1;
-      if (hybridCovered) hybridPassed += 1;
       results.push({
         id: item.id,
         passed: pipelineCorrect && citationCorrect,
-        checks: { pipelineCorrect, citationCorrect, ftsCovered, hybridCovered },
-        detail: [
-          `source=${answer.source}`,
-          `citations=${actualCitations.join(",")}`,
-          `fts=${[...hitSlugs].join(",")}`,
-          `hybrid=${[...hybridSlugs].join(",")}`,
-        ].join("; "),
+        checks: { pipelineCorrect, citationCorrect, ftsCovered },
+        detail: `source=${answer.source}; citations=${actualCitations.join(",")}; fts=${[...hitSlugs].join(",")}`,
       });
     } catch (err) {
       results.push({
         id: item.id,
         passed: false,
-        checks: {
-          pipelineCorrect: false,
-          citationCorrect: false,
-          ftsCovered: false,
-          hybridCovered: false,
-        },
+        checks: { pipelineCorrect: false, citationCorrect: false, ftsCovered: false },
         detail: String(err),
       });
     } finally {
       engine.close();
     }
   }
-  const ftsCoverage = rate(ftsPassed, cases.length);
-  const hybridCoverage = rate(hybridPassed, cases.length);
   return {
     result: category("retrieval", results),
     metrics: {
       caseCount: cases.length,
       pipelineAccuracy: rate(pipelinePassed, cases.length),
       citationAccuracy: rate(citationsPassed, cases.length),
-      ftsCoverage,
-      hybridCoverage,
-      hybridLift: hybridCoverage - ftsCoverage,
+      ftsCoverage: rate(ftsPassed, cases.length),
     },
   };
 }
@@ -321,34 +279,11 @@ export function recommendRetrieval(metrics: RetrievalMetrics): {
     };
   }
   if (metrics.ftsCoverage < 0.85) {
-    if (metrics.hybridCoverage >= 0.85 && metrics.hybridLift > 0) {
-      return {
-        decision: "validate_embedding_provider",
-        reasons: [
-          "固定向量夹具证明混合召回链路可以补足当前 FTS 的语义缺口",
-          [
-            `ftsCoverage=${metrics.ftsCoverage.toFixed(2)}`,
-            `hybridCoverage=${metrics.hybridCoverage.toFixed(2)}`,
-            `lift=${metrics.hybridLift.toFixed(2)}`,
-            "启用前仍需用真实本地或明确授权的 embedding provider 做基准验证",
-          ].join("，"),
-        ],
-      };
-    }
-    if (metrics.hybridLift <= 0) {
-      return {
-        decision: "keep_fts",
-        reasons: [
-          "确定性混合检索没有带来召回提升，当前不应增加生产检索复杂度",
-          `ftsCoverage=${metrics.ftsCoverage.toFixed(2)}, hybridCoverage=${metrics.hybridCoverage.toFixed(2)}`,
-        ],
-      };
-    }
     return {
       decision: "consider_hybrid_retrieval",
       reasons: [
-        "混合召回已有正向提升，但仍未达到 85% 的固定评测阈值",
-        `ftsCoverage=${metrics.ftsCoverage.toFixed(2)}, hybridCoverage=${metrics.hybridCoverage.toFixed(2)}`,
+        "现有 FTS 在固定检索集上的覆盖率低于 85%",
+        `ftsCoverage=${metrics.ftsCoverage.toFixed(2)}，建议用 embedding 召回与 FTS 排序组成混合检索实验`,
       ],
     };
   }
@@ -356,11 +291,7 @@ export function recommendRetrieval(metrics: RetrievalMetrics): {
     decision: "keep_fts",
     reasons: [
       "现有 FTS、路由和引用在固定评测集上达到阶段二阈值",
-      [
-        `ftsCoverage=${metrics.ftsCoverage.toFixed(2)}`,
-        `hybridCoverage=${metrics.hybridCoverage.toFixed(2)}`,
-        `citations=${metrics.citationAccuracy.toFixed(2)}`,
-      ].join(", "),
+      `ftsCoverage=${metrics.ftsCoverage.toFixed(2)}, citations=${metrics.citationAccuracy.toFixed(2)}`,
     ],
   };
 }

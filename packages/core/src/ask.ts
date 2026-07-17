@@ -21,9 +21,8 @@
 import type { AskResult, Citation, Page, PageRef, SpaceId } from "@homeagent/shared";
 import { config, logger } from "@homeagent/shared";
 import type { SpaceStore } from "./space.ts";
-import type { AskOptions, RetrievalStrategy } from "./types.ts";
+import type { AskOptions } from "./types.ts";
 import { gatewayClient, type LlmClient } from "./llm.ts";
-import { EmbeddingSearch, retrieveHits } from "./retrieval.ts";
 
 const log = logger.child("ask");
 
@@ -33,7 +32,6 @@ const CATALOG_CAP = 60;
 
 export interface AskDeps {
   client?: LlmClient;
-  embeddingSearch?: EmbeddingSearch;
 }
 
 /** A page plus the store it lives in — slugs are only unique within a space. */
@@ -41,28 +39,6 @@ export interface LocatedPage {
   space: SpaceId;
   store: SpaceStore;
   ref: PageRef;
-}
-
-function locatedPageKey(space: SpaceId, slug: string): string {
-  return `${space}::${slug}`;
-}
-
-function catalogCollector(): {
-  pages: LocatedPage[];
-  add: (store: SpaceStore, ref: PageRef) => void;
-} {
-  const pages: LocatedPage[] = [];
-  const seen = new Set<string>();
-  return {
-    pages,
-    add(store, ref) {
-      if (SINGLETON.has(ref.slug)) return;
-      const key = locatedPageKey(store.space, ref.slug);
-      if (seen.has(key)) return;
-      seen.add(key);
-      pages.push({ space: store.space, store, ref });
-    },
-  };
 }
 
 // ---- step 1: catalog -------------------------------------------------------
@@ -77,58 +53,33 @@ export function buildCatalog(
   question: string,
   cap = CATALOG_CAP,
 ): LocatedPage[] {
-  const catalog = catalogCollector();
+  const out: LocatedPage[] = [];
+  const seen = new Set<string>();
+  const add = (store: SpaceStore, ref: PageRef) => {
+    if (SINGLETON.has(ref.slug)) return;
+    const key = `${store.space}::${ref.slug}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push({ space: store.space, store, ref });
+  };
 
   for (const store of stores) {
     const idx = store.index();
+    const total = idx.countPages();
     const contentTotal = idx.listPages().filter((r) => !SINGLETON.has(r.slug)).length;
     if (contentTotal <= cap) {
-      for (const ref of idx.listPages()) catalog.add(store, ref);
+      for (const ref of idx.listPages()) add(store, ref);
     } else {
       // large space: FTS prefilter, then hydrate refs
       const hits = idx.search(question, cap);
       for (const h of hits) {
         const ref = idx.listPages().find((r) => r.slug === h.slug);
-        if (ref) catalog.add(store, ref);
+        if (ref) add(store, ref);
       }
     }
+    void total;
   }
-  return catalog.pages.slice(0, cap * Math.max(1, stores.length));
-}
-
-/**
- * Async catalog builder used only by the opt-in hybrid path. Small spaces keep
- * the existing whole-catalog behavior; large spaces can add semantic candidates
- * before bounded LLM routing.
- */
-export async function buildCatalogWithRetrieval(
-  stores: SpaceStore[],
-  question: string,
-  cap: number,
-  retrieval: RetrievalStrategy,
-  embeddingSearch?: EmbeddingSearch,
-): Promise<LocatedPage[]> {
-  if (retrieval !== "hybrid" || !embeddingSearch) {
-    return buildCatalog(stores, question, cap);
-  }
-
-  const catalog = catalogCollector();
-
-  for (const store of stores) {
-    const refs = store.index().listPages().filter((ref) => !SINGLETON.has(ref.slug));
-    if (refs.length <= cap) {
-      for (const ref of refs) catalog.add(store, ref);
-      continue;
-    }
-    const hits = await retrieveHits([store], question, {
-      limit: cap,
-      retrieval,
-      embeddingSearch,
-      excludeSlugs: SINGLETON,
-    });
-    for (const hit of hits) catalog.add(store, hit.ref);
-  }
-  return catalog.pages.slice(0, cap * Math.max(1, stores.length));
+  return out.slice(0, cap * Math.max(1, stores.length));
 }
 
 // ---- step 2: routing -------------------------------------------------------
@@ -413,16 +364,9 @@ export async function ask(
   const instruction = opts.instruction;
   const images = opts.images;
   const primarySpace = stores[0]?.space;
-  const retrieval = opts.retrieval ?? "fts";
 
   // Empty knowledge base across all spaces -> general fallback (Q1/Q3).
-  const catalog = await buildCatalogWithRetrieval(
-    stores,
-    question,
-    CATALOG_CAP,
-    retrieval,
-    deps.embeddingSearch,
-  );
+  const catalog = buildCatalog(stores, question);
   if (catalog.length === 0) {
     if (opts.knowledgeOnly) {
       return { answer: "", source: "general", citations: [], gaps: ["知识库为空"] };
@@ -439,34 +383,22 @@ export async function ask(
 
   // Route: which pages are relevant?
   let routed: RouteResult;
-  let routingFailed = false;
   try {
     routed = await route(client, catalog, question, primarySpace);
   } catch (err) {
-    routingFailed = true;
-    log.warn("routing failed, falling back to configured retrieval", { err: String(err) });
+    log.warn("routing failed, falling back to FTS", { err: String(err) });
     routed = { slugs: [], relevant: false };
   }
 
-  // If routing found nothing, try the configured retrieval path before giving up.
-  let selected = catalog.filter((candidate) => routed.slugs.includes(candidate.ref.slug));
+  // If routing found nothing, try FTS as a safety net before giving up.
+  let selected = routed.slugs.filter((s) => catalog.some((c) => c.ref.slug === s));
   if (selected.length === 0) {
-    const fallbackHits = await retrieveHits(stores, question, {
-      limit: 5,
-      retrieval,
-      embeddingSearch: deps.embeddingSearch,
-      excludeSlugs: SINGLETON,
-    });
-    const fallbackKeys = new Set(
-      fallbackHits.map((hit) => locatedPageKey(hit.space, hit.hit.slug)),
-    );
-    selected = catalog
-      .filter((candidate) =>
-        fallbackKeys.has(locatedPageKey(candidate.space, candidate.ref.slug))
-      );
+    const ftsSlugs = new Set<string>();
+    for (const store of stores) for (const h of store.index().search(question, 5)) ftsSlugs.add(h.slug);
+    selected = catalog.filter((c) => ftsSlugs.has(c.ref.slug)).map((c) => c.ref.slug);
   }
 
-  if (selected.length === 0 || (!routingFailed && !routed.relevant)) {
+  if (selected.length === 0 || !routed.relevant) {
     if (opts.knowledgeOnly) {
       return { answer: "", source: "general", citations: [], gaps: ["知识库中未找到相关内容"] };
     }
@@ -483,7 +415,8 @@ export async function ask(
   // Expand + load whole pages per store.
   const loaded: { slug: string; page: Page }[] = [];
   const bySpaceSelected = new Map<SpaceStore, string[]>();
-  for (const c of selected) {
+  for (const c of catalog) {
+    if (!selected.includes(c.ref.slug)) continue;
     const list = bySpaceSelected.get(c.store) ?? [];
     list.push(c.ref.slug);
     bySpaceSelected.set(c.store, list);

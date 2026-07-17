@@ -79,14 +79,6 @@ describe("SpaceIndex pages + search", () => {
     expect(idx.listPages("entity").map((r) => r.slug)).toEqual(["entities/a"]);
     expect(idx.listPages().length).toBe(2);
   });
-
-  test("allPages can bound large retrieval scans", () => {
-    idx.upsertPage(page("entities/a", "A", "aaa"));
-    idx.upsertPage(page("entities/b", "B", "bbb"));
-    idx.upsertPage(page("entities/c", "C", "ccc"));
-
-    expect(idx.allPages(2)).toHaveLength(2);
-  });
 });
 
 describe("SpaceIndex raw capture", () => {
