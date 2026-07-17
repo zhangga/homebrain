@@ -140,6 +140,41 @@ bun run soak -- --record-evidence reminder_delivery \
   --evidence ./artifacts/soak-evidence.jsonl --artifact-id reminder_xxx
 ```
 
+每次 soak 必须使用全新的 artifacts 子目录和 JSONL 路径，不得向上一轮 monitor 文件继续追加。
+除真实网络中断外，优先使用自动验收驱动，不再由操作人逐项发送和确认。驱动以已授权的用户身份
+向指定测试群发送带唯一标记的消息，以机器人只读身份轮询回复，并同时检查本地持久化状态；只有
+场景断言成功后才向 evidence JSONL 追加记录。研究通知会优先复用当前 soak 时间窗内已经成功且
+通知已发送的运行，不会为了留证重复执行同一研究任务：
+
+```bash
+bun run soak:feishu -- \
+  --chat-id oc_xxx \
+  --bot-open-id ou_xxx \
+  --sender ui \
+  --data-dir ./data \
+  --evidence ./artifacts/soak-evidence.jsonl \
+  --monitor ./artifacts/soak-24h.jsonl \
+  --research-task "发布浸泡研究"
+```
+
+`--sender ui` 是外部群和真实用户验收的默认选择。驱动会逐步输出以
+`[F5_USER_ACTION]` 开头的结构化动作（发送文本、回复、上传图片或文件），由已登录的飞书
+浏览器自动化代理解析并完成；驱动随后通过机器人只读接口和本地状态做断言并写证据，不需要测试者
+逐项手工确认。单独在无人消费这些动作的终端运行时，驱动会等待浏览器代理完成对应动作。
+
+只有受控的内部测试群才使用 `--sender api`。首次运行前，需要给 `lark-cli` 用户身份完成
+消息和媒体上传的最小增量授权：
+
+```bash
+lark-cli auth login --scope "im:message.send_as_user im:message im:resource:upload im:resource"
+```
+
+飞书对外部群的用户身份消息接口可能返回 `230027`；这时不要重复授权，改用 `--sender ui`。
+
+可先加 `--dry-run` 检查场景和路径而不发送消息。默认自动执行前九项；`network_recovery` 不接受
+自动伪造的接口失败，必须在明确获准中断测试机网络后受控执行，并继续使用 `--record-evidence`
+记录恢复后的真实消息或发布记录编号。
+
 必须覆盖以下场景；失败的尝试使用 `--failed` 记录，修复后再记录新的成功证据：
 
 - `message_capture`：群消息静默收录；

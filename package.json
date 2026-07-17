@@ -17,7 +17,8 @@
     "verify:crash-recovery": "bun run scripts/verify-crash-recovery.ts",
     "verify:beta": "bun run scripts/verify-beta-readiness.ts",
     "evaluate:quality": "bun run scripts/ai-quality-evaluation.ts",
-    "soak": "bun run scripts/soak-runtime.ts"
+    "soak": "bun run scripts/soak-runtime.ts",
+    "soak:feishu": "bun run scripts/soak-feishu-e2e.ts"
   },
   "devDependencies": {
     "@types/bun": "^1.3.0",
