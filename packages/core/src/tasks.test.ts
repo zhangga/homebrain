@@ -29,7 +29,7 @@ describe("TaskStore", () => {
     expect(t!.enabled).toBe(true);
     expect(t!.notify).toBe(true);
     expect(t!.distillOnRun).toBe(true); // default on
-    expect(t!.timeoutMinutes).toBe(5);
+    expect(t!.timeoutMinutes).toBe(12);
 
     const path = join(dir, "config", "tasks.json");
     expect(existsSync(path)).toBe(true);

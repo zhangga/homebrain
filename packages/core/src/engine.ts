@@ -60,7 +60,11 @@ import {
   resolveAgentExecution,
   type Agent,
 } from "./agents.ts";
-import { TaskStore, type Task } from "./tasks.ts";
+import {
+  DEFAULT_TASK_TIMEOUT_MINUTES,
+  TaskStore,
+  type Task,
+} from "./tasks.ts";
 import {
   MAX_TASK_RUN_ERROR_CHARACTERS,
   TaskRunStore,
@@ -250,7 +254,7 @@ export type LearningDelivery = (
 ) => void | Promise<void>;
 
 /** How long a research task may run before the CLI is killed (much longer than Q&A). */
-const TASK_TIMEOUT_MS = 300_000;
+const TASK_TIMEOUT_MS = DEFAULT_TASK_TIMEOUT_MINUTES * 60_000;
 
 function taskRunAbortReason(signal: AbortSignal): Error {
   return signal.reason instanceof Error
@@ -826,7 +830,7 @@ export interface EngineOptions {
 interface ProviderRunHealth {
   provider: ProviderId;
   running: number;
-  lastStatus?: "ok" | "error";
+  lastStatus?: "ok" | "timeout" | "error";
   lastStartedAt?: number;
   lastSuccessAt?: number;
   lastFailureAt?: number;
@@ -894,9 +898,14 @@ export class KnowledgeEngine implements Knowledge {
         run.lastError = undefined;
         return output;
       } catch (err) {
-        run.lastFailureAt = Date.now();
-        run.lastStatus = "error";
-        run.lastError = String(err);
+        const abortReason = signal?.aborted ? signal.reason : undefined;
+        const callerStoppedTask = abortReason instanceof TaskRunTimeoutError
+          || abortReason instanceof TaskRunCancelledError;
+        if (!callerStoppedTask) {
+          run.lastFailureAt = Date.now();
+          run.lastStatus = isProviderTimeoutError(err) ? "timeout" : "error";
+          run.lastError = String(err);
+        }
         throw err;
       } finally {
         run.running -= 1;
@@ -2332,7 +2341,7 @@ export class KnowledgeEngine implements Knowledge {
       space: previous.space,
       topic: previous.topic,
       notify: previous.notify ?? task.notify,
-    }, "retry", previous.distill, previous.id, previous.timeoutMs ?? TASK_TIMEOUT_MS);
+    }, "retry", previous.distill, previous.id, task.timeoutMinutes * 60_000);
   }
 
   private launchTaskRun(

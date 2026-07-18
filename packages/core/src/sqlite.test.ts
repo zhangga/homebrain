@@ -116,6 +116,21 @@ describe("SpaceIndex raw capture", () => {
     expect(rec?.attachments?.[0]?.kind).toBe("image");
     expect(rec?.attachments?.[0]?.ref).toBe("img_key_1");
   });
+
+  test("findRecentRawsByChat is scoped, bounded, and newest first", () => {
+    idx.insertRaw({ ...raw("old"), messageId: "om_old", createdAt: 100 });
+    idx.insertRaw({ ...raw("new"), messageId: "om_new", createdAt: 300 });
+    idx.insertRaw({
+      ...raw("other chat"),
+      chatId: "oc_other",
+      messageId: "om_other",
+      createdAt: 400,
+    });
+    idx.insertRaw({ ...raw("future"), messageId: "om_future", createdAt: 500 });
+
+    expect(idx.findRecentRawsByChat("oc_1", 400, 2).map((record) => record.content))
+      .toEqual(["new", "old"]);
+  });
 });
 
 describe("SpaceIndex rebuild", () => {

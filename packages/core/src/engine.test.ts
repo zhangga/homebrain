@@ -999,7 +999,9 @@ describe("Knowledge seam contract", () => {
       timeoutMs: 10,
     }));
 
+    taskEngine.tasks.update(task.id, { timeoutMinutes: 12 });
     const retried = taskEngine.retryTaskRun(timedOut.runId);
+    expect(retried.run.timeoutMs).toBe(12 * 60_000);
     expect((await retried.completion).status).toBe("succeeded");
     taskEngine.close();
   });

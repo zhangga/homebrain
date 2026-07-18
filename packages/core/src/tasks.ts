@@ -28,7 +28,7 @@ import { isSpaceId } from "@homeagent/shared";
 /** How often a task runs. */
 export type TaskCadence = "hourly" | "daily";
 export const TASK_CADENCES: TaskCadence[] = ["hourly", "daily"];
-export const DEFAULT_TASK_TIMEOUT_MINUTES = 5;
+export const DEFAULT_TASK_TIMEOUT_MINUTES = 12;
 export const MIN_TASK_TIMEOUT_MINUTES = 1;
 export const MAX_TASK_TIMEOUT_MINUTES = 60;
 

@@ -226,12 +226,17 @@ export function createSystemHealthReporter(
     const latestRuntimeFailures = providerRuns.filter(
       (run) => required.includes(String(run.provider)) && run.lastStatus === "error",
     );
+    const latestRuntimeTimeouts = providerRuns.filter(
+      (run) => required.includes(String(run.provider)) && run.lastStatus === "timeout",
+    );
     const providerReady =
       providerErrors.length === 0 && required.length > 0 && unavailable.length === 0 && latestRuntimeFailures.length === 0;
     components.providers = {
-      status: providerReady ? "ok" : "down",
+      status: providerReady ? latestRuntimeTimeouts.length > 0 ? "degraded" : "ok" : "down",
       summary: providerReady
-        ? `必需 CLI 可用：${required.join("、")}`
+        ? latestRuntimeTimeouts.length > 0
+          ? `CLI 最近执行超时：${latestRuntimeTimeouts.map((run) => run.provider).join("、")}`
+          : `必需 CLI 可用：${required.join("、")}`
         : providerErrors.length > 0
           ? "CLI 状态检查失败"
           : unavailable.length > 0

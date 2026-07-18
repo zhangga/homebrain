@@ -79,6 +79,7 @@ export class SpaceIndex {
     `);
     this.db.run(`CREATE INDEX IF NOT EXISTS raw_ingested ON raw(ingested, created)`);
     this.db.run(`CREATE INDEX IF NOT EXISTS raw_message ON raw(chat_id, message_id)`);
+    this.db.run(`CREATE INDEX IF NOT EXISTS raw_chat_created ON raw(chat_id, created DESC)`);
     this.db.run(`CREATE INDEX IF NOT EXISTS pages_type ON pages(type)`);
   }
 
@@ -255,6 +256,23 @@ export class SpaceIndex {
          ORDER BY created ASC`,
       )
       .all(messageId, chatId) as Record<string, unknown>[];
+    return rows.map(rowToRaw);
+  }
+
+  findRecentRawsByChat(
+    chatId: string,
+    maxCreatedAt: number,
+    limit = 50,
+  ): RawRecord[] {
+    const safeLimit = Math.max(0, Math.floor(limit));
+    const rows = this.db
+      .query(
+        `SELECT * FROM raw
+         WHERE chat_id = ? AND created <= ?
+         ORDER BY created DESC
+         LIMIT ${safeLimit}`,
+      )
+      .all(chatId, maxCreatedAt) as Record<string, unknown>[];
     return rows.map(rowToRaw);
   }
 

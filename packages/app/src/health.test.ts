@@ -353,6 +353,103 @@ describe("system health reporter", () => {
     engine.close();
   });
 
+  test("a caller-controlled task timeout degrades the task without taking provider readiness down", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "hb-health-task-timeout-"));
+    dirs.push(dir);
+    const engine = new KnowledgeEngine({
+      dataDir: dir,
+      runProvider: async (_provider, _input, _timeoutMs, signal) =>
+        new Promise<string>((_resolve, reject) => {
+          signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
+        }),
+    });
+    const space = "team/oc_health" as const;
+    engine.ensureSpace(space, { chatId: "oc_health" });
+    const agent = engine.agents.create({ name: "Codex", provider: "codex" });
+    engine.registry.updateMeta(space, { agentId: agent.id });
+    const task = engine.tasks.create({
+      name: "background timeout",
+      space,
+      topic: "probe",
+      distillOnRun: false,
+    })!;
+    await engine.runTask(task.id, { timeoutMs: 10 });
+
+    const reportHealth = createSystemHealthReporter({
+      engine,
+      connectorHealth: () => ({
+        name: "feishu",
+        ready: true,
+        consumers: [
+          { key: "im.message.receive_v1", state: "ready", attempts: 0 },
+          { key: "im.chat.member.bot.added_v1", state: "ready", attempts: 0 },
+        ],
+      }),
+      dreamSchedulerHealth: () => loopHealth,
+      taskSchedulerHealth: () => loopHealth,
+      detectProviders: async () => [
+        { id: "codex", name: "Codex", bin: "codex", available: true, detail: "1.0" },
+      ],
+      requiredProviderIds: () => ["codex"],
+    });
+
+    const snapshot = await reportHealth();
+    expect(snapshot.ready).toBe(true);
+    expect(snapshot.status).toBe("degraded");
+    expect(snapshot.components.providers).toEqual(expect.objectContaining({ status: "ok" }));
+    expect(snapshot.components.tasks).toEqual(expect.objectContaining({
+      status: "degraded",
+      summary: "1 个任务最近执行失败",
+    }));
+    engine.close();
+  });
+
+  test("a transient provider timeout degrades the provider without taking readiness down", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "hb-health-provider-timeout-"));
+    dirs.push(dir);
+    const engine = new KnowledgeEngine({
+      dataDir: dir,
+      runProvider: async () => {
+        throw new Error("provider codex timed out after 30000ms");
+      },
+    });
+    const space = "team/oc_health" as const;
+    engine.ensureSpace(space, { chatId: "oc_health" });
+    const agent = engine.agents.create({ name: "Codex", provider: "codex" });
+    engine.registry.updateMeta(space, { agentId: agent.id });
+    await expect(engine.llmClientForSpace(space, 30_000).complete({
+      prompt: "判断群消息是否值得主动回答",
+      purpose: "classify",
+    })).rejects.toThrow("timed out");
+
+    const reportHealth = createSystemHealthReporter({
+      engine,
+      connectorHealth: () => ({
+        name: "feishu",
+        ready: true,
+        consumers: [
+          { key: "im.message.receive_v1", state: "ready", attempts: 0 },
+          { key: "im.chat.member.bot.added_v1", state: "ready", attempts: 0 },
+        ],
+      }),
+      dreamSchedulerHealth: () => loopHealth,
+      taskSchedulerHealth: () => loopHealth,
+      detectProviders: async () => [
+        { id: "codex", name: "Codex", bin: "codex", available: true, detail: "1.0" },
+      ],
+      requiredProviderIds: () => ["codex"],
+    });
+
+    const snapshot = await reportHealth();
+    expect(snapshot.ready).toBe(true);
+    expect(snapshot.status).toBe("degraded");
+    expect(snapshot.components.providers).toEqual(expect.objectContaining({
+      status: "degraded",
+      summary: "CLI 最近执行超时：codex",
+    }));
+    engine.close();
+  });
+
   test("is not ready when an installed CLI most recently failed at runtime", async () => {
     const dir = mkdtempSync(join(tmpdir(), "hb-health-provider-"));
     dirs.push(dir);

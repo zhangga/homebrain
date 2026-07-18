@@ -35,6 +35,7 @@ import type {
 import {
   ANSWER_FEEDBACK_KINDS,
   AGENT_PERMISSIONS,
+  DEFAULT_TASK_TIMEOUT_MINUTES,
   resolveGroupParticipationLevel,
   MAX_TASK_NOTIFICATION_ATTEMPTS,
   TASK_CADENCES,
@@ -911,7 +912,7 @@ export function tasksView(
   const enabledOn = editing ? editing.enabled : true;
   const notifyOn = editing ? editing.notify : true;
   const distillOn = editing ? editing.distillOnRun : true;
-  const timeoutMinutes = editing?.timeoutMinutes ?? 5;
+  const timeoutMinutes = editing?.timeoutMinutes ?? DEFAULT_TASK_TIMEOUT_MINUTES;
 
   const spaceOptions = spaces.length
     ? spaces.map((s) => html`<option value="${s.id}" ${s.id === spaceVal ? "selected" : ""}>${s.name?.trim() || s.id}</option>`)

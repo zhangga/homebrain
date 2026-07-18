@@ -487,6 +487,120 @@ describe("orchestrator trunk (cli connector, no feishu)", () => {
     expect(connector.sent[0]!.markdown).toContain("准备得比较用心");
   });
 
+  test("a contextual file request includes extracted attachment text before distillation", async () => {
+    const messageId = "om_attachment_probe";
+    const chatId = "oc_team";
+    await engine.remember({
+      space: "team/oc_team",
+      source: "message",
+      author: "ou_me",
+      chatId,
+      messageId,
+      content: '<file key="file_probe" name="attachment-probe.txt"/>',
+    });
+    await engine.remember({
+      space: "team/oc_team",
+      source: "message",
+      author: "ou_me",
+      chatId,
+      messageId,
+      content: [
+        "# 附件：attachment-probe.txt",
+        "",
+        "测试编号：HA-SOAK-20260717-A",
+        "家庭采购清单负责人：小林",
+        "复核时间：周日 16:30",
+      ].join("\n"),
+      attachments: [{ kind: "file", ref: "file_probe", name: "attachment-probe.txt" }],
+    });
+    const reactive = connector as CliConnector & Connector;
+    reactive.resolveReplyTarget = async () => ({
+      messageId,
+      senderId: "ou_me",
+      text: '<file key="file_probe" name="attachment-probe.txt"/>',
+      messageType: "file",
+    });
+    let question = "";
+    engine.ask = async (_spaces, input) => {
+      question = input;
+      return {
+        answer: "编号 HA-SOAK-20260717-A，负责人小林，复核时间周日 16:30。",
+        source: "general",
+        citations: [],
+      };
+    };
+
+    await orch.start();
+    await connector.sendGroup(
+      "@agent 读取这个文件，告诉我测试编号、负责人和复核时间",
+      true,
+    );
+
+    expect(question).toContain("被回复的消息");
+    expect(question).toContain("HA-SOAK-20260717-A");
+    expect(question).toContain("家庭采购清单负责人：小林");
+    expect(question).toContain("复核时间：周日 16:30");
+  });
+
+  test("proactive participation can use the most recent extracted attachment in the chat", async () => {
+    const messageId = "om_recent_attachment";
+    const chatId = "oc_team";
+    const attachmentCreatedAt = Date.now() - 1_000;
+    await engine.remember({
+      space: "team/oc_team",
+      source: "message",
+      author: "ou_me",
+      chatId,
+      messageId,
+      content: '<file key="file_recent" name="attachment-probe.txt"/>',
+      createdAt: attachmentCreatedAt,
+    });
+    await engine.remember({
+      space: "team/oc_team",
+      source: "message",
+      author: "ou_me",
+      chatId,
+      messageId,
+      content: [
+        "# 附件：attachment-probe.txt",
+        "",
+        "家庭采购清单负责人：小林",
+      ].join("\n"),
+      attachments: [{ kind: "file", ref: "file_recent", name: "attachment-probe.txt" }],
+      createdAt: attachmentCreatedAt,
+    });
+    const proactive = new FakeLlm().onJSON((opts) => {
+      const props = (opts.schema as { properties?: Record<string, unknown> }).properties ?? {};
+      if ("participationScore" in props) {
+        return {
+          participationScore: 95,
+          disruptionRisk: 5,
+          reason: "明确向群体提问",
+        };
+      }
+      throw new Error("unexpected JSON completion");
+    });
+    orch = new Orchestrator({ engine, connector, llm: proactive });
+    let question = "";
+    engine.ask = async (_spaces, input) => {
+      question = input;
+      return {
+        answer: "负责人是小林。",
+        source: "general",
+        citations: [],
+      };
+    };
+
+    await orch.start();
+    await connector.sendGroup(
+      "最终浸泡主动参与-20260717-C：大家知道刚才附件里的负责人是谁吗？",
+      false,
+    );
+
+    expect(question).toContain("最近的附件或文档");
+    expect(question).toContain("家庭采购清单负责人：小林");
+  });
+
   test("a contextual image request sends the replied image to the answering model", async () => {
     const reactive = connector as CliConnector & Connector;
     reactive.resolveReplyTarget = async () => ({
@@ -1657,6 +1771,23 @@ describe("orchestrator trunk (cli connector, no feishu)", () => {
     expect(tasks.length).toBe(1);
     expect(tasks[0]!.topic).toBe("大模型 Agent 进展");
     // the control message was NOT captured as knowledge
+    expect(engine.registry.store("team/oc_team").index().countRaw()).toBe(0);
+  });
+
+  test("an addressed /task command is handled before capture and conversation", async () => {
+    await orch.start();
+
+    await connector.sendGroup("@agent /task new 浸泡测试研究-20260717", true);
+
+    expect(connector.sent).toHaveLength(1);
+    expect(connector.sent[0]!.markdown).toContain("已创建每日任务");
+    expect(engine.tasks.list()).toEqual([
+      expect.objectContaining({
+        name: "浸泡测试研究-20260717",
+        topic: "浸泡测试研究-20260717",
+        space: "team/oc_team",
+      }),
+    ]);
     expect(engine.registry.store("team/oc_team").index().countRaw()).toBe(0);
   });
 

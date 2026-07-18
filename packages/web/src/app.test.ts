@@ -2014,6 +2014,7 @@ describe("management backend (read-write)", () => {
     const home = await (await app.request("/tasks")).text();
     expect(home).toContain("任务");
     expect(home).toContain("新建任务");
+    expect(home).toContain('name="timeoutMinutes" value="12"');
 
     const form = new URLSearchParams({
       name: "每日AI",
